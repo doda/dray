@@ -283,7 +283,7 @@
     "scope": [
       "internal/wal/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "wal-format-decoder",
