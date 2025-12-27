@@ -1,0 +1,560 @@
+package wal
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"sort"
+	"sync"
+	"testing"
+
+	"github.com/dray-io/dray/internal/objectstore"
+	"github.com/google/uuid"
+)
+
+// mockStore implements objectstore.Store for testing.
+type mockStore struct {
+	mu      sync.Mutex
+	objects map[string][]byte
+	putErr  error
+}
+
+func newMockStore() *mockStore {
+	return &mockStore{
+		objects: make(map[string][]byte),
+	}
+}
+
+func (s *mockStore) Put(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
+	if s.putErr != nil {
+		return s.putErr
+	}
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.objects[key] = data
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *mockStore) PutWithOptions(ctx context.Context, key string, reader io.Reader, size int64, contentType string, opts objectstore.PutOptions) error {
+	return s.Put(ctx, key, reader, size, contentType)
+}
+
+func (s *mockStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	s.mu.Lock()
+	data, ok := s.objects[key]
+	s.mu.Unlock()
+	if !ok {
+		return nil, objectstore.ErrNotFound
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (s *mockStore) GetRange(ctx context.Context, key string, start, end int64) (io.ReadCloser, error) {
+	s.mu.Lock()
+	data, ok := s.objects[key]
+	s.mu.Unlock()
+	if !ok {
+		return nil, objectstore.ErrNotFound
+	}
+	if end == -1 {
+		end = int64(len(data) - 1)
+	}
+	return io.NopCloser(bytes.NewReader(data[start : end+1])), nil
+}
+
+func (s *mockStore) Head(ctx context.Context, key string) (objectstore.ObjectMeta, error) {
+	s.mu.Lock()
+	data, ok := s.objects[key]
+	s.mu.Unlock()
+	if !ok {
+		return objectstore.ObjectMeta{}, objectstore.ErrNotFound
+	}
+	return objectstore.ObjectMeta{
+		Key:  key,
+		Size: int64(len(data)),
+	}, nil
+}
+
+func (s *mockStore) Delete(ctx context.Context, key string) error {
+	s.mu.Lock()
+	delete(s.objects, key)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *mockStore) List(ctx context.Context, prefix string) ([]objectstore.ObjectMeta, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var result []objectstore.ObjectMeta
+	for key, data := range s.objects {
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			result = append(result, objectstore.ObjectMeta{
+				Key:  key,
+				Size: int64(len(data)),
+			})
+		}
+	}
+	return result, nil
+}
+
+func (s *mockStore) Close() error {
+	return nil
+}
+
+func TestWriterAddChunk(t *testing.T) {
+	store := newMockStore()
+	w := NewWriter(store, nil)
+	defer w.Close()
+
+	chunk := Chunk{
+		StreamID:       1,
+		RecordCount:    10,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 2000,
+		Batches: []BatchEntry{
+			{Data: []byte("batch1")},
+		},
+	}
+
+	err := w.AddChunk(chunk, 0)
+	if err != nil {
+		t.Fatalf("AddChunk failed: %v", err)
+	}
+
+	if w.ChunkCount() != 1 {
+		t.Errorf("ChunkCount = %d, want 1", w.ChunkCount())
+	}
+
+	if w.MetaDomain() == nil || *w.MetaDomain() != 0 {
+		t.Errorf("MetaDomain = %v, want 0", w.MetaDomain())
+	}
+}
+
+func TestWriterMetaDomainMismatch(t *testing.T) {
+	store := newMockStore()
+	w := NewWriter(store, nil)
+	defer w.Close()
+
+	chunk1 := Chunk{
+		StreamID:    1,
+		RecordCount: 5,
+		Batches:     []BatchEntry{{Data: []byte("data1")}},
+	}
+	chunk2 := Chunk{
+		StreamID:    2,
+		RecordCount: 5,
+		Batches:     []BatchEntry{{Data: []byte("data2")}},
+	}
+
+	err := w.AddChunk(chunk1, 0)
+	if err != nil {
+		t.Fatalf("AddChunk failed: %v", err)
+	}
+
+	err = w.AddChunk(chunk2, 1)
+	if !errors.Is(err, ErrMetaDomainMismatch) {
+		t.Errorf("expected ErrMetaDomainMismatch, got %v", err)
+	}
+
+	// Same MetaDomain should work
+	err = w.AddChunk(chunk2, 0)
+	if err != nil {
+		t.Errorf("AddChunk with same MetaDomain failed: %v", err)
+	}
+}
+
+func TestWriterFlush(t *testing.T) {
+	store := newMockStore()
+	w := NewWriter(store, nil)
+	defer w.Close()
+
+	chunk1 := Chunk{
+		StreamID:       100,
+		RecordCount:    5,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 1500,
+		Batches: []BatchEntry{
+			{Data: []byte("batch1")},
+		},
+	}
+	chunk2 := Chunk{
+		StreamID:       50, // Lower streamId to test sorting
+		RecordCount:    10,
+		MinTimestampMs: 2000,
+		MaxTimestampMs: 2500,
+		Batches: []BatchEntry{
+			{Data: []byte("batch2a")},
+			{Data: []byte("batch2b")},
+		},
+	}
+
+	w.AddChunk(chunk1, 5)
+	w.AddChunk(chunk2, 5)
+
+	ctx := context.Background()
+	result, err := w.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	if result.WalID == uuid.Nil {
+		t.Error("WalID should not be nil")
+	}
+	if result.MetaDomain != 5 {
+		t.Errorf("MetaDomain = %d, want 5", result.MetaDomain)
+	}
+	if result.Size <= 0 {
+		t.Error("Size should be positive")
+	}
+	if len(result.ChunkOffsets) != 2 {
+		t.Errorf("ChunkOffsets len = %d, want 2", len(result.ChunkOffsets))
+	}
+	if result.CreatedAtUnixMs <= 0 {
+		t.Error("CreatedAtUnixMs should be positive")
+	}
+
+	// Verify object was written to store
+	if len(store.objects) != 1 {
+		t.Errorf("Expected 1 object in store, got %d", len(store.objects))
+	}
+
+	data := store.objects[result.Path]
+	if len(data) != int(result.Size) {
+		t.Errorf("Stored size = %d, result.Size = %d", len(data), result.Size)
+	}
+
+	// Verify the WAL can be decoded
+	decoded, err := DecodeFromBytes(data)
+	if err != nil {
+		t.Fatalf("Failed to decode written WAL: %v", err)
+	}
+
+	if decoded.MetaDomain != 5 {
+		t.Errorf("Decoded MetaDomain = %d, want 5", decoded.MetaDomain)
+	}
+	if len(decoded.Chunks) != 2 {
+		t.Fatalf("Decoded Chunks len = %d, want 2", len(decoded.Chunks))
+	}
+
+	// Verify chunks are sorted by StreamID
+	if decoded.Chunks[0].StreamID != 50 || decoded.Chunks[1].StreamID != 100 {
+		t.Errorf("Chunks not sorted: got StreamIDs %d, %d; want 50, 100",
+			decoded.Chunks[0].StreamID, decoded.Chunks[1].StreamID)
+	}
+
+	// Verify writer is reset after flush
+	if w.ChunkCount() != 0 {
+		t.Error("ChunkCount should be 0 after flush")
+	}
+	if w.MetaDomain() != nil {
+		t.Error("MetaDomain should be nil after flush")
+	}
+}
+
+func TestWriterFlushEmpty(t *testing.T) {
+	store := newMockStore()
+	w := NewWriter(store, nil)
+	defer w.Close()
+
+	ctx := context.Background()
+	_, err := w.Flush(ctx)
+	if !errors.Is(err, ErrEmptyWAL) {
+		t.Errorf("expected ErrEmptyWAL, got %v", err)
+	}
+}
+
+func TestWriterFlushError(t *testing.T) {
+	store := newMockStore()
+	store.putErr = errors.New("storage unavailable")
+
+	w := NewWriter(store, nil)
+	defer w.Close()
+
+	chunk := Chunk{
+		StreamID:    1,
+		RecordCount: 5,
+		Batches:     []BatchEntry{{Data: []byte("data")}},
+	}
+	w.AddChunk(chunk, 0)
+
+	ctx := context.Background()
+	_, err := w.Flush(ctx)
+	if err == nil {
+		t.Error("expected error from Flush")
+	}
+}
+
+func TestWriterClosed(t *testing.T) {
+	store := newMockStore()
+	w := NewWriter(store, nil)
+
+	chunk := Chunk{
+		StreamID:    1,
+		RecordCount: 5,
+		Batches:     []BatchEntry{{Data: []byte("data")}},
+	}
+
+	w.Close()
+
+	err := w.AddChunk(chunk, 0)
+	if !errors.Is(err, ErrWriterClosed) {
+		t.Errorf("expected ErrWriterClosed from AddChunk, got %v", err)
+	}
+
+	_, err = w.Flush(context.Background())
+	if !errors.Is(err, ErrWriterClosed) {
+		t.Errorf("expected ErrWriterClosed from Flush, got %v", err)
+	}
+}
+
+func TestWriterReset(t *testing.T) {
+	store := newMockStore()
+	w := NewWriter(store, nil)
+	defer w.Close()
+
+	chunk := Chunk{
+		StreamID:    1,
+		RecordCount: 5,
+		Batches:     []BatchEntry{{Data: []byte("data")}},
+	}
+	w.AddChunk(chunk, 0)
+
+	if w.ChunkCount() != 1 {
+		t.Fatal("expected 1 chunk before reset")
+	}
+
+	w.Reset()
+
+	if w.ChunkCount() != 0 {
+		t.Error("ChunkCount should be 0 after reset")
+	}
+	if w.MetaDomain() != nil {
+		t.Error("MetaDomain should be nil after reset")
+	}
+
+	// Should be able to add chunks with different MetaDomain after reset
+	err := w.AddChunk(chunk, 99)
+	if err != nil {
+		t.Errorf("AddChunk after reset failed: %v", err)
+	}
+	if *w.MetaDomain() != 99 {
+		t.Errorf("MetaDomain after reset = %d, want 99", *w.MetaDomain())
+	}
+}
+
+func TestWriterCustomPathFormatter(t *testing.T) {
+	store := newMockStore()
+
+	customFormatter := &DefaultPathFormatter{Prefix: "custom/prefix"}
+	w := NewWriter(store, &WriterConfig{PathFormatter: customFormatter})
+	defer w.Close()
+
+	chunk := Chunk{
+		StreamID:    1,
+		RecordCount: 5,
+		Batches:     []BatchEntry{{Data: []byte("data")}},
+	}
+	w.AddChunk(chunk, 42)
+
+	result, err := w.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	expectedPrefix := "custom/prefix/wal/domain=42/"
+	if len(result.Path) < len(expectedPrefix) || result.Path[:len(expectedPrefix)] != expectedPrefix {
+		t.Errorf("Path = %s, expected prefix %s", result.Path, expectedPrefix)
+	}
+}
+
+func TestWriterMultipleFlushes(t *testing.T) {
+	store := newMockStore()
+	w := NewWriter(store, nil)
+	defer w.Close()
+
+	ctx := context.Background()
+
+	// First flush with MetaDomain 0
+	chunk1 := Chunk{
+		StreamID:    1,
+		RecordCount: 5,
+		Batches:     []BatchEntry{{Data: []byte("first")}},
+	}
+	w.AddChunk(chunk1, 0)
+	result1, err := w.Flush(ctx)
+	if err != nil {
+		t.Fatalf("First Flush failed: %v", err)
+	}
+
+	// Second flush with different MetaDomain (should work after reset)
+	chunk2 := Chunk{
+		StreamID:    2,
+		RecordCount: 10,
+		Batches:     []BatchEntry{{Data: []byte("second")}},
+	}
+	w.AddChunk(chunk2, 7)
+	result2, err := w.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Second Flush failed: %v", err)
+	}
+
+	if result1.WalID == result2.WalID {
+		t.Error("WalIDs should be different")
+	}
+	if result1.MetaDomain != 0 || result2.MetaDomain != 7 {
+		t.Errorf("MetaDomains = %d, %d; want 0, 7", result1.MetaDomain, result2.MetaDomain)
+	}
+	if len(store.objects) != 2 {
+		t.Errorf("Expected 2 objects in store, got %d", len(store.objects))
+	}
+}
+
+func TestWriterChunkOffsetsPreserved(t *testing.T) {
+	store := newMockStore()
+	w := NewWriter(store, nil)
+	defer w.Close()
+
+	chunks := []Chunk{
+		{
+			StreamID:       300,
+			RecordCount:    15,
+			MinTimestampMs: 3000,
+			MaxTimestampMs: 3500,
+			Batches: []BatchEntry{
+				{Data: []byte("batch3a")},
+				{Data: []byte("batch3b")},
+				{Data: []byte("batch3c")},
+			},
+		},
+		{
+			StreamID:       100,
+			RecordCount:    5,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 1500,
+			Batches:        []BatchEntry{{Data: []byte("batch1")}},
+		},
+		{
+			StreamID:       200,
+			RecordCount:    10,
+			MinTimestampMs: 2000,
+			MaxTimestampMs: 2500,
+			Batches: []BatchEntry{
+				{Data: []byte("batch2a")},
+				{Data: []byte("batch2b")},
+			},
+		},
+	}
+
+	for _, chunk := range chunks {
+		w.AddChunk(chunk, 1)
+	}
+
+	result, err := w.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	// ChunkOffsets should be in the order added (not sorted)
+	if len(result.ChunkOffsets) != 3 {
+		t.Fatalf("ChunkOffsets len = %d, want 3", len(result.ChunkOffsets))
+	}
+
+	for i, chunk := range chunks {
+		offset := result.ChunkOffsets[i]
+		if offset.StreamID != chunk.StreamID {
+			t.Errorf("ChunkOffsets[%d].StreamID = %d, want %d", i, offset.StreamID, chunk.StreamID)
+		}
+		if offset.RecordCount != chunk.RecordCount {
+			t.Errorf("ChunkOffsets[%d].RecordCount = %d, want %d", i, offset.RecordCount, chunk.RecordCount)
+		}
+		if offset.BatchCount != uint32(len(chunk.Batches)) {
+			t.Errorf("ChunkOffsets[%d].BatchCount = %d, want %d", i, offset.BatchCount, len(chunk.Batches))
+		}
+		if offset.MinTimestampMs != chunk.MinTimestampMs {
+			t.Errorf("ChunkOffsets[%d].MinTimestampMs = %d, want %d", i, offset.MinTimestampMs, chunk.MinTimestampMs)
+		}
+		if offset.MaxTimestampMs != chunk.MaxTimestampMs {
+			t.Errorf("ChunkOffsets[%d].MaxTimestampMs = %d, want %d", i, offset.MaxTimestampMs, chunk.MaxTimestampMs)
+		}
+	}
+}
+
+func TestWriterSortsByStreamId(t *testing.T) {
+	store := newMockStore()
+	w := NewWriter(store, nil)
+	defer w.Close()
+
+	// Add chunks in reverse order by StreamID
+	streamIDs := []uint64{500, 100, 300, 200, 400}
+	for _, id := range streamIDs {
+		chunk := Chunk{
+			StreamID:    id,
+			RecordCount: 1,
+			Batches:     []BatchEntry{{Data: []byte{byte(id)}}},
+		}
+		w.AddChunk(chunk, 0)
+	}
+
+	result, err := w.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	// Decode and verify chunks are sorted
+	data := store.objects[result.Path]
+	decoded, err := DecodeFromBytes(data)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	// Verify chunks are sorted by StreamID in the encoded WAL
+	sortedIDs := make([]uint64, len(streamIDs))
+	copy(sortedIDs, streamIDs)
+	sort.Slice(sortedIDs, func(i, j int) bool { return sortedIDs[i] < sortedIDs[j] })
+
+	for i, chunk := range decoded.Chunks {
+		if chunk.StreamID != sortedIDs[i] {
+			t.Errorf("Decoded chunk %d has StreamID %d, want %d", i, chunk.StreamID, sortedIDs[i])
+		}
+	}
+}
+
+func TestDefaultPathFormatter(t *testing.T) {
+	tests := []struct {
+		name       string
+		prefix     string
+		metaDomain uint32
+		walID      uuid.UUID
+		want       string
+	}{
+		{
+			name:       "no prefix",
+			prefix:     "",
+			metaDomain: 0,
+			walID:      uuid.MustParse("12345678-1234-1234-1234-123456789abc"),
+			want:       "wal/domain=0/12345678-1234-1234-1234-123456789abc.wo",
+		},
+		{
+			name:       "with prefix",
+			prefix:     "dray/v1",
+			metaDomain: 42,
+			walID:      uuid.MustParse("abcdef00-1234-5678-90ab-cdef12345678"),
+			want:       "dray/v1/wal/domain=42/abcdef00-1234-5678-90ab-cdef12345678.wo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &DefaultPathFormatter{Prefix: tt.prefix}
+			got := f.FormatPath(tt.metaDomain, tt.walID)
+			if got != tt.want {
+				t.Errorf("FormatPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
