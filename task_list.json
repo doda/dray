@@ -50,7 +50,7 @@
     "scope": [
       "internal/logging/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "metrics-skeleton",
