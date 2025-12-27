@@ -321,7 +321,7 @@
     "scope": [
       "internal/wal/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "wal-fuzz-test",
