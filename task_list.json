@@ -1,0 +1,2059 @@
+[
+  {
+    "id": "project-setup",
+    "category": "infrastructure",
+    "description": "Set up the Go project with repository structure, dependencies, build system, linting, and CI pipeline",
+    "steps": [
+      "Run init.sh successfully",
+      "Verify Go module is initialized with go.mod",
+      "Confirm directory structure matches spec section 19 layout",
+      "Run 'go build ./...' without errors",
+      "Run 'go test ./...' (empty tests pass)",
+      "Verify linting with golangci-lint passes",
+      "Confirm Makefile or build scripts exist"
+    ],
+    "passes": false
+  },
+  {
+    "id": "config-system",
+    "category": "infrastructure",
+    "description": "Implement deterministic configuration system with YAML files and environment variable overrides",
+    "steps": [
+      "Create config package with YAML loader",
+      "Verify config file can be loaded from default path",
+      "Test environment variable overrides take precedence",
+      "Confirm all config fields have sensible defaults",
+      "Verify config validation rejects invalid values"
+    ],
+    "depends_on": ["project-setup"],
+    "scope": ["internal/config/"],
+    "passes": false
+  },
+  {
+    "id": "logging-framework",
+    "category": "infrastructure",
+    "description": "Implement structured logging with correlationId and traceId propagation",
+    "steps": [
+      "Create logging package with structured JSON output",
+      "Verify log entries include timestamp, level, message",
+      "Test correlationId propagation through request context",
+      "Confirm log levels can be configured via config",
+      "Verify logs include file/line information in debug mode"
+    ],
+    "depends_on": ["project-setup"],
+    "scope": ["internal/logging/"],
+    "passes": false
+  },
+  {
+    "id": "metrics-skeleton",
+    "category": "infrastructure",
+    "description": "Create Prometheus metrics skeleton with basic counters and histograms",
+    "steps": [
+      "Create metrics package with Prometheus registry",
+      "Define placeholder metrics for produce/fetch latency",
+      "Expose /metrics HTTP endpoint",
+      "Verify metrics endpoint returns Prometheus format",
+      "Confirm metrics can be scraped by prometheus client"
+    ],
+    "depends_on": ["project-setup"],
+    "scope": ["internal/metrics/"],
+    "passes": false
+  },
+  {
+    "id": "metadata-store-interface",
+    "category": "infrastructure",
+    "description": "Define MetadataStore interface per spec section 6.1 with Get, Put, Delete, List, Txn, Notifications, PutEphemeral",
+    "steps": [
+      "Create MetadataStore interface in internal/metadata/",
+      "Define Version, KV, NotificationStream types",
+      "Define Txn interface for atomic transactions",
+      "Add context support for all operations",
+      "Write interface documentation with usage examples"
+    ],
+    "depends_on": ["project-setup"],
+    "scope": ["internal/metadata/"],
+    "passes": false
+  },
+  {
+    "id": "object-store-interface",
+    "category": "infrastructure",
+    "description": "Define ObjectStore interface for S3-compatible storage with PUT, GET range, HEAD, DELETE, multipart",
+    "steps": [
+      "Create ObjectStore interface in internal/objectstore/",
+      "Define operations: Put, Get, GetRange, Head, Delete",
+      "Add multipart upload support interface",
+      "Include context and error types",
+      "Write interface documentation"
+    ],
+    "depends_on": ["project-setup"],
+    "scope": ["internal/objectstore/"],
+    "passes": false
+  },
+  {
+    "id": "iceberg-catalog-interface",
+    "category": "infrastructure",
+    "description": "Define Catalog interface for Iceberg integration with LoadTable, CreateTableIfMissing, AppendDataFiles, GetCurrentSnapshot",
+    "steps": [
+      "Create Catalog interface in internal/iceberg/catalog/",
+      "Define Table, Snapshot, DataFile types",
+      "Include methods per spec section 11.8",
+      "Add context support for all operations",
+      "Write interface documentation"
+    ],
+    "depends_on": ["project-setup"],
+    "scope": ["internal/iceberg/"],
+    "passes": false
+  },
+  {
+    "id": "oxia-client-wrapper",
+    "category": "metadata",
+    "description": "Implement Oxia client wrapper with sync API, namespace setup, and connection management",
+    "steps": [
+      "Import github.com/oxia-db/oxia/oxia Go SDK",
+      "Create OxiaStore implementing MetadataStore interface",
+      "Configure namespace per cluster: dray/<cluster_id>",
+      "Verify connection to Oxia cluster works",
+      "Test basic Get/Put operations"
+    ],
+    "depends_on": ["metadata-store-interface"],
+    "scope": ["internal/metadata/oxia/"],
+    "passes": false
+  },
+  {
+    "id": "oxia-cas-transactions",
+    "category": "metadata",
+    "description": "Implement CAS (compare-and-set) semantics and atomic transactions using Oxia versioning",
+    "steps": [
+      "Implement Put with ExpectedVersionId option",
+      "Implement Txn for atomic multi-key operations",
+      "Test CAS fails on version mismatch",
+      "Verify transaction rollback on partial failure",
+      "Test concurrent writers see version conflicts"
+    ],
+    "depends_on": ["oxia-client-wrapper"],
+    "scope": ["internal/metadata/oxia/"],
+    "passes": false
+  },
+  {
+    "id": "oxia-notifications",
+    "category": "metadata",
+    "description": "Implement Oxia notifications stream for change feed and cache invalidation",
+    "steps": [
+      "Implement Notifications() returning NotificationStream",
+      "Subscribe to namespace changes",
+      "Verify notification delivery after Put",
+      "Test notification stream restart recovers",
+      "Confirm no notifications are missed after subscription"
+    ],
+    "depends_on": ["oxia-client-wrapper"],
+    "scope": ["internal/metadata/oxia/"],
+    "passes": false
+  },
+  {
+    "id": "oxia-ephemeral-keys",
+    "category": "metadata",
+    "description": "Implement ephemeral key support tied to client sessions for broker registration and locks",
+    "steps": [
+      "Implement PutEphemeral with session binding",
+      "Verify key is deleted when session expires",
+      "Test key survives while session is active",
+      "Confirm session renewal keeps key alive"
+    ],
+    "depends_on": ["oxia-client-wrapper"],
+    "scope": ["internal/metadata/oxia/"],
+    "passes": false
+  },
+  {
+    "id": "keyspace-encoders",
+    "category": "metadata",
+    "description": "Implement keyspace helpers with zero-padded numeric keys for lexicographic ordering",
+    "steps": [
+      "Create key encoding functions for offset-index keys",
+      "Implement zero-padded decimal width 20 for offsetEndZ",
+      "Implement zero-padded decimal width 20 for cumulativeSizeZ",
+      "Test lexicographic ordering is preserved",
+      "Verify key decoding extracts correct values"
+    ],
+    "depends_on": ["metadata-store-interface"],
+    "scope": ["internal/metadata/keys/"],
+    "passes": false
+  },
+  {
+    "id": "keyspace-schema",
+    "category": "metadata",
+    "description": "Implement complete Oxia keyspace layout per spec section 6.3",
+    "steps": [
+      "Define key templates for /dray/v1/cluster/",
+      "Define key templates for /dray/v1/topics/",
+      "Define key templates for /dray/v1/streams/",
+      "Define key templates for /dray/v1/groups/",
+      "Define key templates for /wal/ and /compaction/",
+      "Write unit tests for all key formats"
+    ],
+    "depends_on": ["keyspace-encoders"],
+    "scope": ["internal/metadata/keys/"],
+    "passes": false
+  },
+  {
+    "id": "s3-object-store-adapter",
+    "category": "storage",
+    "description": "Implement S3-compatible object store adapter with all required operations",
+    "steps": [
+      "Import AWS SDK for Go v2",
+      "Implement Put with content type and metadata",
+      "Implement Get with full object retrieval",
+      "Implement GetRange for byte-range reads",
+      "Implement Head for metadata-only retrieval",
+      "Implement Delete for object removal",
+      "Implement multipart upload for large objects",
+      "Test against MinIO or LocalStack"
+    ],
+    "depends_on": ["object-store-interface"],
+    "scope": ["internal/objectstore/s3/"],
+    "passes": false
+  },
+  {
+    "id": "wal-format-encoder",
+    "category": "storage",
+    "description": "Implement WAL v1 binary format encoder per spec section 5.2.2",
+    "steps": [
+      "Implement header encoding (49 bytes fixed)",
+      "Write magic bytes 'DRAYWO1' and version",
+      "Encode walId UUID, metaDomain, createdAtUnixMs",
+      "Encode chunkCount and chunkIndexOffset",
+      "Implement chunk index encoding sorted by streamId",
+      "Implement chunk body encoding with batch entries",
+      "Add CRC32C footer calculation"
+    ],
+    "depends_on": ["project-setup"],
+    "scope": ["internal/wal/"],
+    "passes": false
+  },
+  {
+    "id": "wal-format-decoder",
+    "category": "storage",
+    "description": "Implement WAL v1 binary format decoder with validation",
+    "steps": [
+      "Implement header parsing and magic validation",
+      "Parse chunk index entries",
+      "Parse chunk bodies and batch entries",
+      "Validate CRC32C footer",
+      "Return structured WAL data with all fields"
+    ],
+    "depends_on": ["wal-format-encoder"],
+    "scope": ["internal/wal/"],
+    "passes": false
+  },
+  {
+    "id": "wal-roundtrip-test",
+    "category": "storage",
+    "description": "Verify WAL encode/decode round-trip preserves all data",
+    "steps": [
+      "Create test WAL with multiple streams",
+      "Encode to bytes",
+      "Decode from bytes",
+      "Verify all fields match original",
+      "Test with various batch sizes and stream counts"
+    ],
+    "depends_on": ["wal-format-decoder"],
+    "scope": ["internal/wal/"],
+    "passes": false
+  },
+  {
+    "id": "wal-fuzz-test",
+    "category": "storage",
+    "description": "Implement fuzz testing for WAL parser to find edge cases",
+    "steps": [
+      "Create go fuzz test for WAL decoder",
+      "Run fuzzer for minimum 1 minute",
+      "Verify no panics on malformed input",
+      "Verify decoder returns errors for invalid data"
+    ],
+    "depends_on": ["wal-format-decoder"],
+    "scope": ["internal/wal/"],
+    "passes": false
+  },
+  {
+    "id": "wal-writer",
+    "category": "storage",
+    "description": "Implement WAL writer that batches multi-stream entries sorted by streamId",
+    "steps": [
+      "Accept record batches from multiple streams",
+      "Sort entries by streamId before writing",
+      "Enforce MetaDomain constraint (same domain only)",
+      "Write WAL object to object storage",
+      "Return WAL metadata (walId, path, offsets)"
+    ],
+    "depends_on": ["wal-format-encoder", "s3-object-store-adapter"],
+    "scope": ["internal/wal/"],
+    "passes": false
+  },
+  {
+    "id": "wal-metadomain-isolation",
+    "category": "storage",
+    "description": "Verify WAL writer enforces MetaDomain isolation - different domains never mix in same WAL",
+    "steps": [
+      "Attempt to add streams from different MetaDomains",
+      "Verify error is returned rejecting mixed domains",
+      "Confirm single-domain WAL writes succeed"
+    ],
+    "depends_on": ["wal-writer"],
+    "scope": ["internal/wal/"],
+    "passes": false
+  },
+  {
+    "id": "wal-staging-marker",
+    "category": "storage",
+    "description": "Implement WAL staging marker for orphan detection per spec section 9.7",
+    "steps": [
+      "Write staging key before WAL object write completes",
+      "Key format: /wal/staging/<metaDomain>/<walId>",
+      "Value contains path, createdAt, sizeBytes",
+      "Delete staging key in commit transaction"
+    ],
+    "depends_on": ["wal-writer", "oxia-client-wrapper"],
+    "scope": ["internal/wal/"],
+    "passes": false
+  },
+  {
+    "id": "metadomain-calculation",
+    "category": "metadata",
+    "description": "Implement MetaDomain hash calculation for streams",
+    "steps": [
+      "Define metaDomain = Hash(streamId) % NumDomains",
+      "Implement consistent hash function",
+      "Configure NumDomains via config",
+      "Test same streamId always maps to same domain"
+    ],
+    "depends_on": ["config-system"],
+    "scope": ["internal/metadata/"],
+    "passes": false
+  },
+  {
+    "id": "stream-creation",
+    "category": "metadata",
+    "description": "Implement stream creation with streamId assignment and initial hwm",
+    "steps": [
+      "Generate UUID for new stream",
+      "Create /dray/v1/streams/<streamId>/hwm with value 0",
+      "Store stream metadata in partition key",
+      "Return streamId for partition"
+    ],
+    "depends_on": ["oxia-cas-transactions", "keyspace-schema"],
+    "scope": ["internal/index/"],
+    "passes": false
+  },
+  {
+    "id": "hwm-maintenance",
+    "category": "metadata",
+    "description": "Implement high watermark (hwm) read and atomic update",
+    "steps": [
+      "Read /dray/v1/streams/<streamId>/hwm",
+      "Support atomic increment via CAS",
+      "Cache hwm with revision stamping",
+      "Invalidate cache on notification"
+    ],
+    "depends_on": ["stream-creation", "oxia-notifications"],
+    "scope": ["internal/index/"],
+    "passes": false
+  },
+  {
+    "id": "offset-index-append",
+    "category": "metadata",
+    "description": "Implement offset index entry append with atomic transaction",
+    "steps": [
+      "Read current hwm with version",
+      "Allocate offset range: startOffset=hwm, endOffset=hwm+recordCount",
+      "Create index key with zero-padded offsetEnd and cumulativeSize",
+      "Create IndexEntry value with all fields per spec 6.3.3",
+      "Atomically update hwm and create index entry in transaction"
+    ],
+    "depends_on": ["hwm-maintenance", "keyspace-encoders"],
+    "scope": ["internal/index/"],
+    "passes": false
+  },
+  {
+    "id": "offset-index-lookup",
+    "category": "metadata",
+    "description": "Implement offset lookup: find smallest OffsetEnd > requested offset",
+    "steps": [
+      "Use List with range query starting at requested offset",
+      "Return first entry where endOffset > fetchOffset",
+      "Handle case where offset is beyond hwm",
+      "Support WAL and Parquet entry types"
+    ],
+    "depends_on": ["offset-index-append"],
+    "scope": ["internal/index/"],
+    "passes": false
+  },
+  {
+    "id": "index-cache",
+    "category": "metadata",
+    "description": "Implement index cache with revision stamping for session monotonicity",
+    "steps": [
+      "Cache recent index entries per stream",
+      "Stamp entries with Oxia revision",
+      "Bound cache by memory limit",
+      "Invalidate on notification or revision mismatch"
+    ],
+    "depends_on": ["offset-index-lookup", "oxia-notifications"],
+    "scope": ["internal/index/"],
+    "passes": false
+  },
+  {
+    "id": "concurrent-append-test",
+    "category": "metadata",
+    "description": "Test concurrent offset index appends produce monotonic, non-overlapping offsets",
+    "steps": [
+      "Run 2+ concurrent writers to same stream",
+      "Verify all offsets are monotonically increasing",
+      "Verify no offset ranges overlap",
+      "Verify total records equals sum of all appends"
+    ],
+    "depends_on": ["offset-index-append"],
+    "scope": ["internal/index/"],
+    "passes": false
+  },
+  {
+    "id": "tcp-server",
+    "category": "protocol",
+    "description": "Implement TCP server with Kafka wire protocol framing",
+    "steps": [
+      "Listen on configurable port (default 9092)",
+      "Accept TCP connections",
+      "Parse Kafka request frame: 4-byte length prefix",
+      "Parse header: apiKey, apiVersion, correlationId, clientId",
+      "Route to appropriate handler",
+      "Write framed response"
+    ],
+    "depends_on": ["config-system", "logging-framework"],
+    "scope": ["internal/server/"],
+    "passes": false
+  },
+  {
+    "id": "kmsg-integration",
+    "category": "protocol",
+    "description": "Integrate twmb/franz-go kmsg package for protocol types",
+    "steps": [
+      "Import github.com/twmb/franz-go/pkg/kmsg",
+      "Use New/Default initializers per franz-go guidance",
+      "Create request decoder using kmsg types",
+      "Create response encoder using kmsg types",
+      "Test decode/encode round-trip for sample requests"
+    ],
+    "depends_on": ["tcp-server"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "api-versions-handler",
+    "category": "protocol",
+    "description": "Implement ApiVersions (key 18) handler with supported API matrix",
+    "steps": [
+      "Create authoritative supported API version matrix",
+      "Return versions for all supported APIs",
+      "Exclude transaction/idempotence APIs per spec 14.3",
+      "Exclude inter-broker APIs per spec 14.4",
+      "Test response matches Kafka v4 client expectations"
+    ],
+    "depends_on": ["kmsg-integration"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "metadata-handler",
+    "category": "protocol",
+    "description": "Implement Metadata (key 3) request handler",
+    "steps": [
+      "Return cluster metadata (brokers, controller)",
+      "Return topic metadata (partitions, leaders)",
+      "Support topic auto-creation if configured",
+      "Apply zone filtering based on client.id zone_id",
+      "Set appropriate error codes for missing topics"
+    ],
+    "depends_on": ["api-versions-handler", "topic-metadata-storage"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "produce-handler",
+    "category": "protocol",
+    "description": "Implement Produce (key 0) request handler",
+    "steps": [
+      "Validate topic and partition exist",
+      "Reject idempotent/transactional requests with correct error",
+      "Buffer incoming record batches by MetaDomain",
+      "Trigger flush on size/linger threshold",
+      "Return offsets only after WAL + metadata commit",
+      "Set appropriate per-partition error codes"
+    ],
+    "depends_on": ["api-versions-handler", "produce-buffer", "produce-commit"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "produce-buffer",
+    "category": "produce",
+    "description": "Implement produce buffer with MetaDomain partitioning",
+    "steps": [
+      "Create per-MetaDomain buffer",
+      "Bound buffer by max_buffer_bytes",
+      "Track pending produce requests per buffer",
+      "Trigger flush on size threshold",
+      "Trigger flush on linger timeout"
+    ],
+    "depends_on": ["metadomain-calculation", "wal-writer"],
+    "scope": ["internal/produce/"],
+    "passes": false
+  },
+  {
+    "id": "produce-commit",
+    "category": "produce",
+    "description": "Implement atomic multi-stream produce commit transaction",
+    "steps": [
+      "Write WAL object to storage",
+      "Write staging marker before commit",
+      "Execute atomic transaction per spec 9.2",
+      "Allocate offsets for each stream chunk",
+      "Create offset index entries",
+      "Update hwm for each stream",
+      "Create WAL object record with refCount",
+      "Delete staging marker",
+      "Return assigned offsets"
+    ],
+    "depends_on": ["produce-buffer", "offset-index-append", "wal-staging-marker"],
+    "scope": ["internal/produce/"],
+    "passes": false
+  },
+  {
+    "id": "produce-validation",
+    "category": "produce",
+    "description": "Validate produce requests and reject unsupported features",
+    "steps": [
+      "Check topic exists, return UNKNOWN_TOPIC_OR_PARTITION if not",
+      "Check partition exists, return UNKNOWN_TOPIC_OR_PARTITION if not",
+      "Reject transactional requests with UNSUPPORTED_FOR_MESSAGE_FORMAT",
+      "Reject idempotent requests with appropriate error",
+      "Validate record batch format"
+    ],
+    "depends_on": ["produce-handler"],
+    "scope": ["internal/produce/"],
+    "passes": false
+  },
+  {
+    "id": "produce-idempotence-rejection",
+    "category": "produce",
+    "description": "Correctly reject idempotent producer requests per spec 2.2/14.3",
+    "steps": [
+      "Detect idempotent producer ID in request",
+      "Return appropriate error code",
+      "Log clear message about deferred feature",
+      "Verify Kafka clients handle rejection gracefully"
+    ],
+    "depends_on": ["produce-validation"],
+    "scope": ["internal/produce/"],
+    "passes": false
+  },
+  {
+    "id": "produce-failure-wal-write",
+    "category": "produce",
+    "description": "Handle WAL write failure: no metadata commit, return error",
+    "steps": [
+      "Simulate WAL write failure",
+      "Verify no metadata commit occurs",
+      "Verify produce error is returned to client",
+      "Verify buffer retries or discards appropriately"
+    ],
+    "depends_on": ["produce-commit"],
+    "scope": ["internal/produce/"],
+    "passes": false
+  },
+  {
+    "id": "produce-failure-metadata-commit",
+    "category": "produce",
+    "description": "Handle metadata commit failure: WAL is orphaned, return error",
+    "steps": [
+      "Simulate metadata commit failure after WAL write",
+      "Verify produce error is returned to client",
+      "Verify WAL staging marker remains for orphan GC",
+      "Verify no index entries created"
+    ],
+    "depends_on": ["produce-commit"],
+    "scope": ["internal/produce/"],
+    "passes": false
+  },
+  {
+    "id": "fetch-handler",
+    "category": "protocol",
+    "description": "Implement Fetch (key 1) request handler",
+    "steps": [
+      "Resolve streamId from topic/partition",
+      "Check fetchOffset against hwm",
+      "Find index entry for requested offset",
+      "Read data from WAL or Parquet",
+      "Apply record batch offset patching",
+      "Return batches up to maxBytes",
+      "Set high watermark in response"
+    ],
+    "depends_on": ["api-versions-handler", "offset-index-lookup", "fetch-wal-reader", "record-batch-patching"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "fetch-longpoll",
+    "category": "fetch",
+    "description": "Implement long-poll fetch waiting via Oxia notifications",
+    "steps": [
+      "If fetchOffset >= hwm and maxWaitMs > 0, wait",
+      "Subscribe to hwm notification for stream",
+      "Wake on hwm increase or timeout",
+      "Return empty if timeout and no new data"
+    ],
+    "depends_on": ["fetch-handler", "oxia-notifications"],
+    "scope": ["internal/fetch/"],
+    "passes": false
+  },
+  {
+    "id": "fetch-wal-reader",
+    "category": "fetch",
+    "description": "Read record batches from WAL objects",
+    "steps": [
+      "Use index entry to locate chunk in WAL",
+      "Range-read bytes from object storage",
+      "Parse chunk to extract relevant batches",
+      "Use batchIndex for efficient offset seeking",
+      "Return raw batch bytes for patching"
+    ],
+    "depends_on": ["wal-format-decoder", "s3-object-store-adapter"],
+    "scope": ["internal/fetch/"],
+    "passes": false
+  },
+  {
+    "id": "fetch-parquet-reader",
+    "category": "fetch",
+    "description": "Read records from compacted Parquet files and reconstruct Kafka batches",
+    "steps": [
+      "Use index entry to locate Parquet file",
+      "Read Parquet row groups for offset range",
+      "Reconstruct Kafka record batch from rows",
+      "Handle headers as ordered list correctly",
+      "Return uncompressed batches (v1 acceptable)"
+    ],
+    "depends_on": ["s3-object-store-adapter", "parquet-reader"],
+    "scope": ["internal/fetch/"],
+    "passes": false
+  },
+  {
+    "id": "record-batch-patching",
+    "category": "fetch",
+    "description": "Implement record batch baseOffset patching per spec 9.5",
+    "steps": [
+      "Locate baseOffset field in batch header",
+      "Patch with assigned start offset from index",
+      "Verify patching does not affect CRC",
+      "Validate record offset deltas are 0..n-1",
+      "Test round-trip: produce -> WAL -> fetch returns correct offsets"
+    ],
+    "depends_on": ["fetch-wal-reader"],
+    "scope": ["internal/fetch/"],
+    "passes": false
+  },
+  {
+    "id": "list-offsets-handler",
+    "category": "protocol",
+    "description": "Implement ListOffsets (key 2) handler for EARLIEST/LATEST/TIMESTAMP",
+    "steps": [
+      "Implement LATEST: return hwm (LEO, end-exclusive)",
+      "Implement EARLIEST: return smallest available offset",
+      "Implement TIMESTAMP: binary search using index entry timestamps",
+      "Use Parquet file stats when available",
+      "Fallback to WAL batchIndex timestamps"
+    ],
+    "depends_on": ["api-versions-handler", "hwm-maintenance", "offset-index-lookup"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "list-offsets-timestamp-test",
+    "category": "protocol",
+    "description": "Verify ListOffsets TIMESTAMP returns correct offset",
+    "steps": [
+      "Produce messages with known timestamps",
+      "Query ListOffsets for timestamp in middle",
+      "Verify returned offset is first record >= timestamp",
+      "Test edge cases: before first, after last"
+    ],
+    "depends_on": ["list-offsets-handler", "produce-handler"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "read-your-writes-test",
+    "category": "protocol",
+    "description": "Verify read-your-writes invariant I2: fetch sees produced records immediately",
+    "steps": [
+      "Produce records and wait for ack",
+      "Immediately fetch from same connection",
+      "Verify fetched records include just-produced data",
+      "Verify offsets match acked offsets"
+    ],
+    "depends_on": ["produce-handler", "fetch-handler"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "produce-fetch-integration-test",
+    "category": "protocol",
+    "description": "Integration test: produce and fetch single partition with Kafka client",
+    "steps": [
+      "Start Dray broker",
+      "Use franz-go or Kafka client to produce messages",
+      "Use client to fetch messages",
+      "Verify message content matches",
+      "Verify offsets are monotonically increasing"
+    ],
+    "depends_on": ["produce-handler", "fetch-handler"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "topic-metadata-storage",
+    "category": "topics",
+    "description": "Implement topic metadata storage in Oxia",
+    "steps": [
+      "Store topic at /dray/v1/topics/<topicName>",
+      "Store topicId UUID, partition count, config",
+      "Store partition entries at /dray/v1/topics/<topicName>/partitions/<p>",
+      "Include streamId, state, createdAt per partition"
+    ],
+    "depends_on": ["oxia-cas-transactions", "keyspace-schema"],
+    "scope": ["internal/topics/"],
+    "passes": false
+  },
+  {
+    "id": "create-topics-handler",
+    "category": "protocol",
+    "description": "Implement CreateTopics (key 19) handler",
+    "steps": [
+      "Create topic metadata in Oxia",
+      "Create stream entries for each partition",
+      "Initialize hwm to 0 for each stream",
+      "Create Iceberg table if duality mode enabled",
+      "Return success or per-topic error codes"
+    ],
+    "depends_on": ["api-versions-handler", "topic-metadata-storage", "stream-creation"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "delete-topics-handler",
+    "category": "protocol",
+    "description": "Implement DeleteTopics (key 20) handler",
+    "steps": [
+      "Mark topic for deletion in metadata",
+      "Schedule cleanup of WAL/Parquet data",
+      "Remove topic from Iceberg catalog if enabled",
+      "Return success or error codes"
+    ],
+    "depends_on": ["api-versions-handler", "topic-metadata-storage"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "topic-config-storage",
+    "category": "topics",
+    "description": "Implement topic configuration storage and validation",
+    "steps": [
+      "Support retention.ms, retention.bytes configs",
+      "Support cleanup.policy (delete/compact)",
+      "Accept but ignore min.insync.replicas, replication.factor",
+      "Validate config values",
+      "Store in topic metadata"
+    ],
+    "depends_on": ["topic-metadata-storage"],
+    "scope": ["internal/topics/"],
+    "passes": false
+  },
+  {
+    "id": "describe-configs-handler",
+    "category": "protocol",
+    "description": "Implement DescribeConfigs (key 32) handler",
+    "steps": [
+      "Return topic/broker configs",
+      "Include supported config keys",
+      "Set read-only flag for immutable configs",
+      "Return UNKNOWN_TOPIC_OR_PARTITION for missing resources"
+    ],
+    "depends_on": ["api-versions-handler", "topic-config-storage"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "alter-configs-handler",
+    "category": "protocol",
+    "description": "Implement AlterConfigs/IncrementalAlterConfigs (key 44) handler",
+    "steps": [
+      "Update topic configs atomically",
+      "Validate new config values",
+      "Return error for invalid configs",
+      "Support incremental updates"
+    ],
+    "depends_on": ["api-versions-handler", "topic-config-storage"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "describe-cluster-handler",
+    "category": "protocol",
+    "description": "Implement DescribeCluster (key 60) handler",
+    "steps": [
+      "Return cluster ID",
+      "Return broker list with endpoints",
+      "Return controller ID (any broker for Dray)"
+    ],
+    "depends_on": ["api-versions-handler", "broker-registration"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "broker-registration",
+    "category": "routing",
+    "description": "Implement broker registration with ephemeral keys in Oxia",
+    "steps": [
+      "Write ephemeral key /dray/v1/cluster/<clusterId>/brokers/<brokerId>",
+      "Include zoneId, advertisedListeners, startedAt, buildInfo",
+      "Key expires when broker session ends",
+      "Other brokers discover via List"
+    ],
+    "depends_on": ["oxia-ephemeral-keys", "keyspace-schema"],
+    "scope": ["internal/server/"],
+    "passes": false
+  },
+  {
+    "id": "zone-id-parsing",
+    "category": "routing",
+    "description": "Parse zone_id from Kafka client.id per spec 7.1",
+    "steps": [
+      "Parse client.id as comma-separated k=v pairs",
+      "Extract zone_id value",
+      "Store zone in connection context",
+      "Handle missing or invalid zone_id gracefully"
+    ],
+    "depends_on": ["tcp-server"],
+    "scope": ["internal/server/"],
+    "passes": false
+  },
+  {
+    "id": "zone-filtered-metadata",
+    "category": "routing",
+    "description": "Return zone-filtered broker list in Metadata response",
+    "steps": [
+      "Filter brokers by client zone_id",
+      "Return only same-zone brokers if available",
+      "Fallback to all brokers if no zone match",
+      "Assign partition leaders from same zone"
+    ],
+    "depends_on": ["metadata-handler", "zone-id-parsing", "broker-registration"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "zone-filtered-coordinator",
+    "category": "routing",
+    "description": "Return zone-filtered coordinator in FindCoordinator response",
+    "steps": [
+      "Select coordinator from client's zone",
+      "Use deterministic hash for consistency",
+      "Fallback to any broker if zone has none"
+    ],
+    "depends_on": ["find-coordinator-handler", "zone-id-parsing"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "partition-affinity-mapping",
+    "category": "routing",
+    "description": "Implement deterministic partition affinity using rendezvous hash",
+    "steps": [
+      "For each (zoneId, streamId), compute affinity broker",
+      "Use RendezvousHash(zoneBrokers, streamId)",
+      "Return affinity broker as partition leader",
+      "Update on broker membership changes"
+    ],
+    "depends_on": ["zone-filtered-metadata", "broker-registration"],
+    "scope": ["internal/routing/"],
+    "passes": false
+  },
+  {
+    "id": "zone-filtering-test",
+    "category": "routing",
+    "description": "Verify zone-aware routing returns only in-zone brokers",
+    "steps": [
+      "Register brokers in multiple zones",
+      "Connect client with zone_id set",
+      "Verify Metadata returns only same-zone brokers",
+      "Verify FindCoordinator returns same-zone coordinator"
+    ],
+    "depends_on": ["zone-filtered-metadata", "zone-filtered-coordinator"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "find-coordinator-handler",
+    "category": "protocol",
+    "description": "Implement FindCoordinator (key 10) handler for virtual coordinator",
+    "steps": [
+      "Accept group or transaction coordinator type",
+      "Reject transaction type with appropriate error",
+      "Use deterministic hash to select broker",
+      "Return broker from client's zone if possible"
+    ],
+    "depends_on": ["api-versions-handler", "broker-registration"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "group-state-storage",
+    "category": "groups",
+    "description": "Implement consumer group state storage in Oxia",
+    "steps": [
+      "Store /dray/v1/groups/<groupId>/type (classic|consumer)",
+      "Store /dray/v1/groups/<groupId>/state (generation, leader, etc)",
+      "Store /dray/v1/groups/<groupId>/members/<memberId>",
+      "Store /dray/v1/groups/<groupId>/assignment/<memberId>",
+      "Use atomic transactions for state changes"
+    ],
+    "depends_on": ["oxia-cas-transactions", "keyspace-schema"],
+    "scope": ["internal/groups/"],
+    "passes": false
+  },
+  {
+    "id": "group-coordinator-lease",
+    "category": "groups",
+    "description": "Implement lease-based coordinator ownership for group timers",
+    "steps": [
+      "Create ephemeral lease /groups/<groupId>/lease",
+      "Acquire lease with brokerId and epoch",
+      "Only lease holder runs session timeouts",
+      "Transfer lease on broker failure"
+    ],
+    "depends_on": ["group-state-storage", "oxia-ephemeral-keys"],
+    "scope": ["internal/groups/"],
+    "passes": false
+  },
+  {
+    "id": "join-group-handler",
+    "category": "protocol",
+    "description": "Implement JoinGroup (key 11) handler for classic groups",
+    "steps": [
+      "Register member with group",
+      "Determine if this member is leader",
+      "Wait for all members or timeout",
+      "Return member list to leader",
+      "Handle session timeouts"
+    ],
+    "depends_on": ["api-versions-handler", "group-state-storage", "group-coordinator-lease"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "sync-group-handler",
+    "category": "protocol",
+    "description": "Implement SyncGroup (key 14) handler for classic groups",
+    "steps": [
+      "Accept assignment from leader",
+      "Distribute assignment to members",
+      "Store assignment in metadata",
+      "Return assignment to requesting member"
+    ],
+    "depends_on": ["join-group-handler"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "heartbeat-handler",
+    "category": "protocol",
+    "description": "Implement Heartbeat (key 12) handler for classic groups",
+    "steps": [
+      "Update member last heartbeat time",
+      "Check group generation matches",
+      "Return error if rebalance in progress",
+      "Return error if member unknown"
+    ],
+    "depends_on": ["join-group-handler"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "leave-group-handler",
+    "category": "protocol",
+    "description": "Implement LeaveGroup (key 13) handler",
+    "steps": [
+      "Remove member from group",
+      "Trigger rebalance if needed",
+      "Clear member assignment",
+      "Return success"
+    ],
+    "depends_on": ["join-group-handler"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "describe-groups-handler",
+    "category": "protocol",
+    "description": "Implement DescribeGroups (key 15) handler",
+    "steps": [
+      "Return group state and members",
+      "Include protocol type and generation",
+      "Return member assignments",
+      "Handle UNKNOWN_MEMBER error"
+    ],
+    "depends_on": ["group-state-storage"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "list-groups-handler",
+    "category": "protocol",
+    "description": "Implement ListGroups (key 16) handler",
+    "steps": [
+      "List all groups on this broker/cluster",
+      "Return group IDs and protocol types",
+      "Support state filter if provided"
+    ],
+    "depends_on": ["group-state-storage"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "delete-groups-handler",
+    "category": "protocol",
+    "description": "Implement DeleteGroups (key 42) handler",
+    "steps": [
+      "Delete group if empty",
+      "Return error if group has active members",
+      "Clean up offsets for deleted group"
+    ],
+    "depends_on": ["group-state-storage"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "classic-range-assignor",
+    "category": "groups",
+    "description": "Implement range assignor for classic consumer groups",
+    "steps": [
+      "Sort partitions by topic-partition",
+      "Divide partitions equally among consumers",
+      "Handle remainder partitions",
+      "Return assignment per member"
+    ],
+    "depends_on": ["sync-group-handler"],
+    "scope": ["internal/groups/"],
+    "passes": false
+  },
+  {
+    "id": "classic-roundrobin-assignor",
+    "category": "groups",
+    "description": "Implement round-robin assignor for classic consumer groups",
+    "steps": [
+      "Sort partitions by topic-partition",
+      "Assign partitions round-robin to consumers",
+      "Return assignment per member"
+    ],
+    "depends_on": ["sync-group-handler"],
+    "scope": ["internal/groups/"],
+    "passes": false
+  },
+  {
+    "id": "session-timeout-sweep",
+    "category": "groups",
+    "description": "Implement session timeout sweep for group members",
+    "steps": [
+      "Only run on lease-holder broker",
+      "Check last heartbeat time per member",
+      "Remove members exceeding session timeout",
+      "Trigger rebalance on member removal"
+    ],
+    "depends_on": ["heartbeat-handler", "group-coordinator-lease"],
+    "scope": ["internal/groups/"],
+    "passes": false
+  },
+  {
+    "id": "classic-group-rebalance-test",
+    "category": "groups",
+    "description": "Test classic group rebalance with 2-3 consumers",
+    "steps": [
+      "Start group with 2 consumers",
+      "Verify both receive assignments",
+      "Add third consumer",
+      "Verify rebalance and all 3 have assignments",
+      "Remove one consumer",
+      "Verify rebalance redistributes partitions"
+    ],
+    "depends_on": ["join-group-handler", "sync-group-handler", "heartbeat-handler"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "kip848-heartbeat-handler",
+    "category": "protocol",
+    "description": "Implement ConsumerGroupHeartbeat (key 68) for KIP-848 consumer groups",
+    "steps": [
+      "Accept heartbeat with member epoch",
+      "Return assignment changes incrementally",
+      "Handle server-driven rebalance",
+      "Update member metadata"
+    ],
+    "depends_on": ["group-state-storage", "group-coordinator-lease"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "kip848-describe-handler",
+    "category": "protocol",
+    "description": "Implement ConsumerGroupDescribe (key 69) for KIP-848",
+    "steps": [
+      "Return detailed group state",
+      "Include member epochs and assignments",
+      "Return authorized operations"
+    ],
+    "depends_on": ["group-state-storage"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "kip848-uniform-assignor",
+    "category": "groups",
+    "description": "Implement uniform assignor for KIP-848 consumer groups",
+    "steps": [
+      "Balance partitions evenly across members",
+      "Minimize partition movement on rebalance",
+      "Support sticky behavior"
+    ],
+    "depends_on": ["kip848-heartbeat-handler"],
+    "scope": ["internal/groups/"],
+    "passes": false
+  },
+  {
+    "id": "kip848-range-assignor",
+    "category": "groups",
+    "description": "Implement range assignor for KIP-848 consumer groups",
+    "steps": [
+      "Assign partitions by range per topic",
+      "Support server-side assignment"
+    ],
+    "depends_on": ["kip848-heartbeat-handler"],
+    "scope": ["internal/groups/"],
+    "passes": false
+  },
+  {
+    "id": "kip848-protocol-interop",
+    "category": "groups",
+    "description": "Implement offline conversion between classic and consumer protocol types",
+    "steps": [
+      "Group protocol type is fixed once created",
+      "Only allow switch when group is empty",
+      "Return MISMATCHED_ENDPOINT_TYPE for wrong protocol",
+      "Log clear error message"
+    ],
+    "depends_on": ["join-group-handler", "kip848-heartbeat-handler"],
+    "scope": ["internal/groups/"],
+    "passes": false
+  },
+  {
+    "id": "kip848-integration-test",
+    "category": "groups",
+    "description": "Integration test KIP-848 consumer groups with Kafka 4 clients",
+    "steps": [
+      "Configure Kafka 4 client for new protocol",
+      "Create consumer group",
+      "Verify assignment received",
+      "Add/remove members",
+      "Verify incremental rebalance"
+    ],
+    "depends_on": ["kip848-heartbeat-handler", "kip848-uniform-assignor"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "offset-commit-handler",
+    "category": "protocol",
+    "description": "Implement OffsetCommit (key 8) handler",
+    "steps": [
+      "Store offset at /dray/v1/groups/<groupId>/offsets/<topic>/<partition>",
+      "Handle generation_id_or_member_epoch correctly",
+      "Support retention_time_ms",
+      "Validate group membership"
+    ],
+    "depends_on": ["api-versions-handler", "group-state-storage"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "offset-fetch-handler",
+    "category": "protocol",
+    "description": "Implement OffsetFetch (key 9) handler",
+    "steps": [
+      "Read offsets from metadata",
+      "Return per-partition offsets",
+      "Handle missing offsets gracefully",
+      "Support fetching for all topics"
+    ],
+    "depends_on": ["offset-commit-handler"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "offset-roundtrip-test",
+    "category": "protocol",
+    "description": "Test consumer offset commit and fetch round-trip",
+    "steps": [
+      "Commit offset for partition",
+      "Fetch offset for same partition",
+      "Verify offset matches committed value",
+      "Test with metadata field"
+    ],
+    "depends_on": ["offset-commit-handler", "offset-fetch-handler"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "offset-retention-sweeper",
+    "category": "groups",
+    "description": "Implement offset expiration sweeper based on retention_time_ms",
+    "steps": [
+      "Scan committed offsets periodically",
+      "Delete offsets older than retention time",
+      "Only run on coordinator lease holder"
+    ],
+    "depends_on": ["offset-commit-handler", "group-coordinator-lease"],
+    "scope": ["internal/groups/"],
+    "passes": false
+  },
+  {
+    "id": "compaction-planner",
+    "category": "compaction",
+    "description": "Implement compaction planner to select WAL entries for compaction",
+    "steps": [
+      "Query index entries for stream",
+      "Select contiguous WAL entries based on triggers",
+      "Apply max age, size, and file count policies",
+      "Return list of index entries to compact"
+    ],
+    "depends_on": ["offset-index-lookup", "config-system"],
+    "scope": ["internal/compaction/planner/"],
+    "passes": false
+  },
+  {
+    "id": "compaction-lock",
+    "category": "compaction",
+    "description": "Implement one-compactor-per-stream lock using ephemeral key",
+    "steps": [
+      "Acquire ephemeral lock /compaction/locks/<streamId>",
+      "Check lock before starting compaction",
+      "Release lock on completion or failure",
+      "Handle lock contention gracefully"
+    ],
+    "depends_on": ["oxia-ephemeral-keys"],
+    "scope": ["internal/compaction/"],
+    "passes": false
+  },
+  {
+    "id": "parquet-writer",
+    "category": "compaction",
+    "description": "Implement Parquet writer with correct schema per spec 5.3",
+    "steps": [
+      "Use parquet-go library",
+      "Write partition, offset, timestamp, key, value columns",
+      "Write headers as list<struct<key:string,value:binary>>",
+      "Write attributes column",
+      "Include nulls for producer_id, producer_epoch, base_sequence",
+      "Populate file-level min/max stats"
+    ],
+    "depends_on": ["project-setup"],
+    "scope": ["internal/compaction/worker/"],
+    "passes": false
+  },
+  {
+    "id": "parquet-reader",
+    "category": "compaction",
+    "description": "Implement Parquet reader for fetch path",
+    "steps": [
+      "Read Parquet file from object storage",
+      "Parse rows with correct schema",
+      "Handle headers list correctly",
+      "Support row group filtering by offset"
+    ],
+    "depends_on": ["parquet-writer", "s3-object-store-adapter"],
+    "scope": ["internal/fetch/"],
+    "passes": false
+  },
+  {
+    "id": "wal-to-parquet-converter",
+    "category": "compaction",
+    "description": "Read WAL entries and write to Parquet",
+    "steps": [
+      "Read WAL chunk for stream",
+      "Parse Kafka record batches",
+      "Decompress if needed",
+      "Extract records and convert to Parquet schema",
+      "Write Parquet file to object storage"
+    ],
+    "depends_on": ["fetch-wal-reader", "parquet-writer"],
+    "scope": ["internal/compaction/worker/"],
+    "passes": false
+  },
+  {
+    "id": "compaction-saga-state",
+    "category": "compaction",
+    "description": "Implement compaction saga state machine with durable progress markers",
+    "steps": [
+      "Create job state at /compaction/<streamId>/jobs/<jobId>",
+      "Track states: CREATED, PARQUET_WRITTEN, ICEBERG_COMMITTED, INDEX_SWAPPED, DONE",
+      "Persist state transitions atomically",
+      "Support recovery from any state"
+    ],
+    "depends_on": ["compaction-lock", "oxia-cas-transactions"],
+    "scope": ["internal/compaction/"],
+    "passes": false
+  },
+  {
+    "id": "compaction-index-swap",
+    "category": "compaction",
+    "description": "Implement atomic index swap: remove WAL entries, insert Parquet entry",
+    "steps": [
+      "Execute in single metadata transaction",
+      "Remove all old WAL index entries",
+      "Insert new Parquet index entry",
+      "Update cumulative size correctly",
+      "Decrement WAL object refcounts"
+    ],
+    "depends_on": ["compaction-saga-state", "offset-index-append"],
+    "scope": ["internal/compaction/"],
+    "passes": false
+  },
+  {
+    "id": "compaction-fetch-consistency-test",
+    "category": "compaction",
+    "description": "Verify fetch returns identical data before and after compaction",
+    "steps": [
+      "Produce records to stream",
+      "Fetch and record all data",
+      "Run compaction",
+      "Fetch again",
+      "Verify data is byte-for-byte identical"
+    ],
+    "depends_on": ["compaction-index-swap", "fetch-handler"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "compaction-crash-recovery-test",
+    "category": "compaction",
+    "description": "Test crash recovery at each saga state",
+    "steps": [
+      "Crash after PARQUET_WRITTEN, verify retry commits Iceberg",
+      "Crash after ICEBERG_COMMITTED, verify retry swaps index",
+      "Crash after INDEX_SWAPPED, verify retry marks DONE",
+      "Verify no data loss or duplication"
+    ],
+    "depends_on": ["compaction-saga-state"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "iceberg-rest-catalog-client",
+    "category": "iceberg",
+    "description": "Implement Iceberg REST catalog client",
+    "steps": [
+      "Implement REST API calls per Iceberg REST catalog spec",
+      "Support LoadTable, CreateTable, CommitTable",
+      "Handle authentication (basic, OAuth)",
+      "Parse snapshot and schema responses"
+    ],
+    "depends_on": ["iceberg-catalog-interface"],
+    "scope": ["internal/iceberg/catalog/"],
+    "passes": false
+  },
+  {
+    "id": "iceberg-table-creation",
+    "category": "iceberg",
+    "description": "Create Iceberg table when topic is created (duality mode)",
+    "steps": [
+      "Create table with schema per spec 5.3",
+      "Set partition spec (partition identity)",
+      "Set table properties (dray.topic, dray.cluster_id)",
+      "Handle table already exists gracefully"
+    ],
+    "depends_on": ["iceberg-rest-catalog-client", "create-topics-handler"],
+    "scope": ["internal/iceberg/"],
+    "passes": false
+  },
+  {
+    "id": "iceberg-append-files",
+    "category": "iceberg",
+    "description": "Commit Parquet data files to Iceberg table",
+    "steps": [
+      "Use AppendFiles operation",
+      "Include file path, size, record count, stats",
+      "Handle commit conflicts with retry",
+      "Verify snapshot is updated"
+    ],
+    "depends_on": ["iceberg-rest-catalog-client", "parquet-writer"],
+    "scope": ["internal/iceberg/"],
+    "passes": false
+  },
+  {
+    "id": "iceberg-commit-idempotency",
+    "category": "iceberg",
+    "description": "Ensure Iceberg commits are idempotent on retry",
+    "steps": [
+      "Use deterministic commitId or detect already-applied",
+      "Check snapshot properties for prior commit",
+      "Skip commit if already applied",
+      "Log clear message on idempotent skip"
+    ],
+    "depends_on": ["iceberg-append-files", "compaction-saga-state"],
+    "scope": ["internal/iceberg/"],
+    "passes": false
+  },
+  {
+    "id": "iceberg-lock",
+    "category": "iceberg",
+    "description": "Implement single-writer lock for Iceberg commits",
+    "steps": [
+      "Acquire ephemeral /iceberg/<topic>/lock before commit",
+      "Release after commit completes",
+      "Handle lock contention with retry"
+    ],
+    "depends_on": ["oxia-ephemeral-keys"],
+    "scope": ["internal/iceberg/"],
+    "passes": false
+  },
+  {
+    "id": "iceberg-parquet-match-test",
+    "category": "iceberg",
+    "description": "Verify Parquet files in Iceberg table match stream offsets",
+    "steps": [
+      "Produce records with known content",
+      "Run compaction with Iceberg commit",
+      "Query Iceberg table snapshot",
+      "Verify data files cover expected offsets"
+    ],
+    "depends_on": ["iceberg-append-files", "compaction-index-swap"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "duality-mode-config",
+    "category": "iceberg",
+    "description": "Implement table.iceberg.enabled config for duality mode",
+    "steps": [
+      "Add config option table.iceberg.enabled",
+      "Default to true (duality mode)",
+      "Skip Iceberg commits when disabled",
+      "Allow per-topic override"
+    ],
+    "depends_on": ["config-system"],
+    "scope": ["internal/iceberg/"],
+    "passes": false
+  },
+  {
+    "id": "produce-iceberg-down-test",
+    "category": "iceberg",
+    "description": "Verify produce/fetch remain available when Iceberg catalog is down",
+    "steps": [
+      "Configure duality mode",
+      "Make Iceberg catalog unreachable",
+      "Produce records successfully",
+      "Fetch records successfully",
+      "Verify compaction fails gracefully"
+    ],
+    "depends_on": ["produce-handler", "fetch-handler", "iceberg-append-files"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "wal-refcount-management",
+    "category": "gc",
+    "description": "Implement WAL object refcount increment and decrement",
+    "steps": [
+      "Set initial refCount = number of stream chunks on commit",
+      "Decrement refCount in same txn as index entry removal",
+      "Track refCount at /wal/objects/<metaDomain>/<walId>",
+      "Mark for GC when refCount reaches 0"
+    ],
+    "depends_on": ["produce-commit", "compaction-index-swap"],
+    "scope": ["internal/wal/"],
+    "passes": false
+  },
+  {
+    "id": "wal-gc-worker",
+    "category": "gc",
+    "description": "Implement WAL garbage collection worker",
+    "steps": [
+      "Scan /wal/gc/<metaDomain>/ for eligible objects",
+      "Check deleteAfterMs has passed",
+      "Delete object from object storage",
+      "Delete GC marker from metadata"
+    ],
+    "depends_on": ["wal-refcount-management", "s3-object-store-adapter"],
+    "scope": ["internal/gc/"],
+    "passes": false
+  },
+  {
+    "id": "wal-orphan-gc",
+    "category": "gc",
+    "description": "Implement WAL orphan garbage collection",
+    "steps": [
+      "Scan /wal/staging/<metaDomain>/ periodically",
+      "Identify staging markers older than wal.orphan_ttl",
+      "Delete orphaned WAL objects",
+      "Delete staging markers"
+    ],
+    "depends_on": ["wal-staging-marker", "s3-object-store-adapter"],
+    "scope": ["internal/gc/"],
+    "passes": false
+  },
+  {
+    "id": "parquet-gc",
+    "category": "gc",
+    "description": "Implement Parquet garbage collection after compaction rewrite",
+    "steps": [
+      "Track old Parquet files in compaction job state",
+      "Schedule deletion after job reaches DONE",
+      "Apply grace period before deletion",
+      "Delete from object storage"
+    ],
+    "depends_on": ["compaction-saga-state", "s3-object-store-adapter"],
+    "scope": ["internal/gc/"],
+    "passes": false
+  },
+  {
+    "id": "gc-safety-test",
+    "category": "gc",
+    "description": "Verify GC never deletes live data",
+    "steps": [
+      "Produce records to stream",
+      "Run compaction",
+      "Verify fetch still works",
+      "Trigger GC",
+      "Verify fetch still works after GC"
+    ],
+    "depends_on": ["wal-gc-worker", "parquet-gc"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "retention-policy",
+    "category": "gc",
+    "description": "Implement retention.ms and retention.bytes enforcement",
+    "steps": [
+      "Track oldest offset timestamp per stream",
+      "Schedule deletion of data older than retention.ms",
+      "Track cumulative bytes and delete beyond retention.bytes",
+      "Update index to remove deleted ranges"
+    ],
+    "depends_on": ["topic-config-storage", "wal-gc-worker"],
+    "scope": ["internal/gc/"],
+    "passes": false
+  },
+  {
+    "id": "tls-support",
+    "category": "security",
+    "description": "Implement TLS server certificate support",
+    "steps": [
+      "Load server certificate and key from config",
+      "Configure TLS listener",
+      "Support certificate reload without restart",
+      "Test with Kafka client over TLS"
+    ],
+    "depends_on": ["tcp-server", "config-system"],
+    "scope": ["internal/server/"],
+    "passes": false
+  },
+  {
+    "id": "sasl-plain-auth",
+    "category": "security",
+    "description": "Implement SASL/PLAIN authentication",
+    "steps": [
+      "Parse SASL handshake request",
+      "Extract username/password from PLAIN mechanism",
+      "Validate against configured credentials",
+      "Support credential sources (file, env)"
+    ],
+    "depends_on": ["tcp-server", "config-system"],
+    "scope": ["internal/auth/"],
+    "passes": false
+  },
+  {
+    "id": "acl-storage",
+    "category": "security",
+    "description": "Implement ACL storage in Oxia",
+    "steps": [
+      "Store ACLs at /dray/v1/acls/...",
+      "Support resource type, principal, operation, permission",
+      "Implement simple allow/deny rules",
+      "Cache ACLs with notification invalidation"
+    ],
+    "depends_on": ["oxia-cas-transactions"],
+    "scope": ["internal/auth/"],
+    "passes": false
+  },
+  {
+    "id": "acl-enforcement",
+    "category": "security",
+    "description": "Enforce ACLs on all API operations",
+    "steps": [
+      "Check ACLs before handling request",
+      "Return TOPIC_AUTHORIZATION_FAILED for denied access",
+      "Return GROUP_AUTHORIZATION_FAILED for denied group access",
+      "Log denied access attempts"
+    ],
+    "depends_on": ["acl-storage", "sasl-plain-auth"],
+    "scope": ["internal/auth/"],
+    "passes": false
+  },
+  {
+    "id": "health-liveness-endpoint",
+    "category": "observability",
+    "description": "Implement /healthz liveness endpoint",
+    "steps": [
+      "Return 200 OK when broker process is alive",
+      "Check critical goroutines are running",
+      "Return 503 if broker is shutting down"
+    ],
+    "depends_on": ["tcp-server"],
+    "scope": ["internal/server/"],
+    "passes": false
+  },
+  {
+    "id": "health-readiness-endpoint",
+    "category": "observability",
+    "description": "Implement /readyz readiness endpoint",
+    "steps": [
+      "Check Oxia connection is healthy",
+      "Check object store is reachable",
+      "Check compactor is healthy (if running)",
+      "Return 503 if any dependency is unhealthy"
+    ],
+    "depends_on": ["health-liveness-endpoint", "oxia-client-wrapper", "s3-object-store-adapter"],
+    "scope": ["internal/server/"],
+    "passes": false
+  },
+  {
+    "id": "produce-latency-metrics",
+    "category": "observability",
+    "description": "Implement produce latency metrics (p50, p99, p999)",
+    "steps": [
+      "Record produce request latency histogram",
+      "Break down by success/failure",
+      "Expose via Prometheus endpoint"
+    ],
+    "depends_on": ["metrics-skeleton", "produce-handler"],
+    "scope": ["internal/metrics/"],
+    "passes": false
+  },
+  {
+    "id": "fetch-latency-metrics",
+    "category": "observability",
+    "description": "Implement fetch latency metrics (p50, p99, p999)",
+    "steps": [
+      "Record fetch request latency histogram",
+      "Break down by WAL vs Parquet source",
+      "Expose via Prometheus endpoint"
+    ],
+    "depends_on": ["metrics-skeleton", "fetch-handler"],
+    "scope": ["internal/metrics/"],
+    "passes": false
+  },
+  {
+    "id": "wal-metrics",
+    "category": "observability",
+    "description": "Implement WAL flush size and latency metrics",
+    "steps": [
+      "Record WAL object size histogram",
+      "Record WAL flush latency histogram",
+      "Track WAL objects created per second"
+    ],
+    "depends_on": ["metrics-skeleton", "wal-writer"],
+    "scope": ["internal/metrics/"],
+    "passes": false
+  },
+  {
+    "id": "compaction-backlog-metrics",
+    "category": "observability",
+    "description": "Implement compaction backlog metrics",
+    "steps": [
+      "Track WAL bytes pending compaction",
+      "Track WAL files pending compaction",
+      "Alert when backlog exceeds threshold"
+    ],
+    "depends_on": ["metrics-skeleton", "compaction-planner"],
+    "scope": ["internal/metrics/"],
+    "passes": false
+  },
+  {
+    "id": "gc-backlog-metrics",
+    "category": "observability",
+    "description": "Implement GC backlog metrics",
+    "steps": [
+      "Track orphan WAL count",
+      "Track pending WAL deletes",
+      "Track pending Parquet deletes"
+    ],
+    "depends_on": ["metrics-skeleton", "wal-gc-worker"],
+    "scope": ["internal/metrics/"],
+    "passes": false
+  },
+  {
+    "id": "oxia-latency-metrics",
+    "category": "observability",
+    "description": "Implement Oxia operation latency metrics",
+    "steps": [
+      "Record Get/Put/Txn latency histograms",
+      "Track retry counts",
+      "Break down by operation type"
+    ],
+    "depends_on": ["metrics-skeleton", "oxia-client-wrapper"],
+    "scope": ["internal/metrics/"],
+    "passes": false
+  },
+  {
+    "id": "object-store-latency-metrics",
+    "category": "observability",
+    "description": "Implement object store read/write latency metrics",
+    "steps": [
+      "Record Put latency histogram",
+      "Record Get/GetRange latency histogram",
+      "Track bytes transferred"
+    ],
+    "depends_on": ["metrics-skeleton", "s3-object-store-adapter"],
+    "scope": ["internal/metrics/"],
+    "passes": false
+  },
+  {
+    "id": "connection-metrics",
+    "category": "observability",
+    "description": "Implement active connection and request rate metrics",
+    "steps": [
+      "Track active TCP connections",
+      "Track requests per second by API type",
+      "Track request error rate"
+    ],
+    "depends_on": ["metrics-skeleton", "tcp-server"],
+    "scope": ["internal/metrics/"],
+    "passes": false
+  },
+  {
+    "id": "drayd-broker-mode",
+    "category": "operations",
+    "description": "Implement drayd broker mode command",
+    "steps": [
+      "Parse 'drayd broker' command",
+      "Start Kafka protocol server",
+      "Register broker with Oxia",
+      "Handle graceful shutdown"
+    ],
+    "depends_on": ["tcp-server", "broker-registration"],
+    "scope": ["cmd/drayd/"],
+    "passes": false
+  },
+  {
+    "id": "drayd-compactor-mode",
+    "category": "operations",
+    "description": "Implement drayd compactor mode command",
+    "steps": [
+      "Parse 'drayd compactor' command",
+      "Start compaction worker loop",
+      "Process streams based on triggers",
+      "Handle graceful shutdown"
+    ],
+    "depends_on": ["compaction-planner", "wal-to-parquet-converter", "compaction-index-swap"],
+    "scope": ["cmd/drayd/"],
+    "passes": false
+  },
+  {
+    "id": "drayd-admin-cli",
+    "category": "operations",
+    "description": "Implement drayd admin CLI commands",
+    "steps": [
+      "Implement topic management commands",
+      "Implement group management commands",
+      "Implement config management commands",
+      "Implement diagnostic commands"
+    ],
+    "depends_on": ["project-setup"],
+    "scope": ["cmd/drayd/"],
+    "passes": false
+  },
+  {
+    "id": "invariant-i1-test",
+    "category": "testing",
+    "description": "Test invariant I1: produced offsets strictly increase per partition",
+    "steps": [
+      "Produce many records to single partition",
+      "Verify all offsets are strictly increasing",
+      "Test with concurrent producers"
+    ],
+    "depends_on": ["produce-handler", "fetch-handler"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "invariant-i3-test",
+    "category": "testing",
+    "description": "Test invariant I3: crash after WAL write, before metadata commit -> records not visible",
+    "steps": [
+      "Write WAL object successfully",
+      "Simulate crash before metadata commit",
+      "Restart broker",
+      "Verify records are not visible via fetch"
+    ],
+    "depends_on": ["produce-failure-metadata-commit"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "invariant-i4-test",
+    "category": "testing",
+    "description": "Test invariant I4: crash after metadata commit -> duplicates possible but offsets monotonic",
+    "steps": [
+      "Complete metadata commit",
+      "Simulate crash before response",
+      "Client retries produce",
+      "Verify duplicates may exist but offsets are monotonic"
+    ],
+    "depends_on": ["produce-handler"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "invariant-i5-test",
+    "category": "testing",
+    "description": "Test invariant I5: compaction index swap atomicity",
+    "steps": [
+      "Produce records",
+      "Start fetch in concurrent thread",
+      "Run compaction",
+      "Verify fetch never sees partial index state",
+      "Verify all records are returned correctly"
+    ],
+    "depends_on": ["compaction-index-swap", "fetch-handler"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "invariant-i6-test",
+    "category": "testing",
+    "description": "Test invariant I6: zone-aware metadata returns only zone brokers",
+    "steps": [
+      "Register brokers in multiple zones",
+      "Send Metadata with zone_id in client.id",
+      "Verify only same-zone brokers returned",
+      "Verify fallback to all when no zone match"
+    ],
+    "depends_on": ["zone-filtering-test"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "compatibility-harness",
+    "category": "testing",
+    "description": "Build Kafka client compatibility test harness",
+    "steps": [
+      "Set up test framework with franz-go client",
+      "Create test cases for produce/consume",
+      "Create test cases for consumer groups",
+      "Create test cases for admin operations",
+      "Verify results match expected Kafka semantics"
+    ],
+    "depends_on": ["produce-handler", "fetch-handler", "join-group-handler"],
+    "scope": ["tests/compatibility/"],
+    "passes": false
+  },
+  {
+    "id": "golden-test-produce-fetch",
+    "category": "testing",
+    "description": "Create golden tests for produce/fetch against Kafka broker output",
+    "steps": [
+      "Record Kafka broker responses for test scenarios",
+      "Run same scenarios against Dray",
+      "Compare response fields match"
+    ],
+    "depends_on": ["compatibility-harness"],
+    "scope": ["tests/compatibility/"],
+    "passes": false
+  },
+  {
+    "id": "golden-test-groups",
+    "category": "testing",
+    "description": "Create golden tests for group coordination against Kafka broker output",
+    "steps": [
+      "Record Kafka broker rebalance sequences",
+      "Run same sequences against Dray",
+      "Compare state transitions and responses"
+    ],
+    "depends_on": ["compatibility-harness"],
+    "scope": ["tests/compatibility/"],
+    "passes": false
+  },
+  {
+    "id": "property-test-offset-index",
+    "category": "testing",
+    "description": "Property-based testing for offset index state machine",
+    "steps": [
+      "Generate random sequences of append operations",
+      "Verify offsets are always monotonic",
+      "Verify lookups return correct entries",
+      "Test with concurrent operations"
+    ],
+    "depends_on": ["offset-index-append", "offset-index-lookup"],
+    "scope": ["tests/property/"],
+    "passes": false
+  },
+  {
+    "id": "property-test-groups",
+    "category": "testing",
+    "description": "Property-based testing for group coordinator state machine",
+    "steps": [
+      "Generate random sequences of join/leave/heartbeat",
+      "Verify state machine invariants hold",
+      "Test with concurrent member operations"
+    ],
+    "depends_on": ["join-group-handler", "heartbeat-handler"],
+    "scope": ["tests/property/"],
+    "passes": false
+  },
+  {
+    "id": "transaction-api-rejection",
+    "category": "protocol",
+    "description": "Reject transaction APIs with correct error codes",
+    "steps": [
+      "Handle AddPartitionsToTxn, return UNSUPPORTED_VERSION",
+      "Handle AddOffsetsToTxn, return UNSUPPORTED_VERSION",
+      "Handle EndTxn, return UNSUPPORTED_VERSION",
+      "Handle TxnOffsetCommit, return UNSUPPORTED_VERSION",
+      "Log clear message about deferred feature"
+    ],
+    "depends_on": ["api-versions-handler"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "inter-broker-api-rejection",
+    "category": "protocol",
+    "description": "Reject inter-broker/controller APIs",
+    "steps": [
+      "Handle LeaderAndIsr, return UNSUPPORTED_VERSION",
+      "Handle StopReplica, return UNSUPPORTED_VERSION",
+      "Handle UpdateMetadata, return UNSUPPORTED_VERSION",
+      "Do not advertise these in ApiVersions"
+    ],
+    "depends_on": ["api-versions-handler"],
+    "scope": ["internal/protocol/"],
+    "passes": false
+  },
+  {
+    "id": "broker-crash-mid-rebalance-test",
+    "category": "testing",
+    "description": "Test broker crash during group rebalance",
+    "steps": [
+      "Start rebalance with 2 consumers",
+      "Crash broker mid-rebalance",
+      "Start new broker",
+      "Verify rebalance completes successfully",
+      "Verify no data loss"
+    ],
+    "depends_on": ["classic-group-rebalance-test", "group-coordinator-lease"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "object-range-cache",
+    "category": "fetch",
+    "description": "Implement object range cache for recent WAL slices",
+    "steps": [
+      "Cache recent WAL byte ranges",
+      "Bound cache by memory",
+      "Implement LRU or similar eviction",
+      "Invalidate on notification"
+    ],
+    "depends_on": ["fetch-wal-reader"],
+    "scope": ["internal/fetch/"],
+    "passes": false
+  },
+  {
+    "id": "notification-stream-restart",
+    "category": "metadata",
+    "description": "Handle notification stream restart with state re-check",
+    "steps": [
+      "Detect notification stream disconnection",
+      "Re-check hwm on reconnect",
+      "Ensure no updates are missed",
+      "Log reconnection events"
+    ],
+    "depends_on": ["oxia-notifications", "hwm-maintenance"],
+    "scope": ["internal/metadata/"],
+    "passes": false
+  },
+  {
+    "id": "graceful-shutdown",
+    "category": "operations",
+    "description": "Implement graceful broker shutdown",
+    "steps": [
+      "Stop accepting new connections",
+      "Drain in-flight requests",
+      "Flush pending WAL buffers",
+      "Deregister from broker list",
+      "Close Oxia and object store connections"
+    ],
+    "depends_on": ["tcp-server", "produce-buffer", "broker-registration"],
+    "scope": ["internal/server/"],
+    "passes": false
+  },
+  {
+    "id": "multi-zone-deployment-test",
+    "category": "testing",
+    "description": "Test multi-zone deployment scenario",
+    "steps": [
+      "Deploy brokers across 3 zones",
+      "Connect clients from each zone",
+      "Verify zone-local routing works",
+      "Verify cross-zone fallback works",
+      "Verify produce/fetch across zones"
+    ],
+    "depends_on": ["zone-filtering-test", "produce-handler", "fetch-handler"],
+    "scope": ["tests/integration/"],
+    "passes": false
+  },
+  {
+    "id": "batch-index-efficient-lookup",
+    "category": "fetch",
+    "description": "Implement efficient offset lookup using batchIndex in WAL entries",
+    "steps": [
+      "Store batchIndex in IndexEntry per spec 6.3.3",
+      "Use batchIndex to find first batch where lastOffset >= x",
+      "Avoid scanning whole chunk for offset",
+      "Test with large chunks"
+    ],
+    "depends_on": ["offset-index-append", "fetch-wal-reader"],
+    "scope": ["internal/fetch/"],
+    "passes": false
+  },
+  {
+    "id": "non-owner-request-handling",
+    "category": "routing",
+    "description": "Implement non-owner request handling policy",
+    "steps": [
+      "Default: serve anyway (any broker handles produce/fetch)",
+      "Optional: routing.enforce_owner=true mode",
+      "Return 'not leader' error when enforce mode enabled",
+      "Log affinity violations"
+    ],
+    "depends_on": ["partition-affinity-mapping"],
+    "scope": ["internal/routing/"],
+    "passes": false
+  }
+]

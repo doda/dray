@@ -1,0 +1,33 @@
+# Dray Project Progress Log
+
+## Project Summary
+Dray is a Golang implementation of a Kafka v4-compatible streaming system with:
+- Leaderless/stateless brokers using object-storage WAL + Oxia metadata
+- Stream-table duality with Iceberg integration
+- Zone-aware routing for multi-AZ deployments
+
+## Task Breakdown
+- Total tasks identified: 130
+- Categories: infrastructure (10), metadata (12), storage (12), protocol (25),
+  produce (8), fetch (8), topics (6), routing (8), groups (25), compaction (10),
+  iceberg (8), gc (6), security (5), observability (12), operations (3), testing (16)
+
+## Recommended Architecture
+- Go 1.21+ with modules
+- twmb/franz-go for Kafka protocol (kmsg package)
+- github.com/oxia-db/oxia for metadata
+- AWS SDK v2 for S3-compatible storage
+- apache/iceberg-go or parquet-go for Iceberg/Parquet
+
+## Implementation Order
+Start with project-setup, then follow spec phases:
+1. Phase 0: Foundations (config, logging, metrics, interfaces)
+2. Phase 1: Oxia integration (client, CAS, notifications, ephemerals)
+3. Phase 2: Object store + WAL format
+4. Phase 3: Offset index
+5. Phase 4: Kafka protocol + core APIs
+6. Phase 5-10: Zone routing, groups, compaction, hardening
+
+## Status
+- Planning complete: 2025-12-27
+- First working agent should start with "project-setup" task
