@@ -40,6 +40,36 @@ const (
 
 	// ClusterPrefix is the prefix for cluster metadata.
 	ClusterPrefix = Prefix + "/cluster"
+
+	// GroupsPrefix is the prefix for consumer group keys.
+	GroupsPrefix = Prefix + "/groups"
+
+	// ACLsPrefix is the prefix for ACL entries.
+	ACLsPrefix = Prefix + "/acls"
+
+	// WALStagingPrefix is the prefix for WAL staging markers.
+	// Format: /wal/staging/<metaDomain>/<walId>
+	WALStagingPrefix = "/wal/staging"
+
+	// WALObjectsPrefix is the prefix for WAL object records.
+	// Format: /wal/objects/<metaDomain>/<walId>
+	WALObjectsPrefix = "/wal/objects"
+
+	// WALGCPrefix is the prefix for WAL GC markers.
+	// Format: /wal/gc/<metaDomain>/<walId>
+	WALGCPrefix = "/wal/gc"
+
+	// CompactionLocksPrefix is the prefix for compaction stream locks (ephemeral).
+	// Format: /compaction/locks/<streamId>
+	CompactionLocksPrefix = "/compaction/locks"
+
+	// CompactionJobsPrefix is the prefix for compaction job state.
+	// Format: /compaction/<streamId>/jobs/<jobId>
+	CompactionJobsPrefix = "/compaction"
+
+	// IcebergLocksPrefix is the prefix for Iceberg commit locks (ephemeral).
+	// Format: /iceberg/<topic>/lock
+	IcebergLocksPrefix = "/iceberg"
 )
 
 // Common errors.
@@ -200,4 +230,424 @@ func TopicKeyPath(topicName string) string {
 // StreamMetaKeyPath returns the key for stream metadata.
 func StreamMetaKeyPath(streamID string) string {
 	return fmt.Sprintf("%s/%s/meta", StreamsPrefix, streamID)
+}
+
+// =============================================================================
+// Cluster and Broker Keys (§6.3.1)
+// =============================================================================
+
+// BrokerKeyPath returns the key for a broker registration (ephemeral).
+// Format: /dray/v1/cluster/<clusterId>/brokers/<brokerId>
+func BrokerKeyPath(clusterID, brokerID string) string {
+	return fmt.Sprintf("%s/%s/brokers/%s", ClusterPrefix, clusterID, brokerID)
+}
+
+// BrokersPrefix returns the prefix for listing all brokers in a cluster.
+func BrokersPrefix(clusterID string) string {
+	return fmt.Sprintf("%s/%s/brokers/", ClusterPrefix, clusterID)
+}
+
+// ClusterKeyPath returns the key for cluster metadata.
+func ClusterKeyPath(clusterID string) string {
+	return fmt.Sprintf("%s/%s", ClusterPrefix, clusterID)
+}
+
+// ParseBrokerKey parses a broker key into its components.
+// Returns ErrInvalidKey if the key is not a valid broker key.
+func ParseBrokerKey(key string) (clusterID, brokerID string, err error) {
+	prefix := ClusterPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return "", "", ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	parts := strings.Split(rest, "/brokers/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", ErrInvalidKey
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// =============================================================================
+// Topic and Partition Keys (§6.3.2)
+// =============================================================================
+
+// TopicPartitionKeyPath returns the key for a topic partition.
+// Format: /dray/v1/topics/<topicName>/partitions/<p>
+func TopicPartitionKeyPath(topicName string, partition int32) string {
+	return fmt.Sprintf("%s/%s/partitions/%d", TopicsPrefix, topicName, partition)
+}
+
+// TopicPartitionsPrefix returns the prefix for listing all partitions of a topic.
+func TopicPartitionsPrefix(topicName string) string {
+	return fmt.Sprintf("%s/%s/partitions/", TopicsPrefix, topicName)
+}
+
+// ParseTopicPartitionKey parses a topic partition key.
+func ParseTopicPartitionKey(key string) (topicName string, partition int32, err error) {
+	prefix := TopicsPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return "", 0, ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	parts := strings.Split(rest, "/partitions/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", 0, ErrInvalidKey
+	}
+
+	p, err := strconv.ParseInt(parts[1], 10, 32)
+	if err != nil || p < 0 {
+		return "", 0, fmt.Errorf("%w: invalid partition number", ErrInvalidKey)
+	}
+
+	return parts[0], int32(p), nil
+}
+
+// =============================================================================
+// Compaction Task Keys (§6.3.5)
+// =============================================================================
+
+// CompactionTaskKeyPath returns the key for a compaction task.
+// Format: /dray/v1/streams/<streamId>/compaction/tasks/<taskId>
+func CompactionTaskKeyPath(streamID, taskID string) string {
+	return fmt.Sprintf("%s/%s/compaction/tasks/%s", StreamsPrefix, streamID, taskID)
+}
+
+// CompactionTasksPrefix returns the prefix for listing all compaction tasks for a stream.
+func CompactionTasksPrefix(streamID string) string {
+	return fmt.Sprintf("%s/%s/compaction/tasks/", StreamsPrefix, streamID)
+}
+
+// ParseCompactionTaskKey parses a compaction task key.
+func ParseCompactionTaskKey(key string) (streamID, taskID string, err error) {
+	prefix := StreamsPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return "", "", ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	parts := strings.Split(rest, "/compaction/tasks/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", ErrInvalidKey
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// =============================================================================
+// Consumer Group Keys (§6.3.6)
+// =============================================================================
+
+// GroupStateKeyPath returns the key for consumer group state.
+// Format: /dray/v1/groups/<groupId>/state
+func GroupStateKeyPath(groupID string) string {
+	return fmt.Sprintf("%s/%s/state", GroupsPrefix, groupID)
+}
+
+// GroupTypeKeyPath returns the key for consumer group type (classic|consumer).
+// Format: /dray/v1/groups/<groupId>/type
+func GroupTypeKeyPath(groupID string) string {
+	return fmt.Sprintf("%s/%s/type", GroupsPrefix, groupID)
+}
+
+// GroupMemberKeyPath returns the key for a consumer group member.
+// Format: /dray/v1/groups/<groupId>/members/<memberId>
+func GroupMemberKeyPath(groupID, memberID string) string {
+	return fmt.Sprintf("%s/%s/members/%s", GroupsPrefix, groupID, memberID)
+}
+
+// GroupMembersPrefix returns the prefix for listing all members of a group.
+func GroupMembersPrefix(groupID string) string {
+	return fmt.Sprintf("%s/%s/members/", GroupsPrefix, groupID)
+}
+
+// ParseGroupMemberKey parses a group member key.
+func ParseGroupMemberKey(key string) (groupID, memberID string, err error) {
+	prefix := GroupsPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return "", "", ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	parts := strings.Split(rest, "/members/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", ErrInvalidKey
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// GroupAssignmentKeyPath returns the key for a member's assignment.
+// Format: /dray/v1/groups/<groupId>/assignment/<memberId>
+func GroupAssignmentKeyPath(groupID, memberID string) string {
+	return fmt.Sprintf("%s/%s/assignment/%s", GroupsPrefix, groupID, memberID)
+}
+
+// GroupAssignmentsPrefix returns the prefix for listing all assignments in a group.
+func GroupAssignmentsPrefix(groupID string) string {
+	return fmt.Sprintf("%s/%s/assignment/", GroupsPrefix, groupID)
+}
+
+// GroupOffsetKeyPath returns the key for a committed offset.
+// Format: /dray/v1/groups/<groupId>/offsets/<topic>/<partition>
+func GroupOffsetKeyPath(groupID, topic string, partition int32) string {
+	return fmt.Sprintf("%s/%s/offsets/%s/%d", GroupsPrefix, groupID, topic, partition)
+}
+
+// GroupOffsetsPrefix returns the prefix for listing all offsets for a group.
+func GroupOffsetsPrefix(groupID string) string {
+	return fmt.Sprintf("%s/%s/offsets/", GroupsPrefix, groupID)
+}
+
+// GroupTopicOffsetsPrefix returns the prefix for listing all offsets for a topic in a group.
+func GroupTopicOffsetsPrefix(groupID, topic string) string {
+	return fmt.Sprintf("%s/%s/offsets/%s/", GroupsPrefix, groupID, topic)
+}
+
+// ParseGroupOffsetKey parses a group offset key.
+func ParseGroupOffsetKey(key string) (groupID, topic string, partition int32, err error) {
+	prefix := GroupsPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return "", "", 0, ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+
+	// Find /offsets/ separator
+	offsIdx := strings.Index(rest, "/offsets/")
+	if offsIdx == -1 {
+		return "", "", 0, ErrInvalidKey
+	}
+
+	groupID = rest[:offsIdx]
+	if groupID == "" {
+		return "", "", 0, ErrInvalidKey
+	}
+
+	// Parse topic/partition
+	remaining := rest[offsIdx+len("/offsets/"):]
+	lastSlash := strings.LastIndex(remaining, "/")
+	if lastSlash == -1 || lastSlash == 0 || lastSlash == len(remaining)-1 {
+		return "", "", 0, ErrInvalidKey
+	}
+
+	topic = remaining[:lastSlash]
+	partStr := remaining[lastSlash+1:]
+
+	p, err := strconv.ParseInt(partStr, 10, 32)
+	if err != nil || p < 0 {
+		return "", "", 0, fmt.Errorf("%w: invalid partition number", ErrInvalidKey)
+	}
+
+	return groupID, topic, int32(p), nil
+}
+
+// GroupKeyPath returns the key for a consumer group.
+func GroupKeyPath(groupID string) string {
+	return fmt.Sprintf("%s/%s", GroupsPrefix, groupID)
+}
+
+// =============================================================================
+// WAL Keys (§9)
+// =============================================================================
+
+// WALStagingKeyPath returns the key for a WAL staging marker.
+// Format: /wal/staging/<metaDomain>/<walId>
+func WALStagingKeyPath(metaDomain int, walID string) string {
+	return fmt.Sprintf("%s/%d/%s", WALStagingPrefix, metaDomain, walID)
+}
+
+// WALStagingDomainPrefix returns the prefix for listing all staging markers in a domain.
+func WALStagingDomainPrefix(metaDomain int) string {
+	return fmt.Sprintf("%s/%d/", WALStagingPrefix, metaDomain)
+}
+
+// ParseWALStagingKey parses a WAL staging key.
+func ParseWALStagingKey(key string) (metaDomain int, walID string, err error) {
+	prefix := WALStagingPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return 0, "", ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return 0, "", ErrInvalidKey
+	}
+
+	domain, err := strconv.Atoi(parts[0])
+	if err != nil || domain < 0 {
+		return 0, "", fmt.Errorf("%w: invalid meta domain", ErrInvalidKey)
+	}
+
+	return domain, parts[1], nil
+}
+
+// WALObjectKeyPath returns the key for a WAL object record.
+// Format: /wal/objects/<metaDomain>/<walId>
+func WALObjectKeyPath(metaDomain int, walID string) string {
+	return fmt.Sprintf("%s/%d/%s", WALObjectsPrefix, metaDomain, walID)
+}
+
+// WALObjectsDomainPrefix returns the prefix for listing all WAL objects in a domain.
+func WALObjectsDomainPrefix(metaDomain int) string {
+	return fmt.Sprintf("%s/%d/", WALObjectsPrefix, metaDomain)
+}
+
+// ParseWALObjectKey parses a WAL object key.
+func ParseWALObjectKey(key string) (metaDomain int, walID string, err error) {
+	prefix := WALObjectsPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return 0, "", ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return 0, "", ErrInvalidKey
+	}
+
+	domain, err := strconv.Atoi(parts[0])
+	if err != nil || domain < 0 {
+		return 0, "", fmt.Errorf("%w: invalid meta domain", ErrInvalidKey)
+	}
+
+	return domain, parts[1], nil
+}
+
+// WALGCKeyPath returns the key for a WAL GC marker.
+// Format: /wal/gc/<metaDomain>/<walId>
+func WALGCKeyPath(metaDomain int, walID string) string {
+	return fmt.Sprintf("%s/%d/%s", WALGCPrefix, metaDomain, walID)
+}
+
+// WALGCDomainPrefix returns the prefix for listing all WAL GC markers in a domain.
+func WALGCDomainPrefix(metaDomain int) string {
+	return fmt.Sprintf("%s/%d/", WALGCPrefix, metaDomain)
+}
+
+// ParseWALGCKey parses a WAL GC key.
+func ParseWALGCKey(key string) (metaDomain int, walID string, err error) {
+	prefix := WALGCPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return 0, "", ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return 0, "", ErrInvalidKey
+	}
+
+	domain, err := strconv.Atoi(parts[0])
+	if err != nil || domain < 0 {
+		return 0, "", fmt.Errorf("%w: invalid meta domain", ErrInvalidKey)
+	}
+
+	return domain, parts[1], nil
+}
+
+// =============================================================================
+// Compaction Lock Keys (§11)
+// =============================================================================
+
+// CompactionLockKeyPath returns the key for a compaction stream lock (ephemeral).
+// Format: /compaction/locks/<streamId>
+func CompactionLockKeyPath(streamID string) string {
+	return fmt.Sprintf("%s/%s", CompactionLocksPrefix, streamID)
+}
+
+// CompactionJobKeyPath returns the key for a compaction job state.
+// Format: /compaction/<streamId>/jobs/<jobId>
+func CompactionJobKeyPath(streamID, jobID string) string {
+	return fmt.Sprintf("%s/%s/jobs/%s", CompactionJobsPrefix, streamID, jobID)
+}
+
+// CompactionJobsForStreamPrefix returns the prefix for listing all jobs for a stream.
+func CompactionJobsForStreamPrefix(streamID string) string {
+	return fmt.Sprintf("%s/%s/jobs/", CompactionJobsPrefix, streamID)
+}
+
+// ParseCompactionJobKey parses a compaction job key.
+func ParseCompactionJobKey(key string) (streamID, jobID string, err error) {
+	prefix := CompactionJobsPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return "", "", ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	parts := strings.Split(rest, "/jobs/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", ErrInvalidKey
+	}
+
+	return parts[0], parts[1], nil
+}
+
+// =============================================================================
+// Iceberg Lock Keys (§11)
+// =============================================================================
+
+// IcebergLockKeyPath returns the key for an Iceberg commit lock (ephemeral).
+// Format: /iceberg/<topic>/lock
+func IcebergLockKeyPath(topic string) string {
+	return fmt.Sprintf("%s/%s/lock", IcebergLocksPrefix, topic)
+}
+
+// ParseIcebergLockKey parses an Iceberg lock key.
+func ParseIcebergLockKey(key string) (topic string, err error) {
+	prefix := IcebergLocksPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return "", ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	if !strings.HasSuffix(rest, "/lock") {
+		return "", ErrInvalidKey
+	}
+
+	topic = rest[:len(rest)-len("/lock")]
+	if topic == "" {
+		return "", ErrInvalidKey
+	}
+
+	return topic, nil
+}
+
+// =============================================================================
+// ACL Keys (§13)
+// =============================================================================
+
+// ACLKeyPath returns the key for an ACL entry.
+// Format: /dray/v1/acls/<resourceType>/<resourceName>/<principal>
+func ACLKeyPath(resourceType, resourceName, principal string) string {
+	return fmt.Sprintf("%s/%s/%s/%s", ACLsPrefix, resourceType, resourceName, principal)
+}
+
+// ACLResourcePrefix returns the prefix for listing all ACLs for a resource.
+func ACLResourcePrefix(resourceType, resourceName string) string {
+	return fmt.Sprintf("%s/%s/%s/", ACLsPrefix, resourceType, resourceName)
+}
+
+// ACLTypePrefix returns the prefix for listing all ACLs for a resource type.
+func ACLTypePrefix(resourceType string) string {
+	return fmt.Sprintf("%s/%s/", ACLsPrefix, resourceType)
+}
+
+// ParseACLKey parses an ACL key.
+func ParseACLKey(key string) (resourceType, resourceName, principal string, err error) {
+	prefix := ACLsPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return "", "", "", ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", "", "", ErrInvalidKey
+	}
+
+	return parts[0], parts[1], parts[2], nil
 }
