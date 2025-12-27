@@ -220,7 +220,7 @@
     "scope": [
       "internal/metadata/keys/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "keyspace-schema",
