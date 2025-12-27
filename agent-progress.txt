@@ -53,3 +53,4 @@ Start with project-setup, then follow spec phases:
 [2025-12-27T22:08:02.898Z] Completed s3-object-store-adapter: Implement S3-compatible object store adapter with all required operations
 [2025-12-27T22:32:42.114Z] Completed wal-writer: Implement WAL writer that batches multi-stream entries sorted by streamId
 [2025-12-27T22:44:05.421Z] Completed wal-metadomain-isolation: Verify WAL writer enforces MetaDomain isolation - different domains never mix in same WAL
+[2025-12-27T22:52:03.179Z] Completed api-versions-handler: Implement ApiVersions (key 18) handler with supported API matrix
