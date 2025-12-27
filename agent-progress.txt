@@ -54,3 +54,4 @@ Start with project-setup, then follow spec phases:
 [2025-12-27T22:32:42.114Z] Completed wal-writer: Implement WAL writer that batches multi-stream entries sorted by streamId
 [2025-12-27T22:44:05.421Z] Completed wal-metadomain-isolation: Verify WAL writer enforces MetaDomain isolation - different domains never mix in same WAL
 [2025-12-27T22:52:03.179Z] Completed api-versions-handler: Implement ApiVersions (key 18) handler with supported API matrix
+[2025-12-27T23:08:30.302Z] Completed produce-buffer: Implement produce buffer with MetaDomain partitioning
