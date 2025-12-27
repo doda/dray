@@ -76,6 +76,6 @@ tests/
 
 ## Key Files
 - `task_list.json` - Comprehensive task list with dependencies
-- `claude-progress.txt` - Progress log for agents
+- `agent-progress.txt` - Progress log for agents
 - `SPEC.md` - Full technical specification
 - `init.sh` - Project initialization script (to be implemented)
