@@ -1097,7 +1097,7 @@
     "scope": [
       "internal/server/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "zone-filtered-metadata",
