@@ -1807,7 +1807,7 @@
     "scope": [
       "internal/iceberg/catalog/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "iceberg-table-creation",
