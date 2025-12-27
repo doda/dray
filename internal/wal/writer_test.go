@@ -558,3 +558,202 @@ func TestDefaultPathFormatter(t *testing.T) {
 		})
 	}
 }
+
+// TestMetaDomainIsolation verifies WAL writer enforces MetaDomain isolation:
+// - Different domains never mix in same WAL
+// - Attempts to add streams from different MetaDomains are rejected
+// - Single-domain WAL writes succeed
+func TestMetaDomainIsolation(t *testing.T) {
+	t.Run("reject_mixed_domains_at_second_chunk", func(t *testing.T) {
+		store := newMockStore()
+		w := NewWriter(store, nil)
+		defer w.Close()
+
+		chunk1 := Chunk{
+			StreamID:       100,
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Batches:        []BatchEntry{{Data: []byte("domain-0-data")}},
+		}
+		chunk2 := Chunk{
+			StreamID:       200,
+			RecordCount:    5,
+			MinTimestampMs: 3000,
+			MaxTimestampMs: 4000,
+			Batches:        []BatchEntry{{Data: []byte("domain-1-data")}},
+		}
+
+		// First chunk establishes MetaDomain 0
+		err := w.AddChunk(chunk1, 0)
+		if err != nil {
+			t.Fatalf("First AddChunk failed: %v", err)
+		}
+
+		// Second chunk with different MetaDomain must be rejected
+		err = w.AddChunk(chunk2, 1)
+		if !errors.Is(err, ErrMetaDomainMismatch) {
+			t.Errorf("Expected ErrMetaDomainMismatch, got: %v", err)
+		}
+
+		// Writer should still have only 1 chunk (the rejected one was not added)
+		if w.ChunkCount() != 1 {
+			t.Errorf("ChunkCount = %d, want 1 (rejected chunk should not be added)", w.ChunkCount())
+		}
+	})
+
+	t.Run("reject_mixed_domains_at_third_chunk", func(t *testing.T) {
+		store := newMockStore()
+		w := NewWriter(store, nil)
+		defer w.Close()
+
+		// Add two chunks with same MetaDomain
+		for i := 0; i < 2; i++ {
+			chunk := Chunk{
+				StreamID:       uint64(100 + i),
+				RecordCount:    uint32(5 + i),
+				MinTimestampMs: int64(1000 * (i + 1)),
+				MaxTimestampMs: int64(2000 * (i + 1)),
+				Batches:        []BatchEntry{{Data: []byte("same-domain")}},
+			}
+			err := w.AddChunk(chunk, 5)
+			if err != nil {
+				t.Fatalf("AddChunk %d failed: %v", i, err)
+			}
+		}
+
+		// Third chunk with different MetaDomain must be rejected
+		chunk3 := Chunk{
+			StreamID:    300,
+			RecordCount: 15,
+			Batches:     []BatchEntry{{Data: []byte("different-domain")}},
+		}
+		err := w.AddChunk(chunk3, 99)
+		if !errors.Is(err, ErrMetaDomainMismatch) {
+			t.Errorf("Expected ErrMetaDomainMismatch, got: %v", err)
+		}
+
+		// Should still have 2 chunks
+		if w.ChunkCount() != 2 {
+			t.Errorf("ChunkCount = %d, want 2", w.ChunkCount())
+		}
+	})
+
+	t.Run("single_domain_write_succeeds", func(t *testing.T) {
+		store := newMockStore()
+		w := NewWriter(store, nil)
+		defer w.Close()
+
+		// Add multiple chunks all from MetaDomain 42
+		chunks := []Chunk{
+			{StreamID: 1, RecordCount: 5, Batches: []BatchEntry{{Data: []byte("chunk1")}}},
+			{StreamID: 2, RecordCount: 10, Batches: []BatchEntry{{Data: []byte("chunk2")}}},
+			{StreamID: 3, RecordCount: 15, Batches: []BatchEntry{{Data: []byte("chunk3")}}},
+		}
+
+		for i, chunk := range chunks {
+			err := w.AddChunk(chunk, 42)
+			if err != nil {
+				t.Fatalf("AddChunk %d failed: %v", i, err)
+			}
+		}
+
+		// Flush should succeed
+		result, err := w.Flush(context.Background())
+		if err != nil {
+			t.Fatalf("Flush failed: %v", err)
+		}
+
+		// Verify WAL was written with correct MetaDomain
+		if result.MetaDomain != 42 {
+			t.Errorf("MetaDomain = %d, want 42", result.MetaDomain)
+		}
+		if len(result.ChunkOffsets) != 3 {
+			t.Errorf("ChunkOffsets len = %d, want 3", len(result.ChunkOffsets))
+		}
+
+		// Verify WAL was written to storage
+		if len(store.objects) != 1 {
+			t.Errorf("Expected 1 object in store, got %d", len(store.objects))
+		}
+
+		// Verify the written WAL can be decoded and has correct domain
+		data := store.objects[result.Path]
+		decoded, err := DecodeFromBytes(data)
+		if err != nil {
+			t.Fatalf("Failed to decode WAL: %v", err)
+		}
+		if decoded.MetaDomain != 42 {
+			t.Errorf("Decoded MetaDomain = %d, want 42", decoded.MetaDomain)
+		}
+		if len(decoded.Chunks) != 3 {
+			t.Errorf("Decoded chunks = %d, want 3", len(decoded.Chunks))
+		}
+	})
+
+	t.Run("multiple_domains_different_writers", func(t *testing.T) {
+		store := newMockStore()
+
+		// Each writer handles a different MetaDomain
+		writers := make([]*Writer, 3)
+		for i := range writers {
+			writers[i] = NewWriter(store, nil)
+			defer writers[i].Close()
+		}
+
+		// Add chunks with different domains to different writers
+		for i, w := range writers {
+			domain := uint32(i * 10) // Domains: 0, 10, 20
+			chunk := Chunk{
+				StreamID:    uint64(100 + i),
+				RecordCount: uint32(5 + i),
+				Batches:     []BatchEntry{{Data: []byte("writer-specific-data")}},
+			}
+			err := w.AddChunk(chunk, domain)
+			if err != nil {
+				t.Fatalf("Writer %d AddChunk failed: %v", i, err)
+			}
+		}
+
+		// Flush all writers - each should succeed with its own domain
+		for i, w := range writers {
+			result, err := w.Flush(context.Background())
+			if err != nil {
+				t.Fatalf("Writer %d Flush failed: %v", i, err)
+			}
+			expectedDomain := uint32(i * 10)
+			if result.MetaDomain != expectedDomain {
+				t.Errorf("Writer %d MetaDomain = %d, want %d", i, result.MetaDomain, expectedDomain)
+			}
+		}
+
+		// Should have 3 separate WAL objects
+		if len(store.objects) != 3 {
+			t.Errorf("Expected 3 objects in store, got %d", len(store.objects))
+		}
+	})
+
+	t.Run("same_stream_different_domains_rejected", func(t *testing.T) {
+		store := newMockStore()
+		w := NewWriter(store, nil)
+		defer w.Close()
+
+		// Same streamID but different MetaDomain
+		chunk := Chunk{
+			StreamID:    12345,
+			RecordCount: 10,
+			Batches:     []BatchEntry{{Data: []byte("data")}},
+		}
+
+		err := w.AddChunk(chunk, 0)
+		if err != nil {
+			t.Fatalf("First AddChunk failed: %v", err)
+		}
+
+		// Same streamID but different domain must be rejected
+		err = w.AddChunk(chunk, 1)
+		if !errors.Is(err, ErrMetaDomainMismatch) {
+			t.Errorf("Expected ErrMetaDomainMismatch, got: %v", err)
+		}
+	})
+}

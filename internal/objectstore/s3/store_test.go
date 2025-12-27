@@ -19,19 +19,30 @@ import (
 )
 
 var (
-	testMinioProc *os.Process
-	testMinioPort = "19000"
-	testMinioDir  string
+	testMinioProc    *os.Process
+	testMinioPort    = "19000"
+	testMinioDir     string
+	minioAvailable   bool
+	minioSkipMessage string
 )
 
 func TestMain(m *testing.M) {
 	if err := startMinio(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to start MinIO: %v\n", err)
-		os.Exit(1)
+		minioSkipMessage = fmt.Sprintf("MinIO not available: %v", err)
+		minioAvailable = false
+	} else {
+		minioAvailable = true
 	}
 	code := m.Run()
 	stopMinio()
 	os.Exit(code)
+}
+
+func skipIfMinioUnavailable(t *testing.T) {
+	t.Helper()
+	if !minioAvailable {
+		t.Skip(minioSkipMessage)
+	}
 }
 
 func startMinio() error {
@@ -95,6 +106,7 @@ func stopMinio() {
 
 func testStore(t *testing.T, bucket string) *Store {
 	t.Helper()
+	skipIfMinioUnavailable(t)
 	endpoint := "http://localhost:" + testMinioPort
 	ctx := context.Background()
 
@@ -175,6 +187,7 @@ func TestNew(t *testing.T) {
 	})
 
 	t.Run("valid config", func(t *testing.T) {
+		skipIfMinioUnavailable(t)
 		store, err := New(context.Background(), Config{
 			Bucket:          "test-bucket",
 			Endpoint:        "http://localhost:" + testMinioPort,
@@ -607,6 +620,7 @@ func TestGetNotFound(t *testing.T) {
 }
 
 func TestClosedStore(t *testing.T) {
+	skipIfMinioUnavailable(t)
 	endpoint := "http://localhost:" + testMinioPort
 	ctx := context.Background()
 	bucket := "test-closed"
@@ -745,6 +759,9 @@ func TestLargeObject(t *testing.T) {
 
 // Benchmark tests
 func BenchmarkPut(b *testing.B) {
+	if !minioAvailable {
+		b.Skip(minioSkipMessage)
+	}
 	endpoint := "http://localhost:" + testMinioPort
 	ctx := context.Background()
 	bucket := "bench-put"
@@ -778,6 +795,9 @@ func BenchmarkPut(b *testing.B) {
 }
 
 func BenchmarkGet(b *testing.B) {
+	if !minioAvailable {
+		b.Skip(minioSkipMessage)
+	}
 	endpoint := "http://localhost:" + testMinioPort
 	ctx := context.Background()
 	bucket := "bench-get"
