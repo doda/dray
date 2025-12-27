@@ -240,7 +240,7 @@
     "scope": [
       "internal/metadata/keys/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "s3-object-store-adapter",
