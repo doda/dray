@@ -547,7 +547,7 @@
     "scope": [
       "internal/server/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "kmsg-integration",
