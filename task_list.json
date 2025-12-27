@@ -107,7 +107,7 @@
     "scope": [
       "internal/objectstore/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "iceberg-catalog-interface",
