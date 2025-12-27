@@ -262,7 +262,7 @@
     "scope": [
       "internal/objectstore/s3/"
     ],
-    "passes": true
+    "passes": false
   },
   {
     "id": "wal-format-encoder",
@@ -566,7 +566,7 @@
     "scope": [
       "internal/protocol/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "api-versions-handler",
