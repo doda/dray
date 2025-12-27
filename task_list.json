@@ -88,7 +88,7 @@
     "scope": [
       "internal/metadata/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "object-store-interface",
