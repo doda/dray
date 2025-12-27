@@ -312,16 +312,16 @@ func (b *Buffer) flushDomain(ctx context.Context, domain metadata.MetaDomain) {
 	db.size = 0
 	db.mu.Unlock()
 
-	// Update total size
+	// Call the flush handler first - space is only freed after flush completes
+	err := b.config.OnFlush(ctx, domain, requests)
+
+	// Update total size after flush completes
 	b.sizeMu.Lock()
 	b.totalSize -= size
 	b.sizeMu.Unlock()
 
 	// Signal that space is available
 	b.sizeCond.Broadcast()
-
-	// Call the flush handler
-	err := b.config.OnFlush(ctx, domain, requests)
 
 	// Complete all pending requests
 	for _, req := range requests {

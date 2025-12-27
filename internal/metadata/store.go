@@ -132,6 +132,26 @@ func WithDeleteExpectedVersion(v Version) DeleteOption {
 	}
 }
 
+// ExtractExpectedVersion extracts the expected version from Put options.
+// Returns nil if no expected version was specified.
+func ExtractExpectedVersion(opts []PutOption) *Version {
+	var pOpts putOptions
+	for _, opt := range opts {
+		opt(&pOpts)
+	}
+	return pOpts.expectedVersion
+}
+
+// ExtractDeleteExpectedVersion extracts the expected version from Delete options.
+// Returns nil if no expected version was specified.
+func ExtractDeleteExpectedVersion(opts []DeleteOption) *Version {
+	var dOpts deleteOptions
+	for _, opt := range opts {
+		opt(&dOpts)
+	}
+	return dOpts.expectedVersion
+}
+
 // EphemeralOption configures a PutEphemeral operation.
 type EphemeralOption func(*ephemeralOptions)
 
