@@ -196,22 +196,16 @@ func (s *Server) handleConn(conn net.Conn) {
 			return
 		}
 
-		// Parse zone_id from client.id per spec 7.1
-		zoneID := ParseZoneID(header.ClientID)
-
 		reqLogger := logger.With(map[string]any{
 			"apiKey":        header.APIKey,
 			"apiVersion":    header.APIVersion,
 			"correlationId": header.CorrelationID,
 			"clientId":      header.ClientID,
-			"zoneId":        zoneID,
 		})
 		reqLogger.Debug("request received")
 
 		ctx := context.Background()
 		ctx = logging.WithLoggerCtx(ctx, reqLogger)
-		ctx = WithClientID(ctx, header.ClientID)
-		ctx = WithZoneID(ctx, zoneID)
 
 		response, err := s.handler.HandleRequest(ctx, header, payload)
 		if err != nil {

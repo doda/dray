@@ -45,36 +45,6 @@ func (h *errorHandler) HandleRequest(ctx context.Context, header *RequestHeader,
 	return nil, errors.New("handler error")
 }
 
-// zoneCapturingHandler captures zone_id and client_id from context
-type zoneCapturingHandler struct {
-	mu       sync.Mutex
-	zoneIDs  []string
-	clientIDs []string
-}
-
-func (h *zoneCapturingHandler) HandleRequest(ctx context.Context, header *RequestHeader, payload []byte) ([]byte, error) {
-	h.mu.Lock()
-	h.zoneIDs = append(h.zoneIDs, ZoneIDFromContext(ctx))
-	h.clientIDs = append(h.clientIDs, ClientIDFromContext(ctx))
-	h.mu.Unlock()
-
-	resp := make([]byte, 4)
-	binary.BigEndian.PutUint32(resp[:4], uint32(header.CorrelationID))
-	return resp, nil
-}
-
-func (h *zoneCapturingHandler) getZoneIDs() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]string{}, h.zoneIDs...)
-}
-
-func (h *zoneCapturingHandler) getClientIDs() []string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]string{}, h.clientIDs...)
-}
-
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.ListenAddr != ":9092" {
@@ -617,95 +587,6 @@ func TestAPIKey(t *testing.T) {
 	name = APIKey(18) // ApiVersions
 	if name == "" {
 		t.Error("expected non-empty API name for ApiVersions")
-	}
-}
-
-func TestServerZoneIDParsing(t *testing.T) {
-	tests := []struct {
-		name         string
-		clientID     string
-		wantZoneID   string
-		wantClientID string
-	}{
-		{
-			name:         "client with zone_id",
-			clientID:     "zone_id=us-west-2a,app=myapp",
-			wantZoneID:   "us-west-2a",
-			wantClientID: "zone_id=us-west-2a,app=myapp",
-		},
-		{
-			name:         "client without zone_id",
-			clientID:     "app=myapp,version=1.0",
-			wantZoneID:   "",
-			wantClientID: "app=myapp,version=1.0",
-		},
-		{
-			name:         "plain client id",
-			clientID:     "my-kafka-client",
-			wantZoneID:   "",
-			wantClientID: "my-kafka-client",
-		},
-		{
-			name:         "empty client id",
-			clientID:     "",
-			wantZoneID:   "",
-			wantClientID: "",
-		},
-		{
-			name:         "zone_id at end",
-			clientID:     "app=myapp,zone_id=eu-central-1a",
-			wantZoneID:   "eu-central-1a",
-			wantClientID: "app=myapp,zone_id=eu-central-1a",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			handler := &zoneCapturingHandler{}
-			logger := logging.DefaultLogger()
-			logger.SetLevel(logging.LevelError)
-
-			cfg := DefaultConfig()
-			cfg.ListenAddr = "127.0.0.1:0"
-
-			srv := New(cfg, handler, logger)
-			go srv.ListenAndServe()
-			defer srv.Close()
-
-			time.Sleep(50 * time.Millisecond)
-
-			conn, err := net.Dial("tcp", srv.Addr().String())
-			if err != nil {
-				t.Fatalf("failed to connect: %v", err)
-			}
-			defer conn.Close()
-
-			request := buildKafkaRequest(18, 0, 1, tt.clientID, nil)
-			if _, err := conn.Write(request); err != nil {
-				t.Fatalf("failed to write request: %v", err)
-			}
-
-			_, err = readKafkaResponse(conn)
-			if err != nil {
-				t.Fatalf("failed to read response: %v", err)
-			}
-
-			zoneIDs := handler.getZoneIDs()
-			if len(zoneIDs) != 1 {
-				t.Fatalf("expected 1 zone_id, got %d", len(zoneIDs))
-			}
-			if zoneIDs[0] != tt.wantZoneID {
-				t.Errorf("zone_id = %q, want %q", zoneIDs[0], tt.wantZoneID)
-			}
-
-			clientIDs := handler.getClientIDs()
-			if len(clientIDs) != 1 {
-				t.Fatalf("expected 1 client_id, got %d", len(clientIDs))
-			}
-			if clientIDs[0] != tt.wantClientID {
-				t.Errorf("client_id = %q, want %q", clientIDs[0], tt.wantClientID)
-			}
-		})
 	}
 }
 
