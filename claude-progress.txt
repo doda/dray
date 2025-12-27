@@ -34,3 +34,4 @@ Start with project-setup, then follow spec phases:
 [2025-12-27T17:30:02.472Z] Completed project-setup: Set up the Go project with repository structure, dependencies, build system, linting, and CI pipeline
 [2025-12-27T17:36:29.809Z] Completed config-system: Implement deterministic configuration system with YAML files and environment variable overrides
 [2025-12-27T17:43:17.337Z] Completed metrics-skeleton: Create Prometheus metrics skeleton with basic counters and histograms
+[2025-12-27T17:45:04.242Z] Completed iceberg-catalog-interface: Define Catalog interface for Iceberg integration with LoadTable, CreateTableIfMissing, AppendDataFiles, GetCurrentSnapshot

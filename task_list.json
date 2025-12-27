@@ -126,7 +126,7 @@
     "scope": [
       "internal/iceberg/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "oxia-client-wrapper",
