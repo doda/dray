@@ -57,3 +57,10 @@ Start with project-setup, then follow spec phases:
 [2025-12-27T23:08:30.302Z] Completed produce-buffer: Implement produce buffer with MetaDomain partitioning
 
 [2025-12-27T23:46:17Z] Reviewed oxia-client-wrapper: verified Oxia sync client wrapper, namespace config, notifications, and transactional behavior; fixed range scan draining to avoid goroutine leaks and scoped txn ops to partition key; tests: not run (already run by working agent).
+[2025-12-28T00:04:27Z] Reviewed oxia-cas-transactions
+- Scope: internal/metadata/oxia/cas_transaction_test.go, internal/metadata/store_test.go
+- Verified CAS helpers and expected-version wiring; Oxia store uses ExpectedVersionId/ExpectedRecordNotExists
+- Verified Oxia transaction commit maps unexpected versions to ErrTxnConflict per integration tests
+- Verified mock Txn applies version checks before commit to ensure atomicity in tests
+- Issues found: none
+- Tests: not run (already run by working agent)

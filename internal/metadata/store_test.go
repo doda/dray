@@ -740,3 +740,344 @@ func TestTxnInterfaceCompliance(t *testing.T) {
 func TestNotificationStreamInterfaceCompliance(t *testing.T) {
 	var _ NotificationStream = (*mockNotificationStream)(nil)
 }
+
+// TestTxnRollbackOnVersionMismatch verifies that when a transaction fails due to
+// version mismatch, no changes are applied (atomicity guarantee).
+func TestTxnRollbackOnVersionMismatch(t *testing.T) {
+	store := newMockStore()
+	ctx := context.Background()
+
+	// Setup: create two keys
+	store.Put(ctx, "/dray/v1/streams/abc/hwm", []byte("100"))
+	store.Put(ctx, "/dray/v1/streams/abc/offset-index/00100", []byte("entry1"))
+
+	// Get the initial version of hwm
+	result, _ := store.Get(ctx, "/dray/v1/streams/abc/hwm")
+	correctVersion := result.Version
+
+	// Attempt a transaction that:
+	// 1. Updates hwm with wrong version (should fail)
+	// 2. Creates a new index entry
+	// The entire transaction should be rolled back
+	wrongVersion := Version(999)
+	err := store.Txn(ctx, "/dray/v1/streams/abc", func(txn Txn) error {
+		txn.PutWithVersion("/dray/v1/streams/abc/hwm", []byte("200"), wrongVersion)
+		txn.Put("/dray/v1/streams/abc/offset-index/00200", []byte("entry2"))
+		return nil
+	})
+
+	// Transaction should fail
+	if !errors.Is(err, ErrVersionMismatch) {
+		t.Fatalf("expected ErrVersionMismatch, got %v", err)
+	}
+
+	// Verify hwm was NOT updated
+	result, _ = store.Get(ctx, "/dray/v1/streams/abc/hwm")
+	if string(result.Value) != "100" {
+		t.Errorf("hwm should still be 100, got %s", result.Value)
+	}
+	if result.Version != correctVersion {
+		t.Errorf("hwm version should be unchanged, expected %d, got %d", correctVersion, result.Version)
+	}
+
+	// Verify the new index entry was NOT created
+	result, _ = store.Get(ctx, "/dray/v1/streams/abc/offset-index/00200")
+	if result.Exists {
+		t.Error("new index entry should NOT exist after rollback")
+	}
+
+	// Verify the original index entry is still there
+	result, _ = store.Get(ctx, "/dray/v1/streams/abc/offset-index/00100")
+	if !result.Exists {
+		t.Error("original index entry should still exist")
+	}
+}
+
+// TestTxnAtomicMultiKeyUpdate verifies that multiple keys are updated atomically.
+func TestTxnAtomicMultiKeyUpdate(t *testing.T) {
+	store := newMockStore()
+	ctx := context.Background()
+
+	// Setup: create initial state
+	store.Put(ctx, "/dray/v1/streams/abc/hwm", []byte("100"))
+
+	// Get initial version
+	result, _ := store.Get(ctx, "/dray/v1/streams/abc/hwm")
+	hwmVersion := result.Version
+
+	// Execute atomic multi-key transaction
+	err := store.Txn(ctx, "/dray/v1/streams/abc", func(txn Txn) error {
+		// Read current hwm
+		value, ver, err := txn.Get("/dray/v1/streams/abc/hwm")
+		if err != nil {
+			return err
+		}
+		if string(value) != "100" {
+			t.Errorf("expected hwm 100, got %s", value)
+		}
+		if ver != hwmVersion {
+			t.Errorf("version mismatch: expected %d, got %d", hwmVersion, ver)
+		}
+
+		// Update hwm with version check
+		txn.PutWithVersion("/dray/v1/streams/abc/hwm", []byte("200"), hwmVersion)
+
+		// Create multiple new index entries
+		txn.Put("/dray/v1/streams/abc/offset-index/00101", []byte("entry1"))
+		txn.Put("/dray/v1/streams/abc/offset-index/00102", []byte("entry2"))
+		txn.Put("/dray/v1/streams/abc/offset-index/00103", []byte("entry3"))
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("transaction failed: %v", err)
+	}
+
+	// Verify all changes were applied
+	result, _ = store.Get(ctx, "/dray/v1/streams/abc/hwm")
+	if string(result.Value) != "200" {
+		t.Errorf("hwm should be 200, got %s", result.Value)
+	}
+
+	// Check entries
+	result, _ = store.Get(ctx, "/dray/v1/streams/abc/offset-index/00101")
+	if !result.Exists || string(result.Value) != "entry1" {
+		t.Errorf("entry 00101 should exist with value 'entry1'")
+	}
+	result, _ = store.Get(ctx, "/dray/v1/streams/abc/offset-index/00102")
+	if !result.Exists || string(result.Value) != "entry2" {
+		t.Errorf("entry 00102 should exist with value 'entry2'")
+	}
+	result, _ = store.Get(ctx, "/dray/v1/streams/abc/offset-index/00103")
+	if !result.Exists || string(result.Value) != "entry3" {
+		t.Errorf("entry 00103 should exist with value 'entry3'")
+	}
+}
+
+// TestConcurrentWritersVersionConflict verifies that concurrent writers see version
+// conflicts when trying to update the same key.
+func TestConcurrentWritersVersionConflict(t *testing.T) {
+	store := newMockStore()
+	ctx := context.Background()
+
+	// Setup: create initial key
+	store.Put(ctx, "/dray/v1/streams/abc/hwm", []byte("0"))
+	result, _ := store.Get(ctx, "/dray/v1/streams/abc/hwm")
+	initialVersion := result.Version
+
+	// Simulate two concurrent writers, both reading the same initial version
+	// Writer 1 succeeds first
+	_, err := store.Put(ctx, "/dray/v1/streams/abc/hwm", []byte("100"),
+		WithExpectedVersion(initialVersion))
+	if err != nil {
+		t.Fatalf("writer 1 should succeed: %v", err)
+	}
+
+	// Writer 2 tries with stale version - should fail
+	_, err = store.Put(ctx, "/dray/v1/streams/abc/hwm", []byte("200"),
+		WithExpectedVersion(initialVersion))
+	if !errors.Is(err, ErrVersionMismatch) {
+		t.Errorf("writer 2 should fail with ErrVersionMismatch, got %v", err)
+	}
+
+	// Verify final value is from writer 1
+	result, _ = store.Get(ctx, "/dray/v1/streams/abc/hwm")
+	if string(result.Value) != "100" {
+		t.Errorf("final value should be 100 from writer 1, got %s", result.Value)
+	}
+}
+
+// TestConcurrentTxnVersionConflict verifies concurrent transactions see conflicts.
+func TestConcurrentTxnVersionConflict(t *testing.T) {
+	store := newMockStore()
+	ctx := context.Background()
+
+	// Setup
+	store.Put(ctx, "/dray/v1/streams/abc/hwm", []byte("0"))
+	result, _ := store.Get(ctx, "/dray/v1/streams/abc/hwm")
+	initialVersion := result.Version
+
+	// Transaction 1 reads and updates successfully
+	err := store.Txn(ctx, "/dray/v1/streams/abc", func(txn Txn) error {
+		_, ver, err := txn.Get("/dray/v1/streams/abc/hwm")
+		if err != nil {
+			return err
+		}
+		if ver != initialVersion {
+			t.Errorf("unexpected version in txn1: %d", ver)
+		}
+		txn.PutWithVersion("/dray/v1/streams/abc/hwm", []byte("100"), initialVersion)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("transaction 1 should succeed: %v", err)
+	}
+
+	// Transaction 2 tries with stale version - should fail
+	err = store.Txn(ctx, "/dray/v1/streams/abc", func(txn Txn) error {
+		txn.PutWithVersion("/dray/v1/streams/abc/hwm", []byte("200"), initialVersion)
+		return nil
+	})
+	if !errors.Is(err, ErrVersionMismatch) {
+		t.Errorf("transaction 2 should fail with ErrVersionMismatch, got %v", err)
+	}
+
+	// Verify final value
+	result, _ = store.Get(ctx, "/dray/v1/streams/abc/hwm")
+	if string(result.Value) != "100" {
+		t.Errorf("final value should be 100, got %s", result.Value)
+	}
+}
+
+// TestCASCreateNewKey verifies that version 0 means "key should not exist".
+func TestCASCreateNewKey(t *testing.T) {
+	store := newMockStore()
+	ctx := context.Background()
+
+	// Create new key with version 0 (should not exist)
+	_, err := store.Put(ctx, "/dray/v1/new-key", []byte("value"),
+		WithExpectedVersion(0))
+	if err != nil {
+		t.Fatalf("create new key should succeed: %v", err)
+	}
+
+	// Try to create same key again with version 0 - should fail
+	_, err = store.Put(ctx, "/dray/v1/new-key", []byte("value2"),
+		WithExpectedVersion(0))
+	if !errors.Is(err, ErrVersionMismatch) {
+		t.Errorf("re-create should fail with ErrVersionMismatch, got %v", err)
+	}
+}
+
+// TestTxnCreateNewKeyWithVersionZero verifies that transactions correctly handle
+// version 0 for new key creation.
+func TestTxnCreateNewKeyWithVersionZero(t *testing.T) {
+	store := newMockStore()
+	ctx := context.Background()
+
+	// Transaction to create new key with version 0
+	err := store.Txn(ctx, "/dray/v1/new", func(txn Txn) error {
+		txn.PutWithVersion("/dray/v1/new-key", []byte("value"), 0)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("create new key in txn should succeed: %v", err)
+	}
+
+	// Verify key was created
+	result, _ := store.Get(ctx, "/dray/v1/new-key")
+	if !result.Exists {
+		t.Error("key should exist after txn")
+	}
+
+	// Transaction trying to create same key again should fail
+	err = store.Txn(ctx, "/dray/v1/new", func(txn Txn) error {
+		txn.PutWithVersion("/dray/v1/new-key", []byte("value2"), 0)
+		return nil
+	})
+	if !errors.Is(err, ErrVersionMismatch) {
+		t.Errorf("re-create in txn should fail with ErrVersionMismatch, got %v", err)
+	}
+}
+
+// TestTxnCallbackError verifies that transaction callback errors are propagated
+// and no changes are applied.
+func TestTxnCallbackError(t *testing.T) {
+	store := newMockStore()
+	ctx := context.Background()
+
+	customErr := errors.New("custom callback error")
+
+	// Transaction that returns an error from callback
+	err := store.Txn(ctx, "/dray/v1/test", func(txn Txn) error {
+		txn.Put("/dray/v1/test/key", []byte("value"))
+		return customErr
+	})
+	if !errors.Is(err, customErr) {
+		t.Errorf("callback error should be propagated, got %v", err)
+	}
+
+	// Verify no changes were applied
+	result, _ := store.Get(ctx, "/dray/v1/test/key")
+	if result.Exists {
+		t.Error("key should NOT exist after callback error")
+	}
+}
+
+// TestMultipleVersionedOperationsInTxn tests multiple conditional operations
+// in a single transaction.
+func TestMultipleVersionedOperationsInTxn(t *testing.T) {
+	store := newMockStore()
+	ctx := context.Background()
+
+	// Setup: create two keys
+	store.Put(ctx, "/dray/v1/key1", []byte("v1"))
+	store.Put(ctx, "/dray/v1/key2", []byte("v2"))
+
+	result1, _ := store.Get(ctx, "/dray/v1/key1")
+	result2, _ := store.Get(ctx, "/dray/v1/key2")
+	ver1 := result1.Version
+	ver2 := result2.Version
+
+	// Transaction with multiple versioned operations
+	err := store.Txn(ctx, "/dray/v1", func(txn Txn) error {
+		txn.PutWithVersion("/dray/v1/key1", []byte("updated1"), ver1)
+		txn.PutWithVersion("/dray/v1/key2", []byte("updated2"), ver2)
+		txn.PutWithVersion("/dray/v1/key3", []byte("new3"), 0) // Create new
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("transaction should succeed: %v", err)
+	}
+
+	// Verify all updates
+	result, _ := store.Get(ctx, "/dray/v1/key1")
+	if string(result.Value) != "updated1" {
+		t.Errorf("key1 should be updated1, got %s", result.Value)
+	}
+	result, _ = store.Get(ctx, "/dray/v1/key2")
+	if string(result.Value) != "updated2" {
+		t.Errorf("key2 should be updated2, got %s", result.Value)
+	}
+	result, _ = store.Get(ctx, "/dray/v1/key3")
+	if !result.Exists || string(result.Value) != "new3" {
+		t.Errorf("key3 should be new3, got %s", result.Value)
+	}
+}
+
+// TestPartialFailureRollback verifies that when one operation in a multi-operation
+// transaction fails, all operations are rolled back.
+func TestPartialFailureRollback(t *testing.T) {
+	store := newMockStore()
+	ctx := context.Background()
+
+	// Setup: create two keys
+	store.Put(ctx, "/dray/v1/key1", []byte("original1"))
+	store.Put(ctx, "/dray/v1/key2", []byte("original2"))
+
+	result1, _ := store.Get(ctx, "/dray/v1/key1")
+	ver1 := result1.Version
+	// Intentionally use wrong version for key2
+
+	// Transaction where first operation would succeed but second fails
+	err := store.Txn(ctx, "/dray/v1", func(txn Txn) error {
+		txn.PutWithVersion("/dray/v1/key1", []byte("updated1"), ver1) // This would succeed
+		txn.PutWithVersion("/dray/v1/key2", []byte("updated2"), 999)  // Wrong version - fails
+		return nil
+	})
+
+	// Should fail due to version mismatch on key2
+	if !errors.Is(err, ErrVersionMismatch) {
+		t.Fatalf("expected ErrVersionMismatch, got %v", err)
+	}
+
+	// Verify NEITHER key was updated (rollback)
+	result, _ := store.Get(ctx, "/dray/v1/key1")
+	if string(result.Value) != "original1" {
+		t.Errorf("key1 should be rolled back to original1, got %s", result.Value)
+	}
+	result, _ = store.Get(ctx, "/dray/v1/key2")
+	if string(result.Value) != "original2" {
+		t.Errorf("key2 should still be original2, got %s", result.Value)
+	}
+}
