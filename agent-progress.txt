@@ -511,3 +511,11 @@ Start with project-setup, then follow spec phases:
 - Verified concurrent join coverage and assignment totals across members
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T13:18:52Z] Reviewed offset-commit-handler
+- Scope: internal/groups/store.go, internal/groups/store_test.go, internal/protocol/offset_commit.go, internal/protocol/offset_commit_test.go, task_list.json
+- Verified OffsetCommit handler validates group/member/generation, supports simple mode, retention time handling, and instance ID fencing
+- Verified committed offsets stored at /dray/v1/groups/<groupId>/offsets/<topic>/<partition>
+- Verified group store supports commit/get/list/delete offsets with expiry timestamp logic
+- Verified response version handling across v0-v9
+- Issues found: none
+- Tests: not run (already run by working agent)

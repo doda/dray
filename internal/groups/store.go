@@ -1069,3 +1069,226 @@ func isGroupStateKey(key string) bool {
 	// Check if it ends with /state and has no other slashes in between
 	return len(rest) > 6 && rest[len(rest)-6:] == "/state"
 }
+
+// =============================================================================
+// Committed Offset Storage
+// =============================================================================
+
+// CommittedOffset represents a committed offset for a topic-partition.
+type CommittedOffset struct {
+	GroupID         string `json:"groupId"`
+	Topic           string `json:"topic"`
+	Partition       int32  `json:"partition"`
+	Offset          int64  `json:"offset"`
+	LeaderEpoch     int32  `json:"leaderEpoch,omitempty"` // -1 means not set
+	Metadata        string `json:"metadata,omitempty"`
+	CommitTimestamp int64  `json:"commitTimestamp"` // Unix milliseconds
+	ExpireTimestamp int64  `json:"expireTimestamp"` // Unix milliseconds, -1 means no expiry
+}
+
+// CommitOffsetRequest holds parameters for committing an offset.
+type CommitOffsetRequest struct {
+	GroupID         string
+	Topic           string
+	Partition       int32
+	Offset          int64
+	LeaderEpoch     int32  // -1 means not set
+	Metadata        string // Optional metadata
+	RetentionTimeMs int64  // -1 means use default (no expiry until group deleted)
+	NowMs           int64
+}
+
+// CommitOffset stores a committed offset for a topic-partition.
+func (s *Store) CommitOffset(ctx context.Context, req CommitOffsetRequest) (*CommittedOffset, error) {
+	if req.GroupID == "" {
+		return nil, ErrInvalidGroupID
+	}
+
+	// Calculate expiry time
+	expireTimestamp := int64(-1)
+	if req.RetentionTimeMs > 0 {
+		expireTimestamp = req.NowMs + req.RetentionTimeMs
+	}
+
+	offset := CommittedOffset{
+		GroupID:         req.GroupID,
+		Topic:           req.Topic,
+		Partition:       req.Partition,
+		Offset:          req.Offset,
+		LeaderEpoch:     req.LeaderEpoch,
+		Metadata:        req.Metadata,
+		CommitTimestamp: req.NowMs,
+		ExpireTimestamp: expireTimestamp,
+	}
+
+	offsetData, err := json.Marshal(offset)
+	if err != nil {
+		return nil, fmt.Errorf("groups: marshal offset: %w", err)
+	}
+
+	offsetKey := keys.GroupOffsetKeyPath(req.GroupID, req.Topic, req.Partition)
+
+	// Simply put the offset - no need for a transaction here as each offset is independent
+	if _, err := s.meta.Put(ctx, offsetKey, offsetData); err != nil {
+		return nil, fmt.Errorf("groups: put offset: %w", err)
+	}
+
+	return &offset, nil
+}
+
+// CommitOffsets stores multiple committed offsets atomically.
+func (s *Store) CommitOffsets(ctx context.Context, groupID string, offsets []CommitOffsetRequest, nowMs int64) ([]CommittedOffset, error) {
+	if groupID == "" {
+		return nil, ErrInvalidGroupID
+	}
+	if len(offsets) == 0 {
+		return nil, nil
+	}
+
+	committed := make([]CommittedOffset, len(offsets))
+
+	// Use transaction for atomic commit of all offsets
+	typeKey := keys.GroupTypeKeyPath(groupID)
+
+	err := s.meta.Txn(ctx, typeKey, func(txn metadata.Txn) error {
+		for i, req := range offsets {
+			// Calculate expiry time
+			expireTimestamp := int64(-1)
+			if req.RetentionTimeMs > 0 {
+				expireTimestamp = nowMs + req.RetentionTimeMs
+			}
+
+			offset := CommittedOffset{
+				GroupID:         groupID,
+				Topic:           req.Topic,
+				Partition:       req.Partition,
+				Offset:          req.Offset,
+				LeaderEpoch:     req.LeaderEpoch,
+				Metadata:        req.Metadata,
+				CommitTimestamp: nowMs,
+				ExpireTimestamp: expireTimestamp,
+			}
+
+			offsetData, err := json.Marshal(offset)
+			if err != nil {
+				return fmt.Errorf("marshal offset: %w", err)
+			}
+
+			offsetKey := keys.GroupOffsetKeyPath(groupID, req.Topic, req.Partition)
+			txn.Put(offsetKey, offsetData)
+			committed[i] = offset
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return committed, nil
+}
+
+// GetCommittedOffset retrieves a committed offset for a topic-partition.
+func (s *Store) GetCommittedOffset(ctx context.Context, groupID, topic string, partition int32) (*CommittedOffset, error) {
+	if groupID == "" {
+		return nil, ErrInvalidGroupID
+	}
+
+	key := keys.GroupOffsetKeyPath(groupID, topic, partition)
+	result, err := s.meta.Get(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("groups: get offset: %w", err)
+	}
+	if !result.Exists {
+		return nil, nil // No offset committed is not an error
+	}
+
+	var offset CommittedOffset
+	if err := json.Unmarshal(result.Value, &offset); err != nil {
+		return nil, fmt.Errorf("groups: unmarshal offset: %w", err)
+	}
+	return &offset, nil
+}
+
+// ListCommittedOffsets returns all committed offsets for a group.
+func (s *Store) ListCommittedOffsets(ctx context.Context, groupID string) ([]CommittedOffset, error) {
+	if groupID == "" {
+		return nil, ErrInvalidGroupID
+	}
+
+	prefix := keys.GroupOffsetsPrefix(groupID)
+	kvs, err := s.meta.List(ctx, prefix, "", 0)
+	if err != nil {
+		return nil, fmt.Errorf("groups: list offsets: %w", err)
+	}
+
+	offsets := make([]CommittedOffset, 0, len(kvs))
+	for _, kv := range kvs {
+		var o CommittedOffset
+		if err := json.Unmarshal(kv.Value, &o); err != nil {
+			return nil, fmt.Errorf("groups: unmarshal offset: %w", err)
+		}
+		offsets = append(offsets, o)
+	}
+	return offsets, nil
+}
+
+// ListCommittedOffsetsForTopic returns committed offsets for a specific topic in a group.
+func (s *Store) ListCommittedOffsetsForTopic(ctx context.Context, groupID, topic string) ([]CommittedOffset, error) {
+	if groupID == "" {
+		return nil, ErrInvalidGroupID
+	}
+
+	prefix := keys.GroupTopicOffsetsPrefix(groupID, topic)
+	kvs, err := s.meta.List(ctx, prefix, "", 0)
+	if err != nil {
+		return nil, fmt.Errorf("groups: list topic offsets: %w", err)
+	}
+
+	offsets := make([]CommittedOffset, 0, len(kvs))
+	for _, kv := range kvs {
+		var o CommittedOffset
+		if err := json.Unmarshal(kv.Value, &o); err != nil {
+			return nil, fmt.Errorf("groups: unmarshal offset: %w", err)
+		}
+		offsets = append(offsets, o)
+	}
+	return offsets, nil
+}
+
+// DeleteCommittedOffset deletes a committed offset for a topic-partition.
+func (s *Store) DeleteCommittedOffset(ctx context.Context, groupID, topic string, partition int32) error {
+	if groupID == "" {
+		return ErrInvalidGroupID
+	}
+
+	key := keys.GroupOffsetKeyPath(groupID, topic, partition)
+	return s.meta.Delete(ctx, key)
+}
+
+// DeleteAllCommittedOffsets deletes all committed offsets for a group.
+func (s *Store) DeleteAllCommittedOffsets(ctx context.Context, groupID string) error {
+	if groupID == "" {
+		return ErrInvalidGroupID
+	}
+
+	// Get all offsets first
+	offsets, err := s.ListCommittedOffsets(ctx, groupID)
+	if err != nil {
+		return err
+	}
+
+	if len(offsets) == 0 {
+		return nil
+	}
+
+	// Delete all in a transaction
+	typeKey := keys.GroupTypeKeyPath(groupID)
+	return s.meta.Txn(ctx, typeKey, func(txn metadata.Txn) error {
+		for _, o := range offsets {
+			key := keys.GroupOffsetKeyPath(groupID, o.Topic, o.Partition)
+			txn.Delete(key)
+		}
+		return nil
+	})
+}

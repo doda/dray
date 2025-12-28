@@ -1339,3 +1339,389 @@ func TestStore_ConvertGroupTypeAfterMemberRemoval(t *testing.T) {
 		t.Errorf("expected consumer type, got %s", groupType)
 	}
 }
+
+// =============================================================================
+// Committed Offset Tests
+// =============================================================================
+
+func TestStore_CommitOffset(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+	nowMs := time.Now().UnixMilli()
+
+	offset, err := store.CommitOffset(ctx, CommitOffsetRequest{
+		GroupID:         "test-group",
+		Topic:           "test-topic",
+		Partition:       0,
+		Offset:          100,
+		LeaderEpoch:     5,
+		Metadata:        "test-metadata",
+		RetentionTimeMs: -1,
+		NowMs:           nowMs,
+	})
+	if err != nil {
+		t.Fatalf("failed to commit offset: %v", err)
+	}
+
+	if offset.GroupID != "test-group" {
+		t.Errorf("expected group 'test-group', got %s", offset.GroupID)
+	}
+	if offset.Topic != "test-topic" {
+		t.Errorf("expected topic 'test-topic', got %s", offset.Topic)
+	}
+	if offset.Partition != 0 {
+		t.Errorf("expected partition 0, got %d", offset.Partition)
+	}
+	if offset.Offset != 100 {
+		t.Errorf("expected offset 100, got %d", offset.Offset)
+	}
+	if offset.LeaderEpoch != 5 {
+		t.Errorf("expected leader epoch 5, got %d", offset.LeaderEpoch)
+	}
+	if offset.Metadata != "test-metadata" {
+		t.Errorf("expected metadata 'test-metadata', got %s", offset.Metadata)
+	}
+	if offset.CommitTimestamp != nowMs {
+		t.Errorf("expected commit timestamp %d, got %d", nowMs, offset.CommitTimestamp)
+	}
+	if offset.ExpireTimestamp != -1 {
+		t.Errorf("expected no expiry (-1), got %d", offset.ExpireTimestamp)
+	}
+}
+
+func TestStore_CommitOffsetWithRetention(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+	nowMs := time.Now().UnixMilli()
+
+	offset, err := store.CommitOffset(ctx, CommitOffsetRequest{
+		GroupID:         "retention-group",
+		Topic:           "test-topic",
+		Partition:       0,
+		Offset:          50,
+		LeaderEpoch:     -1,
+		RetentionTimeMs: 3600000, // 1 hour
+		NowMs:           nowMs,
+	})
+	if err != nil {
+		t.Fatalf("failed to commit offset: %v", err)
+	}
+
+	expectedExpiry := nowMs + 3600000
+	if offset.ExpireTimestamp != expectedExpiry {
+		t.Errorf("expected expiry %d, got %d", expectedExpiry, offset.ExpireTimestamp)
+	}
+}
+
+func TestStore_GetCommittedOffset(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+	nowMs := time.Now().UnixMilli()
+
+	// Commit an offset
+	_, err := store.CommitOffset(ctx, CommitOffsetRequest{
+		GroupID:   "get-offset-group",
+		Topic:     "test-topic",
+		Partition: 2,
+		Offset:    200,
+		NowMs:     nowMs,
+	})
+	if err != nil {
+		t.Fatalf("failed to commit offset: %v", err)
+	}
+
+	// Retrieve it
+	offset, err := store.GetCommittedOffset(ctx, "get-offset-group", "test-topic", 2)
+	if err != nil {
+		t.Fatalf("failed to get committed offset: %v", err)
+	}
+
+	if offset == nil {
+		t.Fatal("expected offset, got nil")
+	}
+	if offset.Offset != 200 {
+		t.Errorf("expected offset 200, got %d", offset.Offset)
+	}
+}
+
+func TestStore_GetCommittedOffsetNotFound(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	offset, err := store.GetCommittedOffset(ctx, "nonexistent-group", "nonexistent-topic", 0)
+	if err != nil {
+		t.Fatalf("expected no error for missing offset, got %v", err)
+	}
+	if offset != nil {
+		t.Error("expected nil for missing offset")
+	}
+}
+
+func TestStore_ListCommittedOffsets(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+	nowMs := time.Now().UnixMilli()
+
+	// Commit multiple offsets
+	for _, tp := range []struct{ topic string; partition int32 }{
+		{"topic-a", 0},
+		{"topic-a", 1},
+		{"topic-b", 0},
+	} {
+		_, err := store.CommitOffset(ctx, CommitOffsetRequest{
+			GroupID:   "list-offsets-group",
+			Topic:     tp.topic,
+			Partition: tp.partition,
+			Offset:    100,
+			NowMs:     nowMs,
+		})
+		if err != nil {
+			t.Fatalf("failed to commit offset: %v", err)
+		}
+	}
+
+	offsets, err := store.ListCommittedOffsets(ctx, "list-offsets-group")
+	if err != nil {
+		t.Fatalf("failed to list offsets: %v", err)
+	}
+
+	if len(offsets) != 3 {
+		t.Errorf("expected 3 offsets, got %d", len(offsets))
+	}
+}
+
+func TestStore_ListCommittedOffsetsForTopic(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+	nowMs := time.Now().UnixMilli()
+
+	// Commit offsets for different topics
+	for _, tp := range []struct{ topic string; partition int32 }{
+		{"topic-a", 0},
+		{"topic-a", 1},
+		{"topic-a", 2},
+		{"topic-b", 0},
+	} {
+		_, err := store.CommitOffset(ctx, CommitOffsetRequest{
+			GroupID:   "topic-offsets-group",
+			Topic:     tp.topic,
+			Partition: tp.partition,
+			Offset:    100,
+			NowMs:     nowMs,
+		})
+		if err != nil {
+			t.Fatalf("failed to commit offset: %v", err)
+		}
+	}
+
+	// List only topic-a offsets
+	offsets, err := store.ListCommittedOffsetsForTopic(ctx, "topic-offsets-group", "topic-a")
+	if err != nil {
+		t.Fatalf("failed to list topic offsets: %v", err)
+	}
+
+	if len(offsets) != 3 {
+		t.Errorf("expected 3 offsets for topic-a, got %d", len(offsets))
+	}
+
+	for _, o := range offsets {
+		if o.Topic != "topic-a" {
+			t.Errorf("expected topic 'topic-a', got %s", o.Topic)
+		}
+	}
+}
+
+func TestStore_DeleteCommittedOffset(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+	nowMs := time.Now().UnixMilli()
+
+	// Commit an offset
+	_, err := store.CommitOffset(ctx, CommitOffsetRequest{
+		GroupID:   "delete-offset-group",
+		Topic:     "test-topic",
+		Partition: 0,
+		Offset:    100,
+		NowMs:     nowMs,
+	})
+	if err != nil {
+		t.Fatalf("failed to commit offset: %v", err)
+	}
+
+	// Delete it
+	err = store.DeleteCommittedOffset(ctx, "delete-offset-group", "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to delete offset: %v", err)
+	}
+
+	// Verify it's gone
+	offset, err := store.GetCommittedOffset(ctx, "delete-offset-group", "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to get offset: %v", err)
+	}
+	if offset != nil {
+		t.Error("expected nil after deletion")
+	}
+}
+
+func TestStore_DeleteAllCommittedOffsets(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+	nowMs := time.Now().UnixMilli()
+
+	// Commit multiple offsets
+	for i := 0; i < 5; i++ {
+		_, err := store.CommitOffset(ctx, CommitOffsetRequest{
+			GroupID:   "delete-all-group",
+			Topic:     "test-topic",
+			Partition: int32(i),
+			Offset:    int64(i * 100),
+			NowMs:     nowMs,
+		})
+		if err != nil {
+			t.Fatalf("failed to commit offset: %v", err)
+		}
+	}
+
+	// Delete all
+	err := store.DeleteAllCommittedOffsets(ctx, "delete-all-group")
+	if err != nil {
+		t.Fatalf("failed to delete all offsets: %v", err)
+	}
+
+	// Verify they're all gone
+	offsets, err := store.ListCommittedOffsets(ctx, "delete-all-group")
+	if err != nil {
+		t.Fatalf("failed to list offsets: %v", err)
+	}
+	if len(offsets) != 0 {
+		t.Errorf("expected 0 offsets after delete all, got %d", len(offsets))
+	}
+}
+
+func TestStore_CommitOffsetInvalidGroupID(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	_, err := store.CommitOffset(ctx, CommitOffsetRequest{
+		GroupID:   "",
+		Topic:     "test-topic",
+		Partition: 0,
+		Offset:    100,
+		NowMs:     time.Now().UnixMilli(),
+	})
+	if !errors.Is(err, ErrInvalidGroupID) {
+		t.Errorf("expected ErrInvalidGroupID, got %v", err)
+	}
+}
+
+func TestStore_CommitOffsetOverwrite(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+	nowMs := time.Now().UnixMilli()
+
+	// First commit
+	_, err := store.CommitOffset(ctx, CommitOffsetRequest{
+		GroupID:   "overwrite-group",
+		Topic:     "test-topic",
+		Partition: 0,
+		Offset:    100,
+		Metadata:  "first",
+		NowMs:     nowMs,
+	})
+	if err != nil {
+		t.Fatalf("first commit failed: %v", err)
+	}
+
+	// Second commit (overwrite)
+	_, err = store.CommitOffset(ctx, CommitOffsetRequest{
+		GroupID:   "overwrite-group",
+		Topic:     "test-topic",
+		Partition: 0,
+		Offset:    200,
+		Metadata:  "second",
+		NowMs:     nowMs + 1000,
+	})
+	if err != nil {
+		t.Fatalf("second commit failed: %v", err)
+	}
+
+	// Verify the second commit is the one stored
+	offset, err := store.GetCommittedOffset(ctx, "overwrite-group", "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to get offset: %v", err)
+	}
+	if offset.Offset != 200 {
+		t.Errorf("expected offset 200, got %d", offset.Offset)
+	}
+	if offset.Metadata != "second" {
+		t.Errorf("expected metadata 'second', got %s", offset.Metadata)
+	}
+}
+
+func TestStore_CommitOffsetsAtomic(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+	nowMs := time.Now().UnixMilli()
+
+	offsets := []CommitOffsetRequest{
+		{Topic: "topic-1", Partition: 0, Offset: 100, LeaderEpoch: 1},
+		{Topic: "topic-1", Partition: 1, Offset: 200, LeaderEpoch: 2},
+		{Topic: "topic-2", Partition: 0, Offset: 300, LeaderEpoch: 3},
+	}
+
+	committed, err := store.CommitOffsets(ctx, "atomic-group", offsets, nowMs)
+	if err != nil {
+		t.Fatalf("failed to commit offsets: %v", err)
+	}
+
+	if len(committed) != 3 {
+		t.Fatalf("expected 3 committed offsets, got %d", len(committed))
+	}
+
+	// Verify all offsets were stored
+	for i, req := range offsets {
+		offset, err := store.GetCommittedOffset(ctx, "atomic-group", req.Topic, req.Partition)
+		if err != nil {
+			t.Fatalf("failed to get offset %d: %v", i, err)
+		}
+		if offset == nil {
+			t.Fatalf("offset %d not found", i)
+		}
+		if offset.Offset != req.Offset {
+			t.Errorf("offset %d: expected %d, got %d", i, req.Offset, offset.Offset)
+		}
+		if offset.LeaderEpoch != req.LeaderEpoch {
+			t.Errorf("offset %d: expected leader epoch %d, got %d", i, req.LeaderEpoch, offset.LeaderEpoch)
+		}
+	}
+}
+
+func TestStore_OffsetKeyStoragePath(t *testing.T) {
+	// This test verifies the offset is stored at /dray/v1/groups/<groupId>/offsets/<topic>/<partition>
+	ctx := context.Background()
+	metaStore := metadata.NewMockStore()
+	store := NewStore(metaStore)
+	nowMs := time.Now().UnixMilli()
+
+	_, err := store.CommitOffset(ctx, CommitOffsetRequest{
+		GroupID:   "my-group",
+		Topic:     "my-topic",
+		Partition: 3,
+		Offset:    12345,
+		NowMs:     nowMs,
+	})
+	if err != nil {
+		t.Fatalf("failed to commit offset: %v", err)
+	}
+
+	// Verify the key path matches the task requirement
+	expectedKey := "/dray/v1/groups/my-group/offsets/my-topic/3"
+	result, err := metaStore.Get(ctx, expectedKey)
+	if err != nil {
+		t.Fatalf("failed to get from metadata store: %v", err)
+	}
+	if !result.Exists {
+		t.Errorf("expected key %s to exist", expectedKey)
+	}
+}

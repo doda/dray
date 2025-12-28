@@ -1580,7 +1580,7 @@
     "scope": [
       "internal/protocol/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "offset-fetch-handler",
