@@ -315,3 +315,11 @@ Start with project-setup, then follow spec phases:
 - Verified rack handling and cluster authorized operations default value
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T07:22:33Z] Reviewed broker-registration
+- Scope: internal/routing/broker.go, internal/routing/adapter.go, internal/routing/broker_test.go, internal/routing/adapter_test.go, internal/routing/broker_integration_test.go, internal/routing/doc.go, task_list.json
+- Verified broker registry stores ephemeral keys via PutEphemeral and lists brokers by prefix
+- Verified broker info serialization, zone filtering, and adapter mapping to protocol.BrokerInfo
+- Verified ephemeral key expiry behavior via Oxia integration test logic
+- Verified helper methods (Host/Port, ParseZoneID) and registry getters
+- Issues found: none
+- Tests: not run (already run by working agent)
