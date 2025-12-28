@@ -204,3 +204,11 @@ Start with project-setup, then follow spec phases:
 - Issue found: race between initial HWM check and notification subscription could miss an update and wait until timeout
 - Fix: re-check HWM after subscribing to notifications to avoid missed updates
 - Tests: not run (already run by working agent)
+[2025-12-28T03:46:53Z] Reviewed fetch-wal-reader
+- Scope: internal/fetch/wal_reader.go, internal/fetch/wal_reader_test.go, internal/fetch/patching.go, task_list.json
+- Verified WAL reader range-reads chunk data, parses length-prefixed batches, and respects maxBytes
+- Verified offset filtering returns batches containing fetchOffset and updates StartOffset/EndOffset
+- Verified batchIndex path seeks by lastOffset and slices batches by indexed offsets
+- Verified error handling for missing objects, invalid file types, truncated chunks, and offset-out-of-range
+- Issues found: none
+- Tests: not run (already run by working agent)

@@ -827,7 +827,7 @@
     "scope": [
       "internal/fetch/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "fetch-parquet-reader",
