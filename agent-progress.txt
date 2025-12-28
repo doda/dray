@@ -849,3 +849,11 @@ Start with project-setup, then follow spec phases:
 - Simplified test file by removing unused crash object store helpers
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+
+[2025-12-28T22:05:00Z] Reviewed invariant-i4-test
+- Scope: tests/integration/invariant_i4_test.go, task_list.json
+- Verified invariant I4 coverage: post-metadata-commit retry produces duplicates with monotonic offsets
+- Checked handler-based and kafka-client paths for offset monotonicity, HWM updates, and fetch visibility
+- Verified index entries sum matches HWM and no gaps for retry scenarios
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)
