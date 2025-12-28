@@ -1617,7 +1617,7 @@
     "scope": [
       "tests/integration/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "offset-retention-sweeper",
