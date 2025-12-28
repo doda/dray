@@ -495,3 +495,11 @@ Start with project-setup, then follow spec phases:
 - Issues found: UUID fallback used meta.TopicID rather than topic name
 - Resolution: derive UUID fallback from topic name in range and uniform assignors
 - Tests: not run (already run by working agent)
+[2025-12-28T12:46:12Z] Reviewed kip848-protocol-interop
+- Scope: internal/groups/store.go, internal/groups/store_test.go, internal/protocol/consumer_group_heartbeat.go, internal/protocol/consumer_group_heartbeat_test.go, internal/protocol/join_group.go, internal/protocol/protocol_interop_test.go, task_list.json
+- Verified ConvertGroupType enforces empty-group requirement and preserves group type unless empty
+- Verified JoinGroup returns MISMATCHED_ENDPOINT_TYPE for consumer groups with active members and converts empty consumer groups to classic
+- Verified ConsumerGroupHeartbeat returns MISMATCHED_ENDPOINT_TYPE for classic groups with active members and converts empty classic groups to consumer
+- Verified tests cover conversion, mismatch handling, and error paths
+- Issues found: none
+- Tests: not run (already run by working agent)

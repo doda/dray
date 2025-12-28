@@ -123,6 +123,47 @@ func (s *Store) GetGroupType(ctx context.Context, groupID string) (GroupType, er
 	return GroupType(result.Value), nil
 }
 
+// ErrGroupNotEmpty is returned when trying to convert a group with active members.
+var ErrGroupNotEmpty = errors.New("groups: group is not empty")
+
+// ConvertGroupType converts a group from one protocol type to another.
+// This is only allowed when the group has no active members.
+func (s *Store) ConvertGroupType(ctx context.Context, groupID string, newType GroupType) error {
+	if groupID == "" {
+		return ErrInvalidGroupID
+	}
+	if newType != GroupTypeClassic && newType != GroupTypeConsumer {
+		return fmt.Errorf("groups: invalid group type: %s", newType)
+	}
+
+	typeKey := keys.GroupTypeKeyPath(groupID)
+
+	return s.meta.Txn(ctx, typeKey, func(txn metadata.Txn) error {
+		// Check current type exists
+		_, version, err := txn.Get(typeKey)
+		if err != nil {
+			if errors.Is(err, metadata.ErrKeyNotFound) {
+				return ErrGroupNotFound
+			}
+			return err
+		}
+
+		// Verify group has no members
+		membersPrefix := keys.GroupMembersPrefix(groupID)
+		members, err := s.meta.List(ctx, membersPrefix, "", 1)
+		if err != nil {
+			return fmt.Errorf("groups: list members: %w", err)
+		}
+		if len(members) > 0 {
+			return ErrGroupNotEmpty
+		}
+
+		// Update type
+		txn.PutWithVersion(typeKey, []byte(newType), version)
+		return nil
+	})
+}
+
 // GetGroupState retrieves the group state.
 func (s *Store) GetGroupState(ctx context.Context, groupID string) (*GroupState, error) {
 	if groupID == "" {

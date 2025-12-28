@@ -93,7 +93,7 @@ func TestConsumerGroupHeartbeatHandler_JoinGroup(t *testing.T) {
 		}
 	})
 
-	t.Run("error - group is classic type", func(t *testing.T) {
+	t.Run("error - group is classic type with active members", func(t *testing.T) {
 		store := newTestGroupStore()
 		handler := NewConsumerGroupHeartbeatHandler(store, nil, nil)
 
@@ -108,15 +108,62 @@ func TestConsumerGroupHeartbeatHandler_JoinGroup(t *testing.T) {
 			t.Fatalf("failed to create group: %v", err)
 		}
 
+		// Add a member to make the group non-empty (simulating active classic protocol usage)
+		_, err = store.AddMember(ctx, groups.AddMemberRequest{
+			GroupID:  "classic-group",
+			MemberID: "classic-member-1",
+			NowMs:    1000,
+		})
+		if err != nil {
+			t.Fatalf("failed to add member: %v", err)
+		}
+
 		req := kmsg.NewPtrConsumerGroupHeartbeatRequest()
 		req.Group = "classic-group"
 		req.MemberID = ""
 		req.MemberEpoch = 0
+		req.SubscribedTopicNames = []string{"test-topic"}
 
 		resp := handler.Handle(ctx, 0, req)
 
-		if resp.ErrorCode != errCGHBInvalidGroupID {
-			t.Errorf("expected error code %d, got %d", errCGHBInvalidGroupID, resp.ErrorCode)
+		// Should return MISMATCHED_ENDPOINT_TYPE (114) since group has classic members
+		if resp.ErrorCode != errCGHBMismatchedEndpointType {
+			t.Errorf("expected error code %d (MISMATCHED_ENDPOINT_TYPE), got %d", errCGHBMismatchedEndpointType, resp.ErrorCode)
+		}
+	})
+
+	t.Run("success - empty classic group converts to consumer", func(t *testing.T) {
+		store := newTestGroupStore()
+		handler := NewConsumerGroupHeartbeatHandler(store, nil, nil)
+
+		// Create empty classic group
+		_, err := store.CreateGroup(ctx, groups.CreateGroupRequest{
+			GroupID:      "empty-classic-group",
+			Type:         groups.GroupTypeClassic,
+			ProtocolType: "consumer",
+			NowMs:        1000,
+		})
+		if err != nil {
+			t.Fatalf("failed to create group: %v", err)
+		}
+
+		req := kmsg.NewPtrConsumerGroupHeartbeatRequest()
+		req.Group = "empty-classic-group"
+		req.MemberID = ""
+		req.MemberEpoch = 0
+		req.SubscribedTopicNames = []string{"test-topic"}
+
+		resp := handler.Handle(ctx, 0, req)
+
+		// Should succeed since empty classic group can be converted
+		if resp.ErrorCode != errCGHBNone {
+			t.Errorf("expected success (0), got %d", resp.ErrorCode)
+		}
+
+		// Verify group was converted to consumer type
+		groupType, _ := store.GetGroupType(ctx, "empty-classic-group")
+		if groupType != groups.GroupTypeConsumer {
+			t.Errorf("expected consumer type after conversion, got %s", groupType)
 		}
 	})
 

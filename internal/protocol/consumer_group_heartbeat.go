@@ -23,6 +23,7 @@ const (
 	errCGHBFencedMemberEpoch        int16 = 110 // FENCED_MEMBER_EPOCH
 	errCGHBUnreleasedInstanceID     int16 = 112 // UNRELEASED_INSTANCE_ID
 	errCGHBUnsupportedAssignor      int16 = 113 // UNSUPPORTED_ASSIGNOR
+	errCGHBMismatchedEndpointType   int16 = 114 // MISMATCHED_ENDPOINT_TYPE
 	errCGHBGroupMaxSizeReached      int16 = 115 // GROUP_MAX_SIZE_REACHED
 )
 
@@ -114,11 +115,42 @@ func (h *ConsumerGroupHeartbeatHandler) handleJoinGroup(ctx context.Context, req
 
 	// If group exists, verify it's a consumer group (not classic)
 	if err == nil && groupType != groups.GroupTypeConsumer {
-		// Group exists but is classic protocol - return error
-		resp.ErrorCode = errCGHBInvalidGroupID
-		errMsg := "group uses classic protocol, not consumer protocol"
-		resp.ErrorMessage = &errMsg
-		return resp
+		// Check if group is empty - if so, we can convert it
+		members, listErr := h.store.ListMembers(ctx, req.Group)
+		if listErr != nil {
+			logger.Warnf("failed to list members for protocol conversion", map[string]any{
+				"group": req.Group,
+				"error": listErr.Error(),
+			})
+			resp.ErrorCode = errCGHBCoordinatorNotAvailable
+			return resp
+		}
+
+		if len(members) > 0 {
+			// Group has members using classic protocol - return MISMATCHED_ENDPOINT_TYPE
+			logger.Warnf("consumer group heartbeat received for classic protocol group with active members", map[string]any{
+				"group":       req.Group,
+				"groupType":   groupType,
+				"memberCount": len(members),
+			})
+			resp.ErrorCode = errCGHBMismatchedEndpointType
+			errMsg := "group uses classic protocol and has active members; cannot use consumer protocol"
+			resp.ErrorMessage = &errMsg
+			return resp
+		}
+
+		// Group is empty - convert to consumer protocol
+		logger.Infof("converting empty group from classic to consumer protocol", map[string]any{
+			"group": req.Group,
+		})
+		if convertErr := h.store.ConvertGroupType(ctx, req.Group, groups.GroupTypeConsumer); convertErr != nil {
+			logger.Warnf("failed to convert group type", map[string]any{
+				"group": req.Group,
+				"error": convertErr.Error(),
+			})
+			resp.ErrorCode = errCGHBCoordinatorNotAvailable
+			return resp
+		}
 	}
 
 	// Create group if it doesn't exist

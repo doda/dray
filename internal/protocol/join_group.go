@@ -25,10 +25,12 @@ const (
 	errInconsistentGroupProto        int16 = 23
 	errInvalidGroupID                int16 = 24
 	errGroupAuthorizationFailedJoinG int16 = 30
+	errMismatchedEndpointTypeJoinG   int16 = 114 // MISMATCHED_ENDPOINT_TYPE
 )
 
 var errProtocolTypeMismatch = errors.New("join group: protocol type mismatch")
 var errNoCommonProtocol = errors.New("join group: no common protocol")
+var errMismatchedEndpointType = errors.New("join group: mismatched endpoint type")
 
 // JoinGroupHandlerConfig configures the JoinGroup handler.
 type JoinGroupHandlerConfig struct {
@@ -164,6 +166,10 @@ func (h *JoinGroupHandler) Handle(ctx context.Context, version int16, req *kmsg.
 			resp.ErrorCode = errInconsistentGroupProto
 			return resp
 		}
+		if errors.Is(err, errMismatchedEndpointType) {
+			resp.ErrorCode = errMismatchedEndpointTypeJoinG
+			return resp
+		}
 		logger.Warnf("failed to get/create group", map[string]any{
 			"group": req.Group,
 			"error": err.Error(),
@@ -230,6 +236,36 @@ func (h *JoinGroupHandler) Handle(ctx context.Context, version int16, req *kmsg.
 
 // getOrCreateGroup gets the existing group or creates a new one.
 func (h *JoinGroupHandler) getOrCreateGroup(ctx context.Context, req *kmsg.JoinGroupRequest, nowMs int64) (*groups.GroupState, error) {
+	logger := logging.FromCtx(ctx)
+
+	// First check the group type to handle protocol interop
+	groupType, typeErr := h.store.GetGroupType(ctx, req.Group)
+	if typeErr == nil && groupType == groups.GroupTypeConsumer {
+		// Group exists as consumer protocol - check if empty
+		members, listErr := h.store.ListMembers(ctx, req.Group)
+		if listErr != nil {
+			return nil, listErr
+		}
+
+		if len(members) > 0 {
+			// Group has members using consumer protocol - return MISMATCHED_ENDPOINT_TYPE
+			logger.Warnf("join group received for consumer protocol group with active members", map[string]any{
+				"group":       req.Group,
+				"groupType":   groupType,
+				"memberCount": len(members),
+			})
+			return nil, errMismatchedEndpointType
+		}
+
+		// Group is empty - convert to classic protocol
+		logger.Infof("converting empty group from consumer to classic protocol", map[string]any{
+			"group": req.Group,
+		})
+		if convertErr := h.store.ConvertGroupType(ctx, req.Group, groups.GroupTypeClassic); convertErr != nil {
+			return nil, convertErr
+		}
+	}
+
 	state, err := h.store.GetGroupState(ctx, req.Group)
 	if err == nil {
 		// Validate protocol type matches

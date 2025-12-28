@@ -1170,3 +1170,172 @@ func TestStore_DeleteAssignment(t *testing.T) {
 		t.Error("assignment should be nil after deletion")
 	}
 }
+
+// TestStore_ConvertGroupType tests converting a group from one protocol type to another.
+func TestStore_ConvertGroupType(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	// Create a classic group
+	_, err := store.CreateGroup(ctx, CreateGroupRequest{
+		GroupID: "convert-group",
+		Type:    GroupTypeClassic,
+		NowMs:   time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+
+	// Verify initial type
+	groupType, err := store.GetGroupType(ctx, "convert-group")
+	if err != nil {
+		t.Fatalf("failed to get group type: %v", err)
+	}
+	if groupType != GroupTypeClassic {
+		t.Errorf("expected classic type, got %s", groupType)
+	}
+
+	// Convert to consumer type
+	err = store.ConvertGroupType(ctx, "convert-group", GroupTypeConsumer)
+	if err != nil {
+		t.Fatalf("failed to convert group type: %v", err)
+	}
+
+	// Verify new type
+	groupType, err = store.GetGroupType(ctx, "convert-group")
+	if err != nil {
+		t.Fatalf("failed to get group type after conversion: %v", err)
+	}
+	if groupType != GroupTypeConsumer {
+		t.Errorf("expected consumer type after conversion, got %s", groupType)
+	}
+
+	// Convert back to classic
+	err = store.ConvertGroupType(ctx, "convert-group", GroupTypeClassic)
+	if err != nil {
+		t.Fatalf("failed to convert group type back: %v", err)
+	}
+
+	groupType, err = store.GetGroupType(ctx, "convert-group")
+	if err != nil {
+		t.Fatalf("failed to get group type after second conversion: %v", err)
+	}
+	if groupType != GroupTypeClassic {
+		t.Errorf("expected classic type after second conversion, got %s", groupType)
+	}
+}
+
+// TestStore_ConvertGroupTypeNotEmpty tests that conversion fails when group has members.
+func TestStore_ConvertGroupTypeNotEmpty(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	// Create a classic group with a member
+	_, err := store.CreateGroup(ctx, CreateGroupRequest{
+		GroupID: "non-empty-convert-group",
+		Type:    GroupTypeClassic,
+		NowMs:   time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+
+	_, err = store.AddMember(ctx, AddMemberRequest{
+		GroupID:  "non-empty-convert-group",
+		MemberID: "member-1",
+		ClientID: "client-1",
+		NowMs:    time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to add member: %v", err)
+	}
+
+	// Try to convert - should fail because group has members
+	err = store.ConvertGroupType(ctx, "non-empty-convert-group", GroupTypeConsumer)
+	if !errors.Is(err, ErrGroupNotEmpty) {
+		t.Errorf("expected ErrGroupNotEmpty, got %v", err)
+	}
+
+	// Verify type is unchanged
+	groupType, err := store.GetGroupType(ctx, "non-empty-convert-group")
+	if err != nil {
+		t.Fatalf("failed to get group type: %v", err)
+	}
+	if groupType != GroupTypeClassic {
+		t.Errorf("expected classic type (unchanged), got %s", groupType)
+	}
+}
+
+// TestStore_ConvertGroupTypeNotFound tests that conversion fails for nonexistent groups.
+func TestStore_ConvertGroupTypeNotFound(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	err := store.ConvertGroupType(ctx, "nonexistent-group", GroupTypeConsumer)
+	if !errors.Is(err, ErrGroupNotFound) {
+		t.Errorf("expected ErrGroupNotFound, got %v", err)
+	}
+}
+
+// TestStore_ConvertGroupTypeInvalidID tests that conversion fails for empty group ID.
+func TestStore_ConvertGroupTypeInvalidID(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	err := store.ConvertGroupType(ctx, "", GroupTypeConsumer)
+	if !errors.Is(err, ErrInvalidGroupID) {
+		t.Errorf("expected ErrInvalidGroupID, got %v", err)
+	}
+}
+
+// TestStore_ConvertGroupTypeAfterMemberRemoval tests conversion after all members leave.
+func TestStore_ConvertGroupTypeAfterMemberRemoval(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	// Create a classic group with a member
+	_, err := store.CreateGroup(ctx, CreateGroupRequest{
+		GroupID: "removable-member-group",
+		Type:    GroupTypeClassic,
+		NowMs:   time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+
+	_, err = store.AddMember(ctx, AddMemberRequest{
+		GroupID:  "removable-member-group",
+		MemberID: "member-1",
+		NowMs:    time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to add member: %v", err)
+	}
+
+	// Conversion should fail
+	err = store.ConvertGroupType(ctx, "removable-member-group", GroupTypeConsumer)
+	if !errors.Is(err, ErrGroupNotEmpty) {
+		t.Errorf("expected ErrGroupNotEmpty, got %v", err)
+	}
+
+	// Remove the member
+	err = store.RemoveMember(ctx, "removable-member-group", "member-1")
+	if err != nil {
+		t.Fatalf("failed to remove member: %v", err)
+	}
+
+	// Now conversion should succeed
+	err = store.ConvertGroupType(ctx, "removable-member-group", GroupTypeConsumer)
+	if err != nil {
+		t.Fatalf("expected conversion to succeed after member removal, got %v", err)
+	}
+
+	// Verify new type
+	groupType, err := store.GetGroupType(ctx, "removable-member-group")
+	if err != nil {
+		t.Fatalf("failed to get group type: %v", err)
+	}
+	if groupType != GroupTypeConsumer {
+		t.Errorf("expected consumer type, got %s", groupType)
+	}
+}
