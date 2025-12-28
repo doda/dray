@@ -2368,7 +2368,7 @@
     "scope": [
       "cmd/drayd/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "drayd-admin-cli",

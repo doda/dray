@@ -39,8 +39,7 @@ func main() {
 	case "broker":
 		runBroker(os.Args[2:])
 	case "compactor":
-		fmt.Println("compactor mode not yet implemented")
-		os.Exit(1)
+		runCompactor(os.Args[2:])
 	case "version":
 		fmt.Printf("drayd version %s (built %s, commit %s)\n", version, buildTime, gitCommit)
 	case "help", "-h", "--help":
@@ -57,7 +56,7 @@ func printUsage() {
 
 Commands:
   broker      Start the Kafka protocol server (broker mode)
-  compactor   Start the compaction worker (not yet implemented)
+  compactor   Start the compaction worker
   version     Print version information
 
 Run 'drayd <command> --help' for more information on a command.`)
@@ -188,4 +187,110 @@ Options:`)
 	}
 
 	logger.Info("broker shutdown complete")
+}
+
+func runCompactor(args []string) {
+	fs := flag.NewFlagSet("compactor", flag.ExitOnError)
+	configPath := fs.String("config", "", "Path to configuration file")
+	healthAddr := fs.String("health-addr", "", "Override health endpoint address (e.g., :9090)")
+	compactorID := fs.String("compactor-id", "", "Override compactor ID (default: auto-generated UUID)")
+
+	fs.Usage = func() {
+		fmt.Println(`Usage: drayd compactor [options]
+
+Start the Dray compaction worker.
+
+The compactor scans streams for WAL entries eligible for compaction,
+converts them to Parquet format, and updates the offset index atomically.
+
+Options:`)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	// Load configuration
+	var cfg *config.Config
+	var err error
+	if *configPath != "" {
+		cfg, err = config.LoadFromPath(*configPath)
+	} else {
+		cfg, err = config.Load()
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Apply CLI overrides
+	if *healthAddr != "" {
+		cfg.Observability.MetricsAddr = *healthAddr
+	}
+
+	// Set up logger
+	logger := logging.New(logging.Config{
+		Level:  logging.ParseLevel(cfg.Observability.LogLevel),
+		Format: logging.ParseFormat(cfg.Observability.LogFormat),
+	})
+
+	// Build compactor options
+	compactorOpts := CompactorOptions{
+		Config:    cfg,
+		Logger:    logger,
+		Version:   version,
+		GitCommit: gitCommit,
+		BuildTime: buildTime,
+	}
+
+	// Set compactor ID
+	if *compactorID != "" {
+		compactorOpts.CompactorID = *compactorID
+	} else {
+		compactorOpts.CompactorID = uuid.New().String()
+	}
+
+	// Create and run compactor
+	compactor, err := NewCompactor(compactorOpts)
+	if err != nil {
+		logger.Errorf("failed to create compactor", map[string]any{"error": err.Error()})
+		os.Exit(1)
+	}
+
+	// Set up signal handling for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start the compactor
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- compactor.Start(ctx)
+	}()
+
+	// Wait for shutdown signal or error
+	select {
+	case sig := <-sigCh:
+		logger.Infof("received shutdown signal", map[string]any{"signal": sig.String()})
+	case err := <-errCh:
+		if err != nil {
+			logger.Errorf("compactor error", map[string]any{"error": err.Error()})
+			os.Exit(1)
+		}
+	}
+
+	// Graceful shutdown
+	logger.Info("initiating graceful shutdown")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
+	if err := compactor.Shutdown(shutdownCtx); err != nil {
+		logger.Errorf("shutdown error", map[string]any{"error": err.Error()})
+		os.Exit(1)
+	}
+
+	logger.Info("compactor shutdown complete")
 }
