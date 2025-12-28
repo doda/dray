@@ -2516,7 +2516,7 @@
     "scope": [
       "tests/compatibility/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "golden-test-groups",
