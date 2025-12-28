@@ -669,3 +669,10 @@ Start with project-setup, then follow spec phases:
 - Verified swap result tracks decremented WAL IDs and GC-ready IDs
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[review] wal-gc-worker
+- Scope: internal/gc/wal_gc.go, internal/gc/wal_gc_test.go, internal/gc/doc.go, internal/compaction/swap.go, task_list.json
+- Verified WAL GC worker scans /wal/gc/<metaDomain>/, checks deleteAfterMs, deletes object, then deletes GC marker
+- Verified worker configuration defaults and Start/Stop behavior
+- Verified GC record type centralization in gc package and compaction swap uses it
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)

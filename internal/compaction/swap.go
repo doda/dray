@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/dray-io/dray/internal/gc"
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
@@ -279,7 +280,7 @@ func (s *IndexSwapper) decrementWALRefCount(ctx context.Context, metaDomain int,
 		if record.RefCount <= 0 {
 			// Move to GC queue instead of deleting
 			gcKey := keys.WALGCKeyPath(metaDomain, walID)
-			gcRecord := WALGCRecord{
+			gcRecord := gc.WALGCRecord{
 				Path:          record.Path,
 				DeleteAfterMs: time.Now().Add(10 * time.Minute).UnixMilli(), // Grace period
 				CreatedAt:     record.CreatedAt,
@@ -324,14 +325,6 @@ func (s *IndexSwapper) decrementWALRefCount(ctx context.Context, metaDomain int,
 	}
 }
 
-// WALGCRecord is stored at /wal/gc/<metaDomain>/<walId> when a WAL object
-// is ready for garbage collection.
-type WALGCRecord struct {
-	Path          string `json:"path"`
-	DeleteAfterMs int64  `json:"deleteAfterMs"`
-	CreatedAt     int64  `json:"createdAt"`
-	SizeBytes     int64  `json:"sizeBytes"`
-}
 
 // SwapFromJob performs an index swap using information from a compaction job.
 // This is a convenience method for the compaction worker.

@@ -1996,7 +1996,7 @@
     "scope": [
       "internal/gc/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "wal-orphan-gc",
