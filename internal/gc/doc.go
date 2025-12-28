@@ -83,6 +83,28 @@
 //
 // # Retention Enforcement
 //
-// Retention-based GC (not yet implemented) deletes data older than
-// retention.ms or beyond retention.bytes limits.
+// The retention worker ([RetentionWorker]) enforces retention.ms and
+// retention.bytes policies configured on topics. It periodically scans all
+// streams and deletes data that exceeds the configured limits:
+//
+//   - retention.ms: Data older than the specified milliseconds is deleted
+//   - retention.bytes: Data beyond the byte limit is deleted (oldest first)
+//
+// Both limits can be set to -1 for unlimited retention. When both limits are
+// set, data is deleted if it violates either limit. At least one entry is
+// always kept per stream to preserve offset continuity.
+//
+// Usage:
+//
+//	worker := gc.NewRetentionWorker(metaStore, objStore, topicStore, gc.RetentionWorkerConfig{
+//	    ScanIntervalMs: 300000,  // 5 minutes
+//	    NumDomains:     16,
+//	    GracePeriodMs:  600000,  // 10 minutes grace before deletion
+//	})
+//	worker.Start()
+//	defer worker.Stop()
+//
+// For manual enforcement on a specific stream:
+//
+//	worker.EnforceStream(ctx, streamID, retentionMs, retentionBytes)
 package gc

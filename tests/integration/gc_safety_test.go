@@ -589,7 +589,7 @@ func makeWALGCRecordsEligible(t *testing.T, ctx context.Context, metaStore metad
 				t.Fatalf("failed to marshal WAL GC record %s: %v", kv.Key, err)
 			}
 
-			if err := metaStore.Put(ctx, kv.Key, recordBytes); err != nil {
+			if _, err := metaStore.Put(ctx, kv.Key, recordBytes); err != nil {
 				t.Fatalf("failed to update WAL GC record %s: %v", kv.Key, err)
 			}
 			updated++
@@ -657,7 +657,8 @@ func runGCSafetyCompaction(t *testing.T, ctx context.Context, streamID string, m
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	metaDomain := 0
+	// Calculate the metaDomain based on streamID (using the same 4 domains as the test config)
+	metaDomain := int(metadata.CalculateMetaDomain(streamID, 4))
 
 	// Create Parquet index entry
 	parquetEntry := index.IndexEntry{
@@ -739,7 +740,8 @@ func runGCSafetyCompactionWALOnly(t *testing.T, ctx context.Context, streamID st
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	metaDomain := 0
+	// Calculate the metaDomain based on streamID (using the same 4 domains as the test config)
+	metaDomain := int(metadata.CalculateMetaDomain(streamID, 4))
 
 	parquetEntry := index.IndexEntry{
 		StreamID:         streamID,
