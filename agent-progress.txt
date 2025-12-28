@@ -802,3 +802,10 @@ Start with project-setup, then follow spec phases:
 - Fixed: record read/get-range success based on read/close errors (avoids false success on partial/error reads)
 - Issues found: none after fix
 - Tests: not run (trusted prior run by working agent)
+[review] connection-metrics
+- Scope: internal/metrics/connection.go, internal/metrics/connection_test.go, internal/metrics/doc.go, internal/server/server.go, task_list.json
+- Verified connection metrics include active connections gauge, request counters by API/status, and error counters by API/error code
+- Verified server wiring increments/decrements active connections and records request success/failure and handler errors
+- Verified helper constructors support default and custom Prometheus registries for tests
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)

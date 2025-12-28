@@ -16,6 +16,7 @@ import (
 
 	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/logging"
+	"github.com/dray-io/dray/internal/metrics"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
@@ -111,6 +112,7 @@ type Server struct {
 	handler  Handler
 	logger   *logging.Logger
 	listener net.Listener
+	metrics  *metrics.ConnectionMetrics
 
 	mu           sync.Mutex
 	conns        map[net.Conn]struct{}
@@ -131,6 +133,13 @@ func New(cfg Config, handler Handler, logger *logging.Logger) *Server {
 		logger:  logger,
 		conns:   make(map[net.Conn]struct{}),
 	}
+}
+
+// WithMetrics sets the connection metrics for the server.
+// Returns the server for method chaining.
+func (s *Server) WithMetrics(m *metrics.ConnectionMetrics) *Server {
+	s.metrics = m
+	return s
 }
 
 // ListenAndServe starts the server on the configured address.
@@ -241,10 +250,20 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.conns[conn] = struct{}{}
 	s.mu.Unlock()
 
+	// Track connection metrics
+	if s.metrics != nil {
+		s.metrics.ConnectionOpened()
+	}
+
 	defer func() {
 		s.mu.Lock()
 		delete(s.conns, conn)
 		s.mu.Unlock()
+
+		// Track connection close
+		if s.metrics != nil {
+			s.metrics.ConnectionClosed()
+		}
 	}()
 
 	logger := s.logger.With(map[string]any{
@@ -305,10 +324,20 @@ func (s *Server) handleConn(conn net.Conn) {
 			ctx = WithZoneID(ctx, header.ZoneID)
 		}
 
+		apiName := APIKey(header.APIKey)
 		response, err := s.handler.HandleRequest(ctx, header, payload)
 		if err != nil {
 			reqLogger.Errorf("handler error", map[string]any{"error": err.Error()})
+			if s.metrics != nil {
+				s.metrics.RecordFailure(apiName)
+				s.metrics.RecordError(apiName, "HANDLER_ERROR")
+			}
 			return
+		}
+
+		// Record successful request
+		if s.metrics != nil {
+			s.metrics.RecordSuccess(apiName)
 		}
 
 		if s.cfg.WriteTimeout > 0 {

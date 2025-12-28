@@ -28,6 +28,10 @@
 //     - Get/Put/Delete/List/Txn/PutEphemeral latency histograms
 //     - Operation counts by type and status (success/failure)
 //     - Retry counts by operation type
+//   - Connection metrics:
+//     - Active TCP connections gauge
+//     - Request counters by API type (Produce, Fetch, Metadata, etc.) and status
+//     - Error counters by API type and error code
 //
 // Metrics are exposed via a dedicated HTTP server on /metrics in Prometheus format.
 //
@@ -67,6 +71,10 @@
 //	gcScanner := metrics.NewGCBacklogScanner(gcMetrics, gcStatsProvider, 30*time.Second)
 //	gcScanner.Start()
 //	defer gcScanner.Stop()
+//
+//	// Create and wire connection metrics
+//	connMetrics := metrics.NewConnectionMetrics()
+//	server := server.New(cfg, handler, logger).WithMetrics(connMetrics)
 //
 //	// Start metrics server
 //	metricsServer := metrics.NewServer(":9090")
