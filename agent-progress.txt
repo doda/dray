@@ -473,3 +473,10 @@ Start with project-setup, then follow spec phases:
 - Issues found: join path ignored MemberEpoch==0 when MemberID was set
 - Resolution: treat MemberEpoch==0 as join; added test coverage
 - Tests: not run (already run by working agent)
+[2025-12-28T11:16:27Z] Reviewed kip848-describe-handler
+- Scope: internal/protocol/consumer_group_describe.go, internal/protocol/consumer_group_describe_test.go, task_list.json
+- Verified handler returns group state, member epochs, assignments, and authorized operations
+- Verified error handling for missing/invalid/classic groups and coordinator lease behavior
+- Verified assignment parsing handles classic-format data and empty assignments
+- Issues found: none
+- Tests: not run (already run by working agent)
