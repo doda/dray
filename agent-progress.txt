@@ -383,3 +383,11 @@ Start with project-setup, then follow spec phases:
 - Verified mock and Oxia stores honor ExpectNotExists/ExpectedVersion options
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T09:06:10Z] Reviewed join-group-handler
+- Scope: internal/protocol/join_group.go, internal/protocol/join_group_test.go, task_list.json
+- Verified JoinGroup handler validates group/session/protocol inputs and persists members
+- Verified rebalance coordination completes with leader/member responses and supports member-id-required behavior
+- Verified protocol selection now enforces common protocol and uses selected protocol metadata for leader list
+- Issues found: protocol type mismatch returned wrong error; protocol selection allowed no-common fallback; metadata used wrong protocol; rebalance completion tied to cancelable context
+- Resolution: return INCONSISTENT_GROUP_PROTOCOL on mismatch/no-common, select common protocol deterministically, use selected protocol metadata, detach rebalance ctx
+- Tests: not run (already run by working agent)
