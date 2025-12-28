@@ -48,6 +48,39 @@
 //	worker.Start()
 //	defer worker.Stop()
 //
+// # Parquet Garbage Collection
+//
+// The Parquet GC worker ([ParquetGCWorker]) handles cleanup of old Parquet files
+// after compaction rewrite (re-compaction). When a compaction job replaces
+// existing Parquet files with a new consolidated Parquet file, the old files
+// are scheduled for deletion via GC markers at:
+//
+//	/parquet/gc/<streamId>/<parquetId>
+//
+// The GC worker periodically scans these markers and deletes the objects
+// once their grace period has passed, allowing in-flight reads to complete.
+//
+// Usage:
+//
+//	worker := gc.NewParquetGCWorker(metaStore, objStore, gc.ParquetGCWorkerConfig{
+//	    ScanIntervalMs: 60000,
+//	    GracePeriodMs:  600000, // 10 minutes
+//	    BatchSize:      100,
+//	})
+//	worker.Start()
+//	defer worker.Stop()
+//
+// To schedule a Parquet file for GC after compaction rewrite:
+//
+//	gc.ScheduleParquetGC(ctx, metaStore, gc.ParquetGCRecord{
+//	    Path:          parquetPath,
+//	    DeleteAfterMs: time.Now().Add(10 * time.Minute).UnixMilli(),
+//	    CreatedAt:     originalCreatedAt,
+//	    SizeBytes:     parquetSizeBytes,
+//	    StreamID:      streamID,
+//	    JobID:         jobID,
+//	})
+//
 // # Retention Enforcement
 //
 // Retention-based GC (not yet implemented) deletes data older than

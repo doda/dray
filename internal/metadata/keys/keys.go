@@ -59,6 +59,10 @@ const (
 	// Format: /wal/gc/<metaDomain>/<walId>
 	WALGCPrefix = "/wal/gc"
 
+	// ParquetGCPrefix is the prefix for Parquet GC markers.
+	// Format: /parquet/gc/<streamId>/<parquetId>
+	ParquetGCPrefix = "/parquet/gc"
+
 	// CompactionLocksPrefix is the prefix for compaction stream locks (ephemeral).
 	// Format: /compaction/locks/<streamId>
 	CompactionLocksPrefix = "/compaction/locks"
@@ -574,6 +578,42 @@ func ParseWALGCKey(key string) (metaDomain int, walID string, err error) {
 	}
 
 	return domain, parts[1], nil
+}
+
+// =============================================================================
+// Parquet GC Keys
+// =============================================================================
+
+// ParquetGCKeyPath returns the key for a Parquet GC marker.
+// Format: /parquet/gc/<streamId>/<parquetId>
+func ParquetGCKeyPath(streamID, parquetID string) string {
+	return fmt.Sprintf("%s/%s/%s", ParquetGCPrefix, streamID, parquetID)
+}
+
+// ParquetGCStreamPrefix returns the prefix for listing all Parquet GC markers for a stream.
+func ParquetGCStreamPrefix(streamID string) string {
+	return fmt.Sprintf("%s/%s/", ParquetGCPrefix, streamID)
+}
+
+// ParquetGCAllPrefix returns the prefix for listing all Parquet GC markers.
+func ParquetGCAllPrefix() string {
+	return ParquetGCPrefix + "/"
+}
+
+// ParseParquetGCKey parses a Parquet GC key.
+func ParseParquetGCKey(key string) (streamID, parquetID string, err error) {
+	prefix := ParquetGCPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return "", "", ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", ErrInvalidKey
+	}
+
+	return parts[0], parts[1], nil
 }
 
 // =============================================================================

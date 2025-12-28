@@ -36,11 +36,19 @@ type SwapRequest struct {
 	// These must be contiguous and cover the same offset range as the Parquet entry.
 	WALIndexKeys []string
 
+	// ParquetIndexKeys are the keys of Parquet index entries to remove (for re-compaction).
+	// When compacting multiple Parquet files into one, these old Parquet entries are replaced.
+	ParquetIndexKeys []string
+
 	// ParquetEntry is the new Parquet index entry to insert.
 	ParquetEntry index.IndexEntry
 
 	// MetaDomain is the metadata domain for the WAL objects.
 	MetaDomain int
+
+	// GracePeriodMs is the grace period before old Parquet files can be deleted.
+	// If 0, defaults to 10 minutes.
+	GracePeriodMs int64
 }
 
 // SwapResult contains the result of the atomic index swap.
@@ -53,6 +61,10 @@ type SwapResult struct {
 
 	// WALObjectsReadyForGC are WAL objects whose refcount reached zero and are ready for GC.
 	WALObjectsReadyForGC []string
+
+	// ParquetFilesScheduledForGC are Parquet file paths that were scheduled for GC.
+	// These are old Parquet files replaced during re-compaction.
+	ParquetFilesScheduledForGC []string
 }
 
 // IndexSwapper handles atomic index swaps during compaction.
@@ -67,19 +79,21 @@ func NewIndexSwapper(meta metadata.MetadataStore) *IndexSwapper {
 	return &IndexSwapper{meta: meta}
 }
 
-// Swap atomically replaces WAL index entries with a Parquet index entry.
+// Swap atomically replaces WAL and/or Parquet index entries with a new Parquet index entry.
 //
 // The operation:
-//  1. Validates that WAL entries are contiguous and match Parquet entry offsets
+//  1. Validates that source entries are contiguous and match new Parquet entry offsets
 //  2. Deletes all WAL index entries
-//  3. Inserts the new Parquet index entry with correct cumulative size
-//  4. Decrements refcounts for affected WAL objects
-//  5. Marks WAL objects for GC if refcount reaches zero
+//  3. Deletes all old Parquet index entries (for re-compaction)
+//  4. Inserts the new Parquet index entry with correct cumulative size
+//  5. Decrements refcounts for affected WAL objects
+//  6. Marks WAL objects for GC if refcount reaches zero
+//  7. Schedules old Parquet files for GC with grace period
 //
 // All operations are executed in a single metadata transaction to ensure atomicity.
 // Per invariant I5 (spec 3.5), readers never see a partial index state during swap.
 func (s *IndexSwapper) Swap(ctx context.Context, req SwapRequest) (*SwapResult, error) {
-	if len(req.WALIndexKeys) == 0 {
+	if len(req.WALIndexKeys) == 0 && len(req.ParquetIndexKeys) == 0 {
 		return nil, ErrNoEntriesToSwap
 	}
 
@@ -115,8 +129,32 @@ func (s *IndexSwapper) Swap(ctx context.Context, req SwapRequest) (*SwapResult, 
 		}
 	}
 
-	// Validate that WAL entries are contiguous and match Parquet entry offsets
-	if err := s.validateOffsets(walEntries, req.ParquetEntry); err != nil {
+	// Read all Parquet entries to validate and collect for GC
+	parquetEntries := make([]index.IndexEntry, 0, len(req.ParquetIndexKeys))
+	for _, key := range req.ParquetIndexKeys {
+		result, err := s.meta.Get(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("compaction: get Parquet entry %s: %w", key, err)
+		}
+		if !result.Exists {
+			return nil, fmt.Errorf("compaction: Parquet entry not found: %s", key)
+		}
+
+		var entry index.IndexEntry
+		if err := json.Unmarshal(result.Value, &entry); err != nil {
+			return nil, fmt.Errorf("compaction: unmarshal Parquet entry: %w", err)
+		}
+
+		if entry.FileType != index.FileTypeParquet {
+			return nil, fmt.Errorf("compaction: entry %s is not a Parquet entry", key)
+		}
+
+		parquetEntries = append(parquetEntries, entry)
+	}
+
+	// Combine all source entries for validation
+	allSourceEntries := append(walEntries, parquetEntries...)
+	if err := s.validateOffsets(allSourceEntries, req.ParquetEntry); err != nil {
 		return nil, err
 	}
 
@@ -152,6 +190,11 @@ func (s *IndexSwapper) Swap(ctx context.Context, req SwapRequest) (*SwapResult, 
 			txn.Delete(key)
 		}
 
+		// Delete all old Parquet index entries (for re-compaction)
+		for _, key := range req.ParquetIndexKeys {
+			txn.Delete(key)
+		}
+
 		// Insert the new Parquet index entry
 		txn.Put(newIndexKey, parquetEntryBytes)
 
@@ -165,9 +208,10 @@ func (s *IndexSwapper) Swap(ctx context.Context, req SwapRequest) (*SwapResult, 
 	// Now decrement WAL object refcounts (outside the main transaction since
 	// WAL objects are in a different key space)
 	result := &SwapResult{
-		NewIndexKey:           newIndexKey,
-		DecrementedWALObjects: make([]string, 0, len(walObjectIDs)),
-		WALObjectsReadyForGC:  make([]string, 0),
+		NewIndexKey:               newIndexKey,
+		DecrementedWALObjects:     make([]string, 0, len(walObjectIDs)),
+		WALObjectsReadyForGC:      make([]string, 0),
+		ParquetFilesScheduledForGC: make([]string, 0, len(parquetEntries)),
 	}
 
 	for walID := range walObjectIDs {
@@ -183,39 +227,65 @@ func (s *IndexSwapper) Swap(ctx context.Context, req SwapRequest) (*SwapResult, 
 		}
 	}
 
-	return result, nil
-}
+	// Schedule old Parquet files for GC with grace period
+	if len(parquetEntries) > 0 {
+		gracePeriodMs := req.GracePeriodMs
+		if gracePeriodMs <= 0 {
+			gracePeriodMs = 10 * 60 * 1000 // 10 minutes default
+		}
+		deleteAfterMs := time.Now().UnixMilli() + gracePeriodMs
 
-// validateOffsets checks that WAL entries are contiguous and match Parquet entry offsets.
-func (s *IndexSwapper) validateOffsets(walEntries []index.IndexEntry, parquetEntry index.IndexEntry) error {
-	if len(walEntries) == 0 {
-		return ErrNoEntriesToSwap
-	}
+		for _, entry := range parquetEntries {
+			gcRecord := gc.ParquetGCRecord{
+				Path:          entry.ParquetPath,
+				DeleteAfterMs: deleteAfterMs,
+				CreatedAt:     entry.CreatedAtMs,
+				SizeBytes:     int64(entry.ParquetSizeBytes),
+				StreamID:      req.StreamID,
+			}
 
-	// Sort WAL entries by start offset to ensure contiguous checks are reliable.
-	sort.Slice(walEntries, func(i, j int) bool {
-		return walEntries[i].StartOffset < walEntries[j].StartOffset
-	})
-
-	// Check that entries are contiguous
-	for i := 1; i < len(walEntries); i++ {
-		if walEntries[i].StartOffset != walEntries[i-1].EndOffset {
-			return fmt.Errorf("%w: gap between WAL entries at offset %d", ErrOffsetMismatch, walEntries[i-1].EndOffset)
+			if err := gc.ScheduleParquetGC(ctx, s.meta, gcRecord); err != nil {
+				// Log error but don't fail - Parquet file will eventually be detected
+				// as orphaned if not cleaned up
+				continue
+			}
+			result.ParquetFilesScheduledForGC = append(result.ParquetFilesScheduledForGC, entry.ParquetPath)
 		}
 	}
 
-	// Check that combined WAL range matches Parquet entry
-	firstStart := walEntries[0].StartOffset
-	lastEnd := walEntries[len(walEntries)-1].EndOffset
+	return result, nil
+}
 
-	if firstStart != parquetEntry.StartOffset {
-		return fmt.Errorf("%w: start offset mismatch: WAL %d, Parquet %d",
-			ErrOffsetMismatch, firstStart, parquetEntry.StartOffset)
+// validateOffsets checks that source entries are contiguous and match new Parquet entry offsets.
+func (s *IndexSwapper) validateOffsets(sourceEntries []index.IndexEntry, newParquetEntry index.IndexEntry) error {
+	if len(sourceEntries) == 0 {
+		return ErrNoEntriesToSwap
 	}
 
-	if lastEnd != parquetEntry.EndOffset {
-		return fmt.Errorf("%w: end offset mismatch: WAL %d, Parquet %d",
-			ErrOffsetMismatch, lastEnd, parquetEntry.EndOffset)
+	// Sort entries by start offset to ensure contiguous checks are reliable.
+	sort.Slice(sourceEntries, func(i, j int) bool {
+		return sourceEntries[i].StartOffset < sourceEntries[j].StartOffset
+	})
+
+	// Check that entries are contiguous
+	for i := 1; i < len(sourceEntries); i++ {
+		if sourceEntries[i].StartOffset != sourceEntries[i-1].EndOffset {
+			return fmt.Errorf("%w: gap between entries at offset %d", ErrOffsetMismatch, sourceEntries[i-1].EndOffset)
+		}
+	}
+
+	// Check that combined source range matches new Parquet entry
+	firstStart := sourceEntries[0].StartOffset
+	lastEnd := sourceEntries[len(sourceEntries)-1].EndOffset
+
+	if firstStart != newParquetEntry.StartOffset {
+		return fmt.Errorf("%w: start offset mismatch: source %d, new Parquet %d",
+			ErrOffsetMismatch, firstStart, newParquetEntry.StartOffset)
+	}
+
+	if lastEnd != newParquetEntry.EndOffset {
+		return fmt.Errorf("%w: end offset mismatch: source %d, new Parquet %d",
+			ErrOffsetMismatch, lastEnd, newParquetEntry.EndOffset)
 	}
 
 	return nil

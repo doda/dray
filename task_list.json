@@ -2034,7 +2034,7 @@
     "scope": [
       "internal/gc/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "gc-safety-test",

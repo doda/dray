@@ -683,3 +683,11 @@ Start with project-setup, then follow spec phases:
 - Fix applied: paginate metadata List with range end key to avoid starving orphans beyond first batch
 - Issues found: none after fix
 - Tests: not run (trusted prior run by working agent)
+[review] parquet-gc
+- Scope: internal/compaction/swap.go, internal/gc/parquet_gc.go, internal/gc/parquet_gc_test.go, internal/gc/doc.go, internal/metadata/keys/keys.go, task_list.json
+- Verified Parquet GC markers stored under /parquet/gc/<streamId>/<parquetId> with helpers in keys
+- Verified compaction swap can remove old Parquet index entries and schedule GC records with grace period
+- Verified Parquet GC worker scans markers, deletes objects after DeleteAfterMs, and removes markers
+- Verified helper APIs for scan/eligible counts and scheduling
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)
