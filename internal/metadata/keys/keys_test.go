@@ -1122,6 +1122,50 @@ func TestGroupKeyPath(t *testing.T) {
 	}
 }
 
+func TestGroupLeaseKeyPath(t *testing.T) {
+	got := GroupLeaseKeyPath("my-group")
+	want := "/dray/v1/groups/my-group/lease"
+	if got != want {
+		t.Errorf("GroupLeaseKeyPath() = %q, want %q", got, want)
+	}
+}
+
+func TestParseGroupLeaseKey(t *testing.T) {
+	tests := []struct {
+		key       string
+		wantGroup string
+		wantErr   bool
+	}{
+		{"/dray/v1/groups/my-group/lease", "my-group", false},
+		{"/dray/v1/groups/group-123/lease", "group-123", false},
+		{"/dray/v1/groups/test-consumer-group/lease", "test-consumer-group", false},
+		{"/dray/v1/groups//lease", "", true},                   // empty groupID
+		{"/dray/v1/groups/my-group/state", "", true},           // wrong suffix
+		{"/dray/v1/groups/my-group", "", true},                 // no /lease suffix
+		{"/other/prefix/my-group/lease", "", true},             // wrong prefix
+		{"/dray/v1/groups/lease", "", true},                    // missing groupID
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.key, func(t *testing.T) {
+			groupID, err := ParseGroupLeaseKey(tc.key)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("ParseGroupLeaseKey(%q) expected error, got groupID=%q", tc.key, groupID)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("ParseGroupLeaseKey(%q) unexpected error: %v", tc.key, err)
+				return
+			}
+			if groupID != tc.wantGroup {
+				t.Errorf("ParseGroupLeaseKey(%q) = %q, want %q", tc.key, groupID, tc.wantGroup)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // WAL Key Tests (§9)
 // =============================================================================

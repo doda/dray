@@ -374,3 +374,12 @@ Start with project-setup, then follow spec phases:
 - Verified tests cover group lifecycle, member ops, assignments, and error paths
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T08:50:12Z] Reviewed group-coordinator-lease
+- Scope: internal/groups/lease.go, internal/groups/lease_test.go, internal/metadata/store.go, internal/metadata/mock.go, internal/metadata/oxia/store.go, internal/metadata/keys/keys.go, internal/metadata/keys/keys_test.go
+- Verified lease acquisition uses ephemeral keys with CAS semantics and renewals are version-checked
+- Verified lease conflict handling returns current holder without clobbering
+- Verified release path uses expected-version delete to avoid deleting new leases
+- Verified key helpers for /groups/<groupId>/lease and parsing behavior
+- Verified mock and Oxia stores honor ExpectNotExists/ExpectedVersion options
+- Issues found: none
+- Tests: not run (already run by working agent)

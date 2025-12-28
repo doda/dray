@@ -276,8 +276,23 @@ func (s *Store) PutEphemeral(ctx context.Context, key string, value []byte, opts
 	}
 	s.mu.RUnlock()
 
-	_, version, err := s.client.Put(ctx, key, value, oxiaclient.Ephemeral())
+	expectNotExists, expectedVersion := metadata.ExtractEphemeralOptions(opts)
+
+	// Build Oxia options
+	oxiaOpts := []oxiaclient.PutOption{oxiaclient.Ephemeral()}
+
+	if expectNotExists {
+		oxiaOpts = append(oxiaOpts, oxiaclient.ExpectedRecordNotExists())
+	} else if expectedVersion != nil {
+		oxiaOpts = append(oxiaOpts, oxiaclient.ExpectedVersionId(metadataToOxiaVersion(*expectedVersion)))
+	}
+
+	_, version, err := s.client.Put(ctx, key, value, oxiaOpts...)
 	if err != nil {
+		// Map Oxia errors to metadata errors
+		if errors.Is(err, oxiaclient.ErrUnexpectedVersionId) {
+			return 0, metadata.ErrVersionMismatch
+		}
 		return 0, fmt.Errorf("oxia: put ephemeral failed: %w", err)
 	}
 

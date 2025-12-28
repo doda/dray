@@ -449,6 +449,33 @@ func GroupKeyPath(groupID string) string {
 	return fmt.Sprintf("%s/%s", GroupsPrefix, groupID)
 }
 
+// GroupLeaseKeyPath returns the key for a consumer group coordinator lease.
+// Format: /dray/v1/groups/<groupId>/lease
+// This key is ephemeral - tied to the broker's session.
+func GroupLeaseKeyPath(groupID string) string {
+	return fmt.Sprintf("%s/%s/lease", GroupsPrefix, groupID)
+}
+
+// ParseGroupLeaseKey parses a group lease key and returns the groupID.
+func ParseGroupLeaseKey(key string) (groupID string, err error) {
+	prefix := GroupsPrefix + "/"
+	if !strings.HasPrefix(key, prefix) {
+		return "", ErrInvalidKey
+	}
+
+	rest := key[len(prefix):]
+	if !strings.HasSuffix(rest, "/lease") {
+		return "", ErrInvalidKey
+	}
+
+	groupID = rest[:len(rest)-len("/lease")]
+	if groupID == "" {
+		return "", ErrInvalidKey
+	}
+
+	return groupID, nil
+}
+
 // =============================================================================
 // WAL Keys (§9)
 // =============================================================================

@@ -156,7 +156,35 @@ func ExtractDeleteExpectedVersion(opts []DeleteOption) *Version {
 type EphemeralOption func(*ephemeralOptions)
 
 type ephemeralOptions struct {
-	// Reserved for future options like custom TTL
+	expectNotExists bool
+	expectedVersion *Version
+}
+
+// WithEphemeralExpectNotExists configures PutEphemeral to fail with
+// ErrVersionMismatch if the key already exists. Use this for acquiring
+// a new lease when you want to ensure no other process has the lease.
+func WithEphemeralExpectNotExists() EphemeralOption {
+	return func(o *ephemeralOptions) {
+		o.expectNotExists = true
+	}
+}
+
+// WithEphemeralExpectedVersion configures PutEphemeral to fail with
+// ErrVersionMismatch if the key's current version doesn't match.
+// Use this for renewing a lease you already hold.
+func WithEphemeralExpectedVersion(v Version) EphemeralOption {
+	return func(o *ephemeralOptions) {
+		o.expectedVersion = &v
+	}
+}
+
+// ExtractEphemeralOptions extracts options from EphemeralOption slice.
+func ExtractEphemeralOptions(opts []EphemeralOption) (expectNotExists bool, expectedVersion *Version) {
+	var o ephemeralOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o.expectNotExists, o.expectedVersion
 }
 
 // Txn represents an atomic transaction on the metadata store.

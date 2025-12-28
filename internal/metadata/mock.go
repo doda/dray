@@ -186,13 +186,33 @@ func (m *MockStore) Txn(_ context.Context, _ string, fn func(Txn) error) error {
 	return nil
 }
 
-func (m *MockStore) PutEphemeral(_ context.Context, key string, value []byte, _ ...EphemeralOption) (Version, error) {
+func (m *MockStore) PutEphemeral(_ context.Context, key string, value []byte, opts ...EphemeralOption) (Version, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.closed {
 		return 0, ErrStoreClosed
 	}
+
+	expectNotExists, expectedVersion := ExtractEphemeralOptions(opts)
+
+	existing, exists := m.data[key]
+
+	// Check ExpectNotExists constraint
+	if expectNotExists && exists {
+		return 0, ErrVersionMismatch
+	}
+
+	// Check ExpectedVersion constraint
+	if expectedVersion != nil {
+		if !exists && *expectedVersion != 0 {
+			return 0, ErrVersionMismatch
+		}
+		if exists && existing.Version != *expectedVersion {
+			return 0, ErrVersionMismatch
+		}
+	}
+
 	ver := m.nextVer
 	m.nextVer++
 	m.data[key] = KV{Key: key, Value: value, Version: ver}
