@@ -308,3 +308,10 @@ Start with project-setup, then follow spec phases:
 - Verified response versioning and throttle field setup
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T07:10:31Z] Reviewed describe-cluster-handler
+- Scope: internal/protocol/describe_cluster.go, internal/protocol/describe_cluster_test.go, task_list.json
+- Verified DescribeCluster response sets cluster ID, controller ID, broker list, throttle, and endpoint type for v1
+- Verified broker list falls back to local broker when lister is nil/empty/error
+- Verified rack handling and cluster authorized operations default value
+- Issues found: none
+- Tests: not run (already run by working agent)
