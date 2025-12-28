@@ -1,36 +1,27 @@
-// +build integration
-
 package oxia
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/dray-io/dray/internal/metadata"
 )
 
-// Integration tests require an Oxia server running.
-// Run with: go test -tags=integration ./internal/metadata/oxia/
-//
-// Set OXIA_SERVICE_ADDRESS environment variable to point to your Oxia server.
-// Default: localhost:6648
+// These tests use an embedded Oxia standalone server by default.
+// To test against an external server, set the OXIA_SERVICE_ADDRESS environment variable.
 
-func getServiceAddress() string {
-	addr := os.Getenv("OXIA_SERVICE_ADDRESS")
-	if addr == "" {
-		addr = "localhost:6648"
-	}
-	return addr
-}
-
-func newTestStore(t *testing.T) *Store {
+// newIntegrationTestStore creates a new test store with its own embedded Oxia server.
+// Each test gets a fresh server to ensure isolation.
+func newIntegrationTestStore(t *testing.T) *Store {
 	t.Helper()
 
+	server := StartTestServer(t)
+	addr := server.Addr()
+
 	cfg := Config{
-		ServiceAddress: getServiceAddress(),
-		Namespace:      "dray/test-" + time.Now().Format("20060102150405"),
+		ServiceAddress: addr,
+		Namespace:      "default",
 		RequestTimeout: 10 * time.Second,
 		SessionTimeout: 15 * time.Second,
 	}
@@ -48,7 +39,7 @@ func newTestStore(t *testing.T) *Store {
 }
 
 func TestIntegration_BasicGetPut(t *testing.T) {
-	store := newTestStore(t)
+	store := newIntegrationTestStore(t)
 	ctx := context.Background()
 
 	// Test Put
@@ -59,8 +50,9 @@ func TestIntegration_BasicGetPut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put failed: %v", err)
 	}
-	if version <= 0 {
-		t.Errorf("expected positive version, got %d", version)
+	// Versions should be >= 1 (we map Oxia's 0-based to 1-based)
+	if version < 1 {
+		t.Errorf("expected version >= 1, got %d", version)
 	}
 
 	// Test Get
@@ -80,7 +72,7 @@ func TestIntegration_BasicGetPut(t *testing.T) {
 }
 
 func TestIntegration_GetNonExistent(t *testing.T) {
-	store := newTestStore(t)
+	store := newIntegrationTestStore(t)
 	ctx := context.Background()
 
 	result, err := store.Get(ctx, "/nonexistent/key")
@@ -93,7 +85,7 @@ func TestIntegration_GetNonExistent(t *testing.T) {
 }
 
 func TestIntegration_PutWithVersion_CAS(t *testing.T) {
-	store := newTestStore(t)
+	store := newIntegrationTestStore(t)
 	ctx := context.Background()
 
 	key := "/test/cas-key"
@@ -132,7 +124,7 @@ func TestIntegration_PutWithVersion_CAS(t *testing.T) {
 }
 
 func TestIntegration_Delete(t *testing.T) {
-	store := newTestStore(t)
+	store := newIntegrationTestStore(t)
 	ctx := context.Background()
 
 	key := "/test/delete-key"
@@ -167,7 +159,7 @@ func TestIntegration_Delete(t *testing.T) {
 }
 
 func TestIntegration_List(t *testing.T) {
-	store := newTestStore(t)
+	store := newIntegrationTestStore(t)
 	ctx := context.Background()
 
 	prefix := "/test/list/"
@@ -201,7 +193,7 @@ func TestIntegration_List(t *testing.T) {
 }
 
 func TestIntegration_Transaction(t *testing.T) {
-	store := newTestStore(t)
+	store := newIntegrationTestStore(t)
 	ctx := context.Background()
 
 	key1 := "/test/txn/key1"
@@ -246,7 +238,7 @@ func TestIntegration_Transaction(t *testing.T) {
 }
 
 func TestIntegration_TransactionConflict(t *testing.T) {
-	store := newTestStore(t)
+	store := newIntegrationTestStore(t)
 	ctx := context.Background()
 
 	key := "/test/txn-conflict/key"
@@ -278,9 +270,12 @@ func TestIntegration_TransactionConflict(t *testing.T) {
 }
 
 func TestIntegration_Ephemeral(t *testing.T) {
+	server := StartTestServer(t)
+	addr := server.Addr()
+
 	cfg := Config{
-		ServiceAddress: getServiceAddress(),
-		Namespace:      "dray/test-ephemeral-" + time.Now().Format("20060102150405"),
+		ServiceAddress: addr,
+		Namespace:      "default",
 		RequestTimeout: 10 * time.Second,
 		SessionTimeout: 5 * time.Second,
 	}
@@ -326,7 +321,7 @@ func TestIntegration_Ephemeral(t *testing.T) {
 }
 
 func TestIntegration_Notifications(t *testing.T) {
-	store := newTestStore(t)
+	store := newIntegrationTestStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

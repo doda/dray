@@ -71,3 +71,11 @@ Start with project-setup, then follow spec phases:
 - Verified tests cover delivery after Put/delete, restart behavior, and subscription ordering
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T00:20:31Z] Reviewed oxia-embedded-tests
+- Scope: internal/metadata/oxia/test_helper.go, internal/metadata/oxia/integration_test.go, internal/metadata/oxia/store.go
+- Verified embedded Oxia standalone server helper starts/stops via t.Cleanup and honors OXIA_SERVICE_ADDRESS override
+- Verified integration tests now use embedded server and default namespace for isolation
+- Verified version mapping between Oxia (0-based) and metadata (1-based) in Get/Put/List/Txn/notifications
+- Verified list prefix handling for Oxia path semantics when ending with '/'
+- Issues found: none
+- Tests: not run (already run by working agent)

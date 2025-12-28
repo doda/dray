@@ -41,6 +41,8 @@ func (m *mockNotifications) Close() error {
 // TestConvertNotification verifies that Oxia notifications are correctly
 // converted to metadata.Notification.
 func TestConvertNotification(t *testing.T) {
+	// Note: Oxia versions are 0-based, we convert to 1-based by adding 1.
+	// So Oxia version 0 -> metadata version 1, Oxia version 41 -> metadata version 42.
 	tests := []struct {
 		name     string
 		input    *oxiaclient.Notification
@@ -51,11 +53,11 @@ func TestConvertNotification(t *testing.T) {
 			input: &oxiaclient.Notification{
 				Type:      oxiaclient.KeyCreated,
 				Key:       "/dray/v1/topics/test",
-				VersionId: 1,
+				VersionId: 0, // Oxia 0-based version
 			},
 			expected: metadata.Notification{
 				Key:     "/dray/v1/topics/test",
-				Version: 1,
+				Version: 1, // Metadata 1-based version
 				Deleted: false,
 			},
 		},
@@ -64,11 +66,11 @@ func TestConvertNotification(t *testing.T) {
 			input: &oxiaclient.Notification{
 				Type:      oxiaclient.KeyModified,
 				Key:       "/dray/v1/streams/abc/hwm",
-				VersionId: 42,
+				VersionId: 41, // Oxia 0-based version
 			},
 			expected: metadata.Notification{
 				Key:     "/dray/v1/streams/abc/hwm",
-				Version: 42,
+				Version: 42, // Metadata 1-based version
 				Deleted: false,
 			},
 		},
@@ -81,7 +83,7 @@ func TestConvertNotification(t *testing.T) {
 			},
 			expected: metadata.Notification{
 				Key:     "/dray/v1/topics/old-topic",
-				Version: -1,
+				Version: 0, // -1 + 1 = 0
 				Deleted: true,
 			},
 		},
@@ -95,7 +97,7 @@ func TestConvertNotification(t *testing.T) {
 			},
 			expected: metadata.Notification{
 				Key:     "/dray/v1/groups/g1/",
-				Version: -1,
+				Version: 0, // -1 + 1 = 0
 				Deleted: true,
 			},
 		},
@@ -128,11 +130,11 @@ func TestNotificationStreamNext(t *testing.T) {
 		ctx:           ctx,
 	}
 
-	// Send a notification
+	// Send a notification (Oxia version 99 -> metadata version 100)
 	mock.ch <- &oxiaclient.Notification{
 		Type:      oxiaclient.KeyCreated,
 		Key:       "/dray/v1/test/key",
-		VersionId: 100,
+		VersionId: 99, // Oxia 0-based
 	}
 
 	// Receive the notification
@@ -143,7 +145,7 @@ func TestNotificationStreamNext(t *testing.T) {
 	if notif.Key != "/dray/v1/test/key" {
 		t.Errorf("wrong key: got %q", notif.Key)
 	}
-	if notif.Version != 100 {
+	if notif.Version != 100 { // 99 + 1 = 100
 		t.Errorf("wrong version: got %d", notif.Version)
 	}
 
@@ -254,8 +256,8 @@ func TestNotificationStreamMultipleNotifications(t *testing.T) {
 	}
 	defer stream.Close()
 
-	// Send multiple notifications
-	for i := 1; i <= 5; i++ {
+	// Send multiple notifications (Oxia 0-based versions)
+	for i := 0; i < 5; i++ {
 		mock.ch <- &oxiaclient.Notification{
 			Type:      oxiaclient.KeyModified,
 			Key:       "/dray/v1/test/key",
@@ -263,7 +265,7 @@ func TestNotificationStreamMultipleNotifications(t *testing.T) {
 		}
 	}
 
-	// Receive all notifications in order
+	// Receive all notifications in order (metadata 1-based versions)
 	for i := 1; i <= 5; i++ {
 		notif, err := stream.Next(ctx)
 		if err != nil {
@@ -331,12 +333,13 @@ func TestNotificationDeliveryAfterPut(t *testing.T) {
 	key := "/dray/v1/streams/abc123/hwm"
 
 	// Simulate notification that would be sent after a Put operation
+	// Oxia version 0 -> metadata version 1
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		mock.ch <- &oxiaclient.Notification{
 			Type:      oxiaclient.KeyCreated,
 			Key:       key,
-			VersionId: 1,
+			VersionId: 0, // Oxia 0-based
 		}
 	}()
 
@@ -349,7 +352,7 @@ func TestNotificationDeliveryAfterPut(t *testing.T) {
 	if notif.Key != key {
 		t.Errorf("wrong key: got %q, want %q", notif.Key, key)
 	}
-	if notif.Version != 1 {
+	if notif.Version != 1 { // 0 + 1 = 1
 		t.Errorf("wrong version: got %d, want 1", notif.Version)
 	}
 	if notif.Deleted {
@@ -405,11 +408,11 @@ func TestNotificationStreamRestart(t *testing.T) {
 		ctx:           ctx,
 	}
 
-	// Send a notification on first stream
+	// Send a notification on first stream (Oxia version 0)
 	mock1.ch <- &oxiaclient.Notification{
 		Type:      oxiaclient.KeyCreated,
 		Key:       "/dray/v1/test/key1",
-		VersionId: 1,
+		VersionId: 0, // Oxia 0-based
 	}
 
 	// Receive it
@@ -432,14 +435,14 @@ func TestNotificationStreamRestart(t *testing.T) {
 	}
 	defer stream2.Close()
 
-	// Send a notification on the new stream
+	// Send a notification on the new stream (Oxia version 1)
 	mock2.ch <- &oxiaclient.Notification{
 		Type:      oxiaclient.KeyCreated,
 		Key:       "/dray/v1/test/key2",
-		VersionId: 2,
+		VersionId: 1, // Oxia 0-based
 	}
 
-	// Should receive on the new stream
+	// Should receive on the new stream (metadata version 2)
 	notif, err = stream2.Next(ctx)
 	if err != nil {
 		t.Fatalf("stream2 Next failed: %v", err)
@@ -447,7 +450,7 @@ func TestNotificationStreamRestart(t *testing.T) {
 	if notif.Key != "/dray/v1/test/key2" {
 		t.Errorf("wrong key on stream2: got %q", notif.Key)
 	}
-	if notif.Version != 2 {
+	if notif.Version != 2 { // 1 + 1 = 2
 		t.Errorf("wrong version on stream2: got %d", notif.Version)
 	}
 }
@@ -467,8 +470,9 @@ func TestNoNotificationsMissedAfterSubscription(t *testing.T) {
 
 	// Simulate a sequence of changes happening after subscription
 	numNotifications := 100
+	// Send notifications with Oxia 0-based versions (0 to 99)
 	go func() {
-		for i := 1; i <= numNotifications; i++ {
+		for i := 0; i < numNotifications; i++ {
 			mock.ch <- &oxiaclient.Notification{
 				Type:      oxiaclient.KeyModified,
 				Key:       "/dray/v1/test/key",
@@ -488,8 +492,9 @@ func TestNoNotificationsMissedAfterSubscription(t *testing.T) {
 	}
 
 	// Verify all notifications were received in order
+	// The mock sends Oxia versions 0, 1, 2... which map to metadata versions 1, 2, 3...
 	for i, v := range received {
-		expected := int64(i + 1)
+		expected := int64(i + 1) // Oxia version i + 1 = metadata version
 		if v != expected {
 			t.Errorf("notification %d: got version %d, want %d", i, v, expected)
 		}

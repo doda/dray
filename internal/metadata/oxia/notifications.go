@@ -38,7 +38,7 @@ func (s *notificationStream) Close() error {
 func convertNotification(n *oxiaclient.Notification) metadata.Notification {
 	result := metadata.Notification{
 		Key:     n.Key,
-		Version: metadata.Version(n.VersionId),
+		Version: oxiaToMetadataVersion(n.VersionId),
 	}
 
 	switch n.Type {

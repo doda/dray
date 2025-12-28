@@ -72,6 +72,17 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	}, nil
 }
 
+// oxiaToMetadataVersion converts Oxia's 0-based version to our 1-based version.
+// Oxia versions start at 0, but our interface uses 0 to mean "key doesn't exist".
+func oxiaToMetadataVersion(oxiaVersion int64) metadata.Version {
+	return metadata.Version(oxiaVersion + 1)
+}
+
+// metadataToOxiaVersion converts our 1-based version to Oxia's 0-based version.
+func metadataToOxiaVersion(metaVersion metadata.Version) int64 {
+	return int64(metaVersion - 1)
+}
+
 // Get retrieves a value by key.
 func (s *Store) Get(ctx context.Context, key string) (metadata.GetResult, error) {
 	s.mu.RLock()
@@ -91,7 +102,7 @@ func (s *Store) Get(ctx context.Context, key string) (metadata.GetResult, error)
 
 	return metadata.GetResult{
 		Value:   value,
-		Version: metadata.Version(version.VersionId),
+		Version: oxiaToMetadataVersion(version.VersionId),
 		Exists:  true,
 	}, nil
 }
@@ -111,10 +122,11 @@ func (s *Store) Put(ctx context.Context, key string, value []byte, opts ...metad
 	var oxiaOpts []oxiaclient.PutOption
 	if expectedVersion != nil {
 		if *expectedVersion == 0 {
-			// Version 0 means key should not exist
+			// Version 0 in our interface means key should not exist
 			oxiaOpts = append(oxiaOpts, oxiaclient.ExpectedRecordNotExists())
 		} else {
-			oxiaOpts = append(oxiaOpts, oxiaclient.ExpectedVersionId(int64(*expectedVersion)))
+			// Convert from our 1-based version to Oxia's 0-based version
+			oxiaOpts = append(oxiaOpts, oxiaclient.ExpectedVersionId(metadataToOxiaVersion(*expectedVersion)))
 		}
 	}
 
@@ -126,7 +138,7 @@ func (s *Store) Put(ctx context.Context, key string, value []byte, opts ...metad
 		return 0, fmt.Errorf("oxia: put failed: %w", err)
 	}
 
-	return metadata.Version(version.VersionId), nil
+	return oxiaToMetadataVersion(version.VersionId), nil
 }
 
 // Delete removes a key.
@@ -143,7 +155,8 @@ func (s *Store) Delete(ctx context.Context, key string, opts ...metadata.DeleteO
 
 	var oxiaOpts []oxiaclient.DeleteOption
 	if expectedVersion != nil {
-		oxiaOpts = append(oxiaOpts, oxiaclient.ExpectedVersionId(int64(*expectedVersion)))
+		// Convert from our 1-based version to Oxia's 0-based version
+		oxiaOpts = append(oxiaOpts, oxiaclient.ExpectedVersionId(metadataToOxiaVersion(*expectedVersion)))
 	}
 
 	err := s.client.Delete(ctx, key, oxiaOpts...)
@@ -171,9 +184,16 @@ func (s *Store) List(ctx context.Context, startKey, endKey string, limit int) ([
 	s.mu.RUnlock()
 
 	// If endKey is empty, use startKey as a prefix and list all keys with that prefix.
-	// For prefix listing, we need to compute the next key after the prefix.
+	// Oxia uses a custom key sorting that treats '/' specially.
+	// For prefix listing ending with '/', we use the Oxia convention of double slash
+	// as the end key to get all direct children. Otherwise, use prefixEnd.
 	if endKey == "" {
-		endKey = prefixEnd(startKey)
+		if len(startKey) > 0 && startKey[len(startKey)-1] == '/' {
+			// Use Oxia's convention for hierarchical key scanning
+			endKey = startKey + "/"
+		} else {
+			endKey = prefixEnd(startKey)
+		}
 	}
 
 	// Use RangeScan to get keys with values
@@ -188,7 +208,7 @@ func (s *Store) List(ctx context.Context, startKey, endKey string, limit int) ([
 		kvs = append(kvs, metadata.KV{
 			Key:     result.Key,
 			Value:   result.Value,
-			Version: metadata.Version(result.Version.VersionId),
+			Version: oxiaToMetadataVersion(result.Version.VersionId),
 		})
 
 		if limit > 0 && len(kvs) >= limit {
@@ -261,7 +281,7 @@ func (s *Store) PutEphemeral(ctx context.Context, key string, value []byte, opts
 		return 0, fmt.Errorf("oxia: put ephemeral failed: %w", err)
 	}
 
-	return metadata.Version(version.VersionId), nil
+	return oxiaToMetadataVersion(version.VersionId), nil
 }
 
 // Close releases resources held by the store.

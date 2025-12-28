@@ -50,7 +50,7 @@ func (t *transaction) Get(key string) ([]byte, metadata.Version, error) {
 		return nil, 0, err
 	}
 
-	return value, metadata.Version(version.VersionId), nil
+	return value, oxiaToMetadataVersion(version.VersionId), nil
 }
 
 // Put queues a write operation within the transaction.
@@ -104,9 +104,11 @@ func (t *transaction) commit() error {
 		case txnOpPutVersioned:
 			opts := []oxiaclient.PutOption{oxiaclient.PartitionKey(t.scopeKey)}
 			if op.expectedVersion == 0 {
+				// Version 0 in our interface means key should not exist
 				opts = append(opts, oxiaclient.ExpectedRecordNotExists())
 			} else {
-				opts = append(opts, oxiaclient.ExpectedVersionId(int64(op.expectedVersion)))
+				// Convert from our 1-based version to Oxia's 0-based version
+				opts = append(opts, oxiaclient.ExpectedVersionId(metadataToOxiaVersion(op.expectedVersion)))
 			}
 			_, _, err = t.store.client.Put(t.ctx, op.key, op.value, opts...)
 
@@ -114,9 +116,10 @@ func (t *transaction) commit() error {
 			err = t.store.client.Delete(t.ctx, op.key, oxiaclient.PartitionKey(t.scopeKey))
 
 		case txnOpDeleteVersioned:
+			// Convert from our 1-based version to Oxia's 0-based version
 			err = t.store.client.Delete(t.ctx, op.key,
 				oxiaclient.PartitionKey(t.scopeKey),
-				oxiaclient.ExpectedVersionId(int64(op.expectedVersion)))
+				oxiaclient.ExpectedVersionId(metadataToOxiaVersion(op.expectedVersion)))
 		}
 
 		if err != nil {
