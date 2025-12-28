@@ -866,7 +866,7 @@
     "scope": [
       "internal/fetch/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "list-offsets-handler",

@@ -3,6 +3,8 @@ package fetch
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"hash/crc32"
 )
 
 // Kafka record batch header offsets
@@ -11,6 +13,15 @@ const (
 	baseOffsetOffset = 0
 	// baseOffsetSize is the size of the baseOffset field.
 	baseOffsetSize = 8
+
+	// crcOffset is the offset of the CRC field (4 bytes at position 17).
+	crcOffset = 17
+	// crcSize is the size of the CRC field.
+	crcSize = 4
+
+	// crcDataOffset is the start of the data covered by the CRC (offset 21, attributes).
+	// The CRC covers everything from attributes (offset 21) to the end of the batch.
+	crcDataOffset = 21
 
 	// minBatchSize is the minimum valid Kafka record batch size.
 	// Must include at least: baseOffset(8) + batchLength(4) + partitionLeaderEpoch(4) +
@@ -111,4 +122,175 @@ func GetBaseOffset(batch []byte) int64 {
 		return 0
 	}
 	return int64(binary.BigEndian.Uint64(batch[0:8]))
+}
+
+// GetCRC extracts the CRC from a Kafka record batch.
+// The CRC is at offset 17 (4 bytes) in the batch header.
+func GetCRC(batch []byte) uint32 {
+	if len(batch) < crcOffset+crcSize {
+		return 0
+	}
+	return binary.BigEndian.Uint32(batch[crcOffset : crcOffset+crcSize])
+}
+
+// CalculateCRC calculates the expected CRC for a Kafka record batch.
+// The CRC is calculated over bytes from offset 21 (attributes) to end of batch.
+// Uses CRC32C (Castagnoli polynomial) as per Kafka spec.
+func CalculateCRC(batch []byte) uint32 {
+	if len(batch) < crcDataOffset {
+		return 0
+	}
+	table := crc32.MakeTable(crc32.Castagnoli)
+	return crc32.Checksum(batch[crcDataOffset:], table)
+}
+
+// VerifyCRC verifies that the CRC in the batch matches the calculated CRC.
+// Returns nil if valid, error if invalid.
+func VerifyCRC(batch []byte) error {
+	if len(batch) < minBatchSize {
+		return ErrBatchTooSmall
+	}
+
+	storedCRC := GetCRC(batch)
+	calculatedCRC := CalculateCRC(batch)
+
+	if storedCRC != calculatedCRC {
+		return fmt.Errorf("fetch: CRC mismatch: stored=0x%08x, calculated=0x%08x", storedCRC, calculatedCRC)
+	}
+
+	return nil
+}
+
+// ErrInvalidOffsetDelta is returned when record offset deltas are not sequential.
+var ErrInvalidOffsetDelta = errors.New("fetch: invalid offset delta sequence")
+
+// ErrInvalidCompression is returned when the compression type is invalid.
+var ErrInvalidCompression = errors.New("fetch: invalid compression type")
+
+// Kafka compression types (bits 0-2 of attributes)
+const (
+	CompressionNone   = 0
+	CompressionGzip   = 1
+	CompressionSnappy = 2
+	CompressionLz4    = 3
+	CompressionZstd   = 4
+)
+
+// attributesOffset is the offset of the attributes field (2 bytes at position 21).
+const attributesOffset = 21
+
+// GetAttributes extracts the attributes field from a Kafka record batch.
+// The attributes field is at offset 21 (2 bytes) in the batch header.
+func GetAttributes(batch []byte) int16 {
+	if len(batch) < attributesOffset+2 {
+		return 0
+	}
+	return int16(binary.BigEndian.Uint16(batch[attributesOffset : attributesOffset+2]))
+}
+
+// GetCompressionType extracts the compression type from a Kafka record batch.
+// Compression type is stored in bits 0-2 of the attributes field.
+func GetCompressionType(batch []byte) int {
+	attrs := GetAttributes(batch)
+	return int(attrs & 0x07) // bits 0-2
+}
+
+// ValidateCompression validates that the compression type in the batch is valid.
+// Per spec 9.5, we must validate compression correctness.
+// Valid compression types: 0 (none), 1 (gzip), 2 (snappy), 3 (lz4), 4 (zstd)
+func ValidateCompression(batch []byte) error {
+	if len(batch) < minBatchSize {
+		return ErrBatchTooSmall
+	}
+
+	compressionType := GetCompressionType(batch)
+	switch compressionType {
+	case CompressionNone, CompressionGzip, CompressionSnappy, CompressionLz4, CompressionZstd:
+		return nil
+	default:
+		return fmt.Errorf("%w: type=%d", ErrInvalidCompression, compressionType)
+	}
+}
+
+// ValidateOffsetDeltas validates that record offset deltas are sequential (0, 1, 2, ..., n-1).
+// This is a requirement per spec section 9.5.
+//
+// For a batch with n records:
+//   - lastOffsetDelta should be n-1
+//   - recordCount should be n
+//
+// This means the records have offsets: baseOffset+0, baseOffset+1, ..., baseOffset+(n-1)
+func ValidateOffsetDeltas(batch []byte) error {
+	if len(batch) < minBatchSize {
+		return ErrBatchTooSmall
+	}
+
+	recordCount := GetRecordCount(batch)
+	lastOffsetDelta := GetLastOffsetDelta(batch)
+
+	// For n records, lastOffsetDelta should be n-1
+	// Records have offset deltas: 0, 1, 2, ..., n-1
+	expectedLastDelta := recordCount - 1
+
+	if lastOffsetDelta != expectedLastDelta {
+		return fmt.Errorf("%w: lastOffsetDelta=%d, expected=%d (recordCount=%d)",
+			ErrInvalidOffsetDelta, lastOffsetDelta, expectedLastDelta, recordCount)
+	}
+
+	return nil
+}
+
+// PatchAndValidate patches the baseOffset and validates the batch integrity.
+// This combines patching with CRC verification, compression validation, and
+// offset delta validation per spec section 9.5.
+func PatchAndValidate(batch []byte, newBaseOffset int64) error {
+	// First validate the batch integrity
+	if err := VerifyCRC(batch); err != nil {
+		return fmt.Errorf("pre-patch validation: %w", err)
+	}
+
+	// Validate compression type is valid (spec 9.5 requirement)
+	if err := ValidateCompression(batch); err != nil {
+		return fmt.Errorf("compression validation: %w", err)
+	}
+
+	if err := ValidateOffsetDeltas(batch); err != nil {
+		return fmt.Errorf("offset delta validation: %w", err)
+	}
+
+	// Patch the baseOffset
+	if err := PatchBaseOffset(batch, newBaseOffset); err != nil {
+		return err
+	}
+
+	// CRC should still be valid after patching baseOffset
+	// (baseOffset is outside the CRC region)
+	if err := VerifyCRC(batch); err != nil {
+		return fmt.Errorf("post-patch validation: %w", err)
+	}
+
+	return nil
+}
+
+// PatchBatchesWithValidation patches all batches and validates their integrity.
+// Unlike PatchBatches, this also validates CRC, compression, and offset deltas per spec 9.5.
+func PatchBatchesWithValidation(batches [][]byte, startOffset int64) (int64, error) {
+	currentOffset := startOffset
+	var totalRecords int64
+
+	for i, batch := range batches {
+		if err := PatchAndValidate(batch, currentOffset); err != nil {
+			return 0, fmt.Errorf("batch %d: %w", i, err)
+		}
+
+		recordCount := GetRecordCount(batch)
+		if recordCount == 0 {
+			return 0, fmt.Errorf("batch %d: zero record count", i)
+		}
+
+		currentOffset += int64(recordCount)
+		totalRecords += int64(recordCount)
+	}
+
+	return totalRecords, nil
 }

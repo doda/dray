@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"context"
+	"encoding/binary"
+	"hash/crc32"
 	"testing"
 	"time"
 
@@ -778,7 +780,7 @@ func buildRecordBatch(recordCount int) []byte {
 	// magic (1 byte) = 2
 	batch = append(batch, 2)
 
-	// crc (4 bytes) - placeholder
+	// crc (4 bytes) - placeholder, will be set below
 	batch = append(batch, 0, 0, 0, 0)
 
 	// attributes (2 bytes)
@@ -810,6 +812,11 @@ func buildRecordBatch(recordCount int) []byte {
 	// recordCount (4 bytes)
 	batch = append(batch, 0, 0, 0, byte(recordCount))
 
+	// Calculate and set CRC over bytes from offset 21 onwards (attributes to end)
+	table := crc32.MakeTable(crc32.Castagnoli)
+	crcValue := crc32.Checksum(batch[21:], table)
+	binary.BigEndian.PutUint32(batch[17:21], crcValue)
+
 	return batch
 }
 
@@ -835,7 +842,7 @@ func buildRecordBatchWithProducerId(recordCount int, producerId int64) []byte {
 	// magic (1 byte) = 2
 	batch = append(batch, 2)
 
-	// crc (4 bytes)
+	// crc (4 bytes) - placeholder, will be set below
 	batch = append(batch, 0, 0, 0, 0)
 
 	// attributes (2 bytes)
@@ -876,6 +883,11 @@ func buildRecordBatchWithProducerId(recordCount int, producerId int64) []byte {
 
 	// recordCount (4 bytes)
 	batch = append(batch, 0, 0, 0, byte(recordCount))
+
+	// Calculate and set CRC over bytes from offset 21 onwards (attributes to end)
+	table := crc32.MakeTable(crc32.Castagnoli)
+	crcValue := crc32.Checksum(batch[21:], table)
+	binary.BigEndian.PutUint32(batch[17:21], crcValue)
 
 	return batch
 }
@@ -1041,7 +1053,7 @@ func buildRecordBatchWithMagic(recordCount int, magic byte) []byte {
 	// magic (1 byte) - using parameter
 	batch = append(batch, magic)
 
-	// crc (4 bytes)
+	// crc (4 bytes) - placeholder, will be set below
 	batch = append(batch, 0, 0, 0, 0)
 
 	// attributes (2 bytes)
@@ -1072,6 +1084,11 @@ func buildRecordBatchWithMagic(recordCount int, magic byte) []byte {
 
 	// recordCount (4 bytes)
 	batch = append(batch, 0, 0, 0, byte(recordCount))
+
+	// Calculate and set CRC over bytes from offset 21 onwards (attributes to end)
+	table := crc32.MakeTable(crc32.Castagnoli)
+	crcValue := crc32.Checksum(batch[21:], table)
+	binary.BigEndian.PutUint32(batch[17:21], crcValue)
 
 	return batch
 }

@@ -102,9 +102,10 @@ func (f *Fetcher) Fetch(ctx context.Context, req *FetchRequest) (*FetchResponse,
 		return nil, errors.New("fetch: unknown file type")
 	}
 
-	// Patch batch offsets
+	// Patch batch offsets and validate integrity per spec 9.5
 	// The batches from WAL have baseOffset=0, we need to set them to the assigned offsets
-	_, err = PatchBatches(fetchResult.Batches, fetchResult.StartOffset)
+	// PatchBatchesWithValidation validates CRC, compression, and offset deltas
+	_, err = PatchBatchesWithValidation(fetchResult.Batches, fetchResult.StartOffset)
 	if err != nil {
 		return nil, err
 	}
