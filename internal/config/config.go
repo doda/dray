@@ -28,8 +28,15 @@ type Config struct {
 }
 
 type BrokerConfig struct {
-	ListenAddr string `yaml:"listenAddr" env:"DRAY_LISTEN_ADDR"`
-	ZoneID     string `yaml:"zoneId" env:"DRAY_ZONE_ID"`
+	ListenAddr string    `yaml:"listenAddr" env:"DRAY_LISTEN_ADDR"`
+	ZoneID     string    `yaml:"zoneId" env:"DRAY_ZONE_ID"`
+	TLS        TLSConfig `yaml:"tls"`
+}
+
+type TLSConfig struct {
+	Enabled  bool   `yaml:"enabled" env:"DRAY_TLS_ENABLED"`
+	CertFile string `yaml:"certFile" env:"DRAY_TLS_CERT_FILE"`
+	KeyFile  string `yaml:"keyFile" env:"DRAY_TLS_KEY_FILE"`
 }
 
 type MetadataConfig struct {
@@ -167,6 +174,16 @@ func (c *Config) Validate() error {
 	// Broker validation
 	if c.Broker.ListenAddr == "" {
 		errs = append(errs, errors.New("broker.listenAddr is required"))
+	}
+
+	// TLS validation
+	if c.Broker.TLS.Enabled {
+		if c.Broker.TLS.CertFile == "" {
+			errs = append(errs, errors.New("broker.tls.certFile is required when TLS is enabled"))
+		}
+		if c.Broker.TLS.KeyFile == "" {
+			errs = append(errs, errors.New("broker.tls.keyFile is required when TLS is enabled"))
+		}
 	}
 
 	// Metadata validation

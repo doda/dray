@@ -705,3 +705,10 @@ Start with project-setup, then follow spec phases:
 - Fix applied: size-based deletions now account for time-based deletions when computing total retained bytes
 - Issues found: none after fix
 - Tests: not run (trusted prior run by working agent)
+[review] tls-support
+- Scope: internal/config/config.go, internal/config/config_test.go, internal/server/server.go, internal/server/tls.go, internal/server/tls_test.go, tests/integration/tls_kafka_client_test.go, task_list.json
+- Verified TLS config fields and validation in config (cert/key required when enabled)
+- Verified server TLS listener creation, hot reload via CertReloader, and Close stops watcher
+- Verified TLS tests cover reload, multiple connections, and Kafka client integration over TLS
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)

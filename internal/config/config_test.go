@@ -508,3 +508,127 @@ metadata:
 		t.Error("expected validation error")
 	}
 }
+
+func TestTLSConfigValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		modifier func(*Config)
+		wantErr  bool
+	}{
+		{
+			name: "TLS disabled is valid without cert files",
+			modifier: func(c *Config) {
+				c.Broker.TLS.Enabled = false
+				c.Broker.TLS.CertFile = ""
+				c.Broker.TLS.KeyFile = ""
+			},
+			wantErr: false,
+		},
+		{
+			name: "TLS enabled with both files is valid",
+			modifier: func(c *Config) {
+				c.Broker.TLS.Enabled = true
+				c.Broker.TLS.CertFile = "/path/to/cert.pem"
+				c.Broker.TLS.KeyFile = "/path/to/key.pem"
+			},
+			wantErr: false,
+		},
+		{
+			name: "TLS enabled without cert file is invalid",
+			modifier: func(c *Config) {
+				c.Broker.TLS.Enabled = true
+				c.Broker.TLS.CertFile = ""
+				c.Broker.TLS.KeyFile = "/path/to/key.pem"
+			},
+			wantErr: true,
+		},
+		{
+			name: "TLS enabled without key file is invalid",
+			modifier: func(c *Config) {
+				c.Broker.TLS.Enabled = true
+				c.Broker.TLS.CertFile = "/path/to/cert.pem"
+				c.Broker.TLS.KeyFile = ""
+			},
+			wantErr: true,
+		},
+		{
+			name: "TLS enabled without both files is invalid",
+			modifier: func(c *Config) {
+				c.Broker.TLS.Enabled = true
+				c.Broker.TLS.CertFile = ""
+				c.Broker.TLS.KeyFile = ""
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.modifier(cfg)
+			err := cfg.Validate()
+
+			if tt.wantErr && err == nil {
+				t.Error("expected validation error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestTLSConfigFromYAML(t *testing.T) {
+	yamlContent := `
+broker:
+  listenAddr: ":9093"
+  tls:
+    enabled: true
+    certFile: "/etc/dray/certs/server.crt"
+    keyFile: "/etc/dray/certs/server.key"
+metadata:
+  oxiaEndpoint: "localhost:6648"
+  namespace: "dray"
+  numDomains: 16
+`
+	cfg, err := LoadFromBytes([]byte(yamlContent))
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if !cfg.Broker.TLS.Enabled {
+		t.Error("expected TLS to be enabled")
+	}
+	if cfg.Broker.TLS.CertFile != "/etc/dray/certs/server.crt" {
+		t.Errorf("expected cert file /etc/dray/certs/server.crt, got %s", cfg.Broker.TLS.CertFile)
+	}
+	if cfg.Broker.TLS.KeyFile != "/etc/dray/certs/server.key" {
+		t.Errorf("expected key file /etc/dray/certs/server.key, got %s", cfg.Broker.TLS.KeyFile)
+	}
+}
+
+func TestTLSConfigEnvOverrides(t *testing.T) {
+	os.Setenv("DRAY_TLS_ENABLED", "true")
+	os.Setenv("DRAY_TLS_CERT_FILE", "/env/cert.pem")
+	os.Setenv("DRAY_TLS_KEY_FILE", "/env/key.pem")
+	defer func() {
+		os.Unsetenv("DRAY_TLS_ENABLED")
+		os.Unsetenv("DRAY_TLS_CERT_FILE")
+		os.Unsetenv("DRAY_TLS_KEY_FILE")
+	}()
+
+	cfg, err := LoadFromPath("/nonexistent/path/config.yaml")
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if !cfg.Broker.TLS.Enabled {
+		t.Error("expected TLS to be enabled via env")
+	}
+	if cfg.Broker.TLS.CertFile != "/env/cert.pem" {
+		t.Errorf("expected cert file /env/cert.pem, got %s", cfg.Broker.TLS.CertFile)
+	}
+	if cfg.Broker.TLS.KeyFile != "/env/key.pem" {
+		t.Errorf("expected key file /env/key.pem, got %s", cfg.Broker.TLS.KeyFile)
+	}
+}

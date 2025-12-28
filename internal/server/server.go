@@ -63,6 +63,7 @@ type Config struct {
 	ReadTimeout    time.Duration
 	WriteTimeout   time.Duration
 	MaxRequestSize int32
+	TLS            TLSConfig
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -82,11 +83,12 @@ type Server struct {
 	logger   *logging.Logger
 	listener net.Listener
 
-	mu       sync.Mutex
-	conns    map[net.Conn]struct{}
-	closed   atomic.Bool
-	connWg   sync.WaitGroup
-	connID   atomic.Int64
+	mu           sync.Mutex
+	conns        map[net.Conn]struct{}
+	closed       atomic.Bool
+	connWg       sync.WaitGroup
+	connID       atomic.Int64
+	certReloader *CertReloader
 }
 
 // New creates a new Server with the given configuration and handler.
@@ -103,7 +105,18 @@ func New(cfg Config, handler Handler, logger *logging.Logger) *Server {
 }
 
 // ListenAndServe starts the server on the configured address.
+// If TLS is enabled, it creates a TLS listener with certificate hot-reload support.
 func (s *Server) ListenAndServe() error {
+	if s.cfg.TLS.Enabled {
+		ln, reloader, err := NewTLSListener(s.cfg.ListenAddr, s.cfg.TLS, s.logger)
+		if err != nil {
+			return fmt.Errorf("failed to create TLS listener: %w", err)
+		}
+		s.certReloader = reloader
+		s.certReloader.StartWatcher(30 * time.Second)
+		return s.Serve(ln)
+	}
+
 	ln, err := net.Listen("tcp", s.cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", s.cfg.ListenAddr, err)
@@ -168,8 +181,21 @@ func (s *Server) Close() error {
 	}
 	s.mu.Unlock()
 
+	if s.certReloader != nil {
+		s.certReloader.Stop()
+	}
+
 	s.connWg.Wait()
 	return nil
+}
+
+// ReloadCertificate manually triggers a certificate reload.
+// Returns an error if TLS is not enabled or if the reload fails.
+func (s *Server) ReloadCertificate() error {
+	if s.certReloader == nil {
+		return errors.New("TLS is not enabled")
+	}
+	return s.certReloader.Reload()
 }
 
 func (s *Server) handleConn(conn net.Conn) {
