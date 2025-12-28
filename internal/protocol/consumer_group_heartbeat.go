@@ -433,26 +433,52 @@ func (h *ConsumerGroupHeartbeatHandler) handleLeaveGroup(ctx context.Context, re
 }
 
 // buildAssignment builds the assignment for a member.
-// For now, returns the stored assignment or empty if none.
+// It performs server-side assignment using the configured assignor.
 func (h *ConsumerGroupHeartbeatHandler) buildAssignment(ctx context.Context, groupID, memberID string) *kmsg.ConsumerGroupHeartbeatResponseAssignment {
-	assignment, err := h.store.GetAssignment(ctx, groupID, memberID)
-	if err != nil || assignment == nil {
+	// Topic store is required for server-side assignment
+	if h.topicStore == nil {
 		return nil
 	}
 
-	// If no topic-level assignment data, return nil (no change)
-	if len(assignment.Partitions) == 0 && len(assignment.TopicStates) == 0 {
+	// Get all members to perform assignment
+	members, err := h.store.ListMembers(ctx, groupID)
+	if err != nil || len(members) == 0 {
 		return nil
 	}
 
-	// Build response assignment from stored data
-	// For KIP-848, we need to return TopicID + Partitions
+	// Use range assignor by default (or uniform if preferred)
+	// For KIP-848, the server performs the assignment
+	assignor := groups.GetKIP848Assignor("range")
+	if assignor == nil {
+		return nil
+	}
+
+	// Perform server-side assignment
+	assignments, err := assignor.Assign(ctx, members, h.topicStore)
+	if err != nil {
+		return nil
+	}
+
+	// Get the assignment for this specific member
+	memberAssignment, ok := assignments[memberID]
+	if !ok || len(memberAssignment) == 0 {
+		return &kmsg.ConsumerGroupHeartbeatResponseAssignment{
+			Topics: []kmsg.ConsumerGroupHeartbeatResponseAssignmentTopic{},
+		}
+	}
+
+	// Build response assignment
 	respAssignment := &kmsg.ConsumerGroupHeartbeatResponseAssignment{
-		Topics: []kmsg.ConsumerGroupHeartbeatResponseAssignmentTopic{},
+		Topics: make([]kmsg.ConsumerGroupHeartbeatResponseAssignmentTopic, 0, len(memberAssignment)),
 	}
 
-	// If we have TopicStates, parse and return those
-	// This is a simplified implementation - full implementation would parse the stored format
+	for _, a := range memberAssignment {
+		respAssignment.Topics = append(respAssignment.Topics, kmsg.ConsumerGroupHeartbeatResponseAssignmentTopic{
+			TopicID:    a.TopicID,
+			Partitions: a.Partitions,
+		})
+	}
+
 	return respAssignment
 }
 

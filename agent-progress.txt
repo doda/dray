@@ -487,3 +487,11 @@ Start with project-setup, then follow spec phases:
 - Issues found: remainder allocation used stale counts, causing uneven distribution across topics
 - Resolution: base remainder selection on current assignments; added multi-topic even-distribution test
 - Tests: not run (already run by working agent)
+[2025-12-28T12:18:07Z] Reviewed kip848-range-assignor
+- Scope: internal/groups/kip848_assignor.go, internal/groups/kip848_assignor_test.go, internal/protocol/consumer_group_heartbeat.go, task_list.json
+- Verified KIP-848 range assignor produces deterministic contiguous ranges per topic
+- Verified server-side assignment is wired into consumer group heartbeat responses
+- Verified encode/decode helpers round-trip topic IDs and partition lists
+- Issues found: UUID fallback used meta.TopicID rather than topic name
+- Resolution: derive UUID fallback from topic name in range and uniform assignors
+- Tests: not run (already run by working agent)
