@@ -565,3 +565,353 @@ func (m *MockObjectStore) List(ctx context.Context, prefix string) ([]objectstor
 func (m *MockObjectStore) Close() error {
 	return nil
 }
+
+// TestFetchHandler_LongPoll_Timeout tests that long-poll returns empty on timeout.
+func TestFetchHandler_LongPoll_Timeout(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx := context.Background()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	streamID := result.Partitions[0].StreamID
+	err = streamManager.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	mockObjStore := NewMockObjectStore()
+	fetcher := fetch.NewFetcher(mockObjStore, streamManager)
+	hwmWatcher := fetch.NewHWMWatcher(store, streamManager)
+	handler := NewFetchHandlerWithWatcher(FetchHandlerConfig{MaxBytes: 1024 * 1024}, topicStore, fetcher, streamManager, hwmWatcher)
+
+	// Build request with maxWaitMs=100ms
+	req := kmsg.NewPtrFetchRequest()
+	req.SetVersion(12)
+	req.MaxBytes = 1024 * 1024
+	req.MaxWaitMillis = 100 // 100ms timeout
+
+	topicReq := kmsg.NewFetchRequestTopic()
+	topicReq.Topic = "test-topic"
+
+	partReq := kmsg.NewFetchRequestTopicPartition()
+	partReq.Partition = 0
+	partReq.FetchOffset = 0 // Fetch at HWM (empty stream)
+	partReq.PartitionMaxBytes = 1024 * 1024
+	topicReq.Partitions = append(topicReq.Partitions, partReq)
+	req.Topics = append(req.Topics, topicReq)
+
+	start := time.Now()
+	resp := handler.Handle(ctx, 12, req)
+	elapsed := time.Since(start)
+
+	// Should wait close to maxWaitMs
+	if elapsed < 90*time.Millisecond {
+		t.Errorf("expected to wait close to maxWaitMs, but only waited %v", elapsed)
+	}
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+
+	// Should succeed but with no data
+	if partResp.ErrorCode != 0 {
+		t.Errorf("expected success, got error code %d", partResp.ErrorCode)
+	}
+
+	if partResp.HighWatermark != 0 {
+		t.Errorf("expected HWM=0, got %d", partResp.HighWatermark)
+	}
+
+	if len(partResp.RecordBatches) != 0 {
+		t.Error("expected no record batches")
+	}
+}
+
+// TestFetchHandler_LongPoll_WakeOnNewData tests that long-poll wakes on HWM increase.
+func TestFetchHandler_LongPoll_WakeOnNewData(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx := context.Background()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	streamID := result.Partitions[0].StreamID
+	err = streamManager.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	mockObjStore := NewMockObjectStore()
+	fetcher := fetch.NewFetcher(mockObjStore, streamManager)
+	hwmWatcher := fetch.NewHWMWatcher(store, streamManager)
+	handler := NewFetchHandlerWithWatcher(FetchHandlerConfig{MaxBytes: 1024 * 1024}, topicStore, fetcher, streamManager, hwmWatcher)
+
+	// Build request with maxWaitMs=5000ms (long timeout)
+	req := kmsg.NewPtrFetchRequest()
+	req.SetVersion(12)
+	req.MaxBytes = 1024 * 1024
+	req.MaxWaitMillis = 5000 // 5s timeout
+
+	topicReq := kmsg.NewFetchRequestTopic()
+	topicReq.Topic = "test-topic"
+
+	partReq := kmsg.NewFetchRequestTopicPartition()
+	partReq.Partition = 0
+	partReq.FetchOffset = 0 // Fetch at HWM (empty stream)
+	partReq.PartitionMaxBytes = 1024 * 1024
+	topicReq.Partitions = append(topicReq.Partitions, partReq)
+	req.Topics = append(req.Topics, topicReq)
+
+	// Start fetch in goroutine
+	respCh := make(chan *kmsg.FetchResponse)
+	go func() {
+		resp := handler.Handle(ctx, 12, req)
+		respCh <- resp
+	}()
+
+	// Wait a bit then simulate HWM increase by actually updating the store
+	time.Sleep(50 * time.Millisecond)
+
+	// Actually increment HWM in the store (simulating new data was produced)
+	_, version, _ := streamManager.GetHWM(ctx, streamID)
+	streamManager.IncrementHWM(ctx, streamID, 10, version)
+
+	// Send HWM notification (simulating new data arrived)
+	hwmKey := "/dray/v1/streams/" + streamID + "/hwm"
+	store.SimulateNotification(metadata.Notification{
+		Key:     hwmKey,
+		Value:   index.EncodeHWM(10),
+		Version: 2,
+		Deleted: false,
+	})
+
+	// Wait for result
+	select {
+	case resp := <-respCh:
+		if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+			t.Fatalf("unexpected response structure")
+		}
+
+		partResp := resp.Topics[0].Partitions[0]
+
+		// Should succeed (no error)
+		if partResp.ErrorCode != 0 {
+			t.Errorf("expected success, got error code %d", partResp.ErrorCode)
+		}
+
+		// HWM should be updated
+		if partResp.HighWatermark != 10 {
+			t.Errorf("expected HWM=10, got %d", partResp.HighWatermark)
+		}
+
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
+// TestFetchHandler_NoLongPoll_WhenMaxWaitIsZero tests no waiting when maxWaitMs=0.
+func TestFetchHandler_NoLongPoll_WhenMaxWaitIsZero(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx := context.Background()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	streamID := result.Partitions[0].StreamID
+	err = streamManager.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	mockObjStore := NewMockObjectStore()
+	fetcher := fetch.NewFetcher(mockObjStore, streamManager)
+	hwmWatcher := fetch.NewHWMWatcher(store, streamManager)
+	handler := NewFetchHandlerWithWatcher(FetchHandlerConfig{MaxBytes: 1024 * 1024}, topicStore, fetcher, streamManager, hwmWatcher)
+
+	// Build request with maxWaitMs=0 (no waiting)
+	req := buildFetchRequest("test-topic", 0, 0)
+	req.MaxWaitMillis = 0
+
+	start := time.Now()
+	resp := handler.Handle(ctx, 12, req)
+	elapsed := time.Since(start)
+
+	// Should return immediately (no waiting)
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("expected immediate return, but took %v", elapsed)
+	}
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+
+	if partResp.ErrorCode != 0 {
+		t.Errorf("expected success, got error code %d", partResp.ErrorCode)
+	}
+}
+
+// TestFetchHandler_NoLongPoll_WhenDataAvailable tests no waiting when data is available.
+func TestFetchHandler_NoLongPoll_WhenDataAvailable(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx := context.Background()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	streamID := result.Partitions[0].StreamID
+	err = streamManager.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Increment HWM to indicate data is available
+	hwm, version, _ := streamManager.GetHWM(ctx, streamID)
+	if hwm != 0 {
+		t.Fatalf("expected initial HWM=0")
+	}
+	_, _, err = streamManager.IncrementHWM(ctx, streamID, 100, version)
+	if err != nil {
+		t.Fatalf("failed to increment HWM: %v", err)
+	}
+
+	mockObjStore := NewMockObjectStore()
+	fetcher := fetch.NewFetcher(mockObjStore, streamManager)
+	hwmWatcher := fetch.NewHWMWatcher(store, streamManager)
+	handler := NewFetchHandlerWithWatcher(FetchHandlerConfig{MaxBytes: 1024 * 1024}, topicStore, fetcher, streamManager, hwmWatcher)
+
+	// Build request with maxWaitMs=5000ms but fetchOffset=0 (data available)
+	req := kmsg.NewPtrFetchRequest()
+	req.SetVersion(12)
+	req.MaxBytes = 1024 * 1024
+	req.MaxWaitMillis = 5000 // Long timeout, but should not wait
+
+	topicReq := kmsg.NewFetchRequestTopic()
+	topicReq.Topic = "test-topic"
+
+	partReq := kmsg.NewFetchRequestTopicPartition()
+	partReq.Partition = 0
+	partReq.FetchOffset = 0 // Data available (HWM=100 > fetchOffset=0)
+	partReq.PartitionMaxBytes = 1024 * 1024
+	topicReq.Partitions = append(topicReq.Partitions, partReq)
+	req.Topics = append(req.Topics, topicReq)
+
+	start := time.Now()
+	resp := handler.Handle(ctx, 12, req)
+	elapsed := time.Since(start)
+
+	// Should return immediately since fetchOffset < HWM
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("expected immediate return when data available, but took %v", elapsed)
+	}
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+
+	// HWM should be 100
+	if partResp.HighWatermark != 100 {
+		t.Errorf("expected HWM=100, got %d", partResp.HighWatermark)
+	}
+}
+
+// TestFetchHandler_LongPoll_NoWatcherFallback tests graceful fallback when no watcher.
+func TestFetchHandler_LongPoll_NoWatcherFallback(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx := context.Background()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	streamID := result.Partitions[0].StreamID
+	err = streamManager.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	mockObjStore := NewMockObjectStore()
+	fetcher := fetch.NewFetcher(mockObjStore, streamManager)
+	// No hwmWatcher - use original constructor
+	handler := NewFetchHandler(FetchHandlerConfig{MaxBytes: 1024 * 1024}, topicStore, fetcher, streamManager)
+
+	// Build request with maxWaitMs=100ms
+	req := kmsg.NewPtrFetchRequest()
+	req.SetVersion(12)
+	req.MaxBytes = 1024 * 1024
+	req.MaxWaitMillis = 100
+
+	topicReq := kmsg.NewFetchRequestTopic()
+	topicReq.Topic = "test-topic"
+
+	partReq := kmsg.NewFetchRequestTopicPartition()
+	partReq.Partition = 0
+	partReq.FetchOffset = 0
+	partReq.PartitionMaxBytes = 1024 * 1024
+	topicReq.Partitions = append(topicReq.Partitions, partReq)
+	req.Topics = append(req.Topics, topicReq)
+
+	start := time.Now()
+	resp := handler.Handle(ctx, 12, req)
+	elapsed := time.Since(start)
+
+	// Should return immediately since no watcher is configured
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("expected immediate return without watcher, but took %v", elapsed)
+	}
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+
+	if partResp.ErrorCode != 0 {
+		t.Errorf("expected success, got error code %d", partResp.ErrorCode)
+	}
+}

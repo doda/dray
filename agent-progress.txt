@@ -197,3 +197,10 @@ Start with project-setup, then follow spec phases:
 - Verified error mapping for unknown topic/partition, leader not available, and offset out of range
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T04:12:00Z] Reviewed fetch-longpoll
+- Scope: internal/fetch/longpoll.go, internal/fetch/longpoll_test.go, internal/protocol/fetch.go, internal/protocol/fetch_test.go, task_list.json
+- Verified long-poll waits when fetchOffset >= HWM and maxWaitMs > 0, uses metadata notifications, and returns empty on timeout
+- Verified fetch handler integrates wait results and still returns correct empty responses when at/beyond HWM
+- Issue found: race between initial HWM check and notification subscription could miss an update and wait until timeout
+- Fix: re-check HWM after subscribing to notifications to avoid missed updates
+- Tests: not run (already run by working agent)

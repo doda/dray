@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"time"
 
 	"github.com/dray-io/dray/internal/fetch"
 	"github.com/dray-io/dray/internal/index"
@@ -29,6 +30,7 @@ type FetchHandler struct {
 	topicStore    *topics.Store
 	fetcher       *fetch.Fetcher
 	streamManager *index.StreamManager
+	hwmWatcher    *fetch.HWMWatcher
 }
 
 // NewFetchHandler creates a new Fetch handler.
@@ -41,6 +43,17 @@ func NewFetchHandler(cfg FetchHandlerConfig, topicStore *topics.Store, fetcher *
 	}
 }
 
+// NewFetchHandlerWithWatcher creates a new Fetch handler with long-poll support.
+func NewFetchHandlerWithWatcher(cfg FetchHandlerConfig, topicStore *topics.Store, fetcher *fetch.Fetcher, streamManager *index.StreamManager, hwmWatcher *fetch.HWMWatcher) *FetchHandler {
+	return &FetchHandler{
+		cfg:           cfg,
+		topicStore:    topicStore,
+		fetcher:       fetcher,
+		streamManager: streamManager,
+		hwmWatcher:    hwmWatcher,
+	}
+}
+
 // Handle processes a Fetch request.
 // Per the task requirements, it:
 //  1. Resolves streamId from topic/partition
@@ -50,6 +63,7 @@ func NewFetchHandler(cfg FetchHandlerConfig, topicStore *topics.Store, fetcher *
 //  5. Applies record batch offset patching
 //  6. Returns batches up to maxBytes
 //  7. Sets high watermark in response
+//  8. If fetchOffset >= hwm and maxWaitMs > 0, waits for new data via long-poll
 func (h *FetchHandler) Handle(ctx context.Context, version int16, req *kmsg.FetchRequest) *kmsg.FetchResponse {
 	resp := kmsg.NewPtrFetchResponse()
 	resp.SetVersion(version)
@@ -58,6 +72,9 @@ func (h *FetchHandler) Handle(ctx context.Context, version int16, req *kmsg.Fetc
 	if version >= 1 {
 		resp.ThrottleMillis = 0
 	}
+
+	// Get maxWaitMs from request (used for long-poll)
+	maxWaitMs := req.MaxWaitMillis
 
 	// Process each topic
 	for _, topicReq := range req.Topics {
@@ -83,7 +100,7 @@ func (h *FetchHandler) Handle(ctx context.Context, version int16, req *kmsg.Fetc
 
 		// Process each partition
 		for _, partReq := range topicReq.Partitions {
-			partResp := h.processPartition(ctx, version, topicMeta.Name, &partReq)
+			partResp := h.processPartition(ctx, version, topicMeta.Name, &partReq, maxWaitMs)
 			topicResp.Partitions = append(topicResp.Partitions, partResp)
 		}
 
@@ -94,7 +111,8 @@ func (h *FetchHandler) Handle(ctx context.Context, version int16, req *kmsg.Fetc
 }
 
 // processPartition handles a single partition's fetch request.
-func (h *FetchHandler) processPartition(ctx context.Context, version int16, topicName string, partReq *kmsg.FetchRequestTopicPartition) kmsg.FetchResponseTopicPartition {
+// It implements long-poll waiting when fetchOffset >= hwm and maxWaitMs > 0.
+func (h *FetchHandler) processPartition(ctx context.Context, version int16, topicName string, partReq *kmsg.FetchRequestTopicPartition, maxWaitMs int32) kmsg.FetchResponseTopicPartition {
 	partResp := kmsg.NewFetchResponseTopicPartition()
 	partResp.Partition = partReq.Partition
 
@@ -125,6 +143,25 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 
 	fetchOffset := partReq.FetchOffset
 
+	// Long-poll waiting: If fetchOffset >= hwm and maxWaitMs > 0, wait for new data
+	// Per Kafka protocol, this implements long-polling for consumers waiting at the end.
+	if fetchOffset >= hwm && maxWaitMs > 0 && h.hwmWatcher != nil {
+		maxWait := time.Duration(maxWaitMs) * time.Millisecond
+		waitResult, err := h.hwmWatcher.WaitForHWM(ctx, streamID, fetchOffset, maxWait)
+		if err != nil {
+			// On error, return current state with HWM
+			return h.buildEmptyPartitionResponse(version, partReq.Partition, hwm)
+		}
+
+		// Update HWM from wait result
+		hwm = waitResult.CurrentHWM
+
+		// If still no new data after waiting, return empty response
+		if !waitResult.NewDataAvailable {
+			return h.buildEmptyPartitionResponse(version, partReq.Partition, hwm)
+		}
+	}
+
 	// Calculate maxBytes for this partition
 	maxBytes := int64(partReq.PartitionMaxBytes)
 	if maxBytes <= 0 {
@@ -147,6 +184,12 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 		return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, hwm)
 	}
 
+	// If offset is beyond HWM and no watcher configured (or maxWaitMs=0),
+	// just return empty response with current HWM
+	if fetchResp.OffsetBeyondHWM {
+		return h.buildEmptyPartitionResponse(version, partReq.Partition, fetchResp.HighWatermark)
+	}
+
 	// Build successful response
 	partResp.ErrorCode = errNoError
 	partResp.HighWatermark = fetchResp.HighWatermark
@@ -165,6 +208,23 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 			buf.Write(batch)
 		}
 		partResp.RecordBatches = buf.Bytes()
+	}
+
+	return partResp
+}
+
+// buildEmptyPartitionResponse builds a successful response with no record batches.
+// Used when fetch offset is at or beyond HWM (consumer is at end of log).
+func (h *FetchHandler) buildEmptyPartitionResponse(version int16, partition int32, hwm int64) kmsg.FetchResponseTopicPartition {
+	partResp := kmsg.NewFetchResponseTopicPartition()
+	partResp.Partition = partition
+	partResp.ErrorCode = errNoError
+	partResp.HighWatermark = hwm
+	partResp.LastStableOffset = hwm
+	partResp.LogStartOffset = 0
+
+	if version >= 11 {
+		partResp.PreferredReadReplica = -1
 	}
 
 	return partResp
