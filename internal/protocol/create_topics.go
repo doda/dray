@@ -27,6 +27,11 @@ type CreateTopicsHandlerConfig struct {
 	DefaultReplicationFactor int16
 	// IcebergEnabled enables Iceberg table creation for topics.
 	IcebergEnabled bool
+	// ClusterID is the Dray cluster identifier stored in Iceberg table properties.
+	ClusterID string
+	// IcebergNamespace is the Iceberg namespace for tables.
+	// Defaults to ["dray"] if not specified.
+	IcebergNamespace []string
 }
 
 // CreateTopicsHandler handles CreateTopics (key 19) requests.
@@ -34,7 +39,7 @@ type CreateTopicsHandler struct {
 	cfg           CreateTopicsHandlerConfig
 	topicStore    *topics.Store
 	streamManager *index.StreamManager
-	icebergCatalog catalog.Catalog
+	tableCreator  *catalog.TableCreator
 }
 
 // NewCreateTopicsHandler creates a new CreateTopics handler.
@@ -44,11 +49,20 @@ func NewCreateTopicsHandler(
 	streamManager *index.StreamManager,
 	icebergCatalog catalog.Catalog,
 ) *CreateTopicsHandler {
+	var tableCreator *catalog.TableCreator
+	if cfg.IcebergEnabled && icebergCatalog != nil {
+		tableCreator = catalog.NewTableCreator(catalog.TableCreatorConfig{
+			Catalog:   icebergCatalog,
+			Namespace: cfg.IcebergNamespace,
+			ClusterID: cfg.ClusterID,
+		})
+	}
+
 	return &CreateTopicsHandler{
-		cfg:           cfg,
-		topicStore:    topicStore,
+		cfg:          cfg,
+		topicStore:   topicStore,
 		streamManager: streamManager,
-		icebergCatalog: icebergCatalog,
+		tableCreator: tableCreator,
 	}
 }
 
@@ -191,21 +205,8 @@ func (h *CreateTopicsHandler) handleTopic(ctx context.Context, version int16, to
 	}
 
 	// Create Iceberg table if duality mode is enabled
-	if h.cfg.IcebergEnabled && h.icebergCatalog != nil {
-		tableID := catalog.TableIdentifier{
-			Namespace: []string{"dray"},
-			Name:      topicReq.Topic,
-		}
-		spec := catalog.DefaultPartitionSpec()
-		opts := catalog.CreateTableOptions{
-			Schema:        catalog.DefaultSchema(),
-			PartitionSpec: &spec,
-			Properties: catalog.TableProperties{
-				catalog.PropertyDrayTopic:         topicReq.Topic,
-				catalog.PropertyDraySchemaVersion: "1",
-			},
-		}
-		_, err := h.icebergCatalog.CreateTableIfMissing(ctx, tableID, opts)
+	if h.tableCreator != nil {
+		_, err := h.tableCreator.CreateTableForTopic(ctx, topicReq.Topic)
 		if err != nil {
 			// Iceberg table creation failure should not fail topic creation
 			// per spec - produce/fetch should remain available when Iceberg is down.

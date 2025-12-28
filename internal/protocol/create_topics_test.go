@@ -663,3 +663,184 @@ func TestCreateTopicsHandler_OlderVersionNoExtendedInfo(t *testing.T) {
 		t.Errorf("expected ReplicationFactor=-1 (default) for v4, got %d", resp.Topics[0].ReplicationFactor)
 	}
 }
+
+func TestCreateTopicsHandler_IcebergTableProperties(t *testing.T) {
+	ctx := context.Background()
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	icebergCatalog := newMockIcebergCatalog()
+
+	handler := NewCreateTopicsHandler(
+		CreateTopicsHandlerConfig{
+			DefaultPartitions:        3,
+			DefaultReplicationFactor: 1,
+			IcebergEnabled:           true,
+			ClusterID:                "my-test-cluster",
+			IcebergNamespace:         []string{"custom", "ns"},
+		},
+		topicStore,
+		streamManager,
+		icebergCatalog,
+	)
+
+	req := kmsg.NewPtrCreateTopicsRequest()
+	topic := kmsg.NewCreateTopicsRequestTopic()
+	topic.Topic = "props-topic"
+	topic.NumPartitions = 3
+	topic.ReplicationFactor = 1
+	req.Topics = append(req.Topics, topic)
+
+	resp := handler.Handle(ctx, 5, req)
+
+	if resp.Topics[0].ErrorCode != 0 {
+		t.Errorf("expected no error, got error code %d", resp.Topics[0].ErrorCode)
+	}
+
+	// Verify Iceberg table was created with correct properties
+	tableID := catalog.TableIdentifier{
+		Namespace: []string{"custom", "ns"},
+		Name:      "props-topic",
+	}
+	table, err := icebergCatalog.LoadTable(ctx, tableID)
+	if err != nil {
+		t.Fatalf("failed to load Iceberg table: %v", err)
+	}
+
+	props := table.Properties()
+
+	// Verify dray.topic property
+	if props[catalog.PropertyDrayTopic] != "props-topic" {
+		t.Errorf("expected dray.topic = 'props-topic', got %q", props[catalog.PropertyDrayTopic])
+	}
+
+	// Verify dray.cluster_id property
+	if props[catalog.PropertyDrayClusterID] != "my-test-cluster" {
+		t.Errorf("expected dray.cluster_id = 'my-test-cluster', got %q", props[catalog.PropertyDrayClusterID])
+	}
+
+	// Verify dray.schema_version property
+	if props[catalog.PropertyDraySchemaVersion] != "1" {
+		t.Errorf("expected dray.schema_version = '1', got %q", props[catalog.PropertyDraySchemaVersion])
+	}
+}
+
+func TestCreateTopicsHandler_IcebergTableSchema(t *testing.T) {
+	ctx := context.Background()
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	icebergCatalog := newMockIcebergCatalog()
+
+	handler := NewCreateTopicsHandler(
+		CreateTopicsHandlerConfig{
+			DefaultPartitions:        3,
+			DefaultReplicationFactor: 1,
+			IcebergEnabled:           true,
+			ClusterID:                "test-cluster",
+		},
+		topicStore,
+		streamManager,
+		icebergCatalog,
+	)
+
+	req := kmsg.NewPtrCreateTopicsRequest()
+	topic := kmsg.NewCreateTopicsRequestTopic()
+	topic.Topic = "schema-topic"
+	topic.NumPartitions = 3
+	topic.ReplicationFactor = 1
+	req.Topics = append(req.Topics, topic)
+
+	resp := handler.Handle(ctx, 5, req)
+
+	if resp.Topics[0].ErrorCode != 0 {
+		t.Errorf("expected no error, got error code %d", resp.Topics[0].ErrorCode)
+	}
+
+	// Verify Iceberg table schema
+	tableID := catalog.TableIdentifier{
+		Namespace: []string{"dray"},
+		Name:      "schema-topic",
+	}
+	table, err := icebergCatalog.LoadTable(ctx, tableID)
+	if err != nil {
+		t.Fatalf("failed to load Iceberg table: %v", err)
+	}
+
+	schema := table.Schema()
+
+	// Verify required fields per SPEC.md section 5.3
+	expectedFields := map[string]bool{
+		"partition":    true,
+		"offset":       true,
+		"timestamp_ms": true,
+		"key":          true,
+		"value":        true,
+		"headers":      true,
+		"attributes":   true,
+	}
+
+	fieldNames := make(map[string]bool)
+	for _, f := range schema.Fields {
+		fieldNames[f.Name] = true
+	}
+
+	for name := range expectedFields {
+		if !fieldNames[name] {
+			t.Errorf("missing required field %q in Iceberg table schema", name)
+		}
+	}
+}
+
+func TestCreateTopicsHandler_IcebergExistingTableGraceful(t *testing.T) {
+	ctx := context.Background()
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	icebergCatalog := newMockIcebergCatalog()
+
+	// Pre-create the table
+	tableID := catalog.TableIdentifier{
+		Namespace: []string{"dray"},
+		Name:      "existing-iceberg-topic",
+	}
+	_, err := icebergCatalog.CreateTableIfMissing(ctx, tableID, catalog.CreateTableOptions{
+		Schema:     catalog.DefaultSchema(),
+		Properties: catalog.DefaultTableProperties("existing-iceberg-topic", "old-cluster"),
+	})
+	if err != nil {
+		t.Fatalf("failed to pre-create Iceberg table: %v", err)
+	}
+
+	handler := NewCreateTopicsHandler(
+		CreateTopicsHandlerConfig{
+			DefaultPartitions:        3,
+			DefaultReplicationFactor: 1,
+			IcebergEnabled:           true,
+			ClusterID:                "new-cluster",
+		},
+		topicStore,
+		streamManager,
+		icebergCatalog,
+	)
+
+	req := kmsg.NewPtrCreateTopicsRequest()
+	topic := kmsg.NewCreateTopicsRequestTopic()
+	topic.Topic = "existing-iceberg-topic"
+	topic.NumPartitions = 3
+	topic.ReplicationFactor = 1
+	req.Topics = append(req.Topics, topic)
+
+	resp := handler.Handle(ctx, 5, req)
+
+	// Topic creation should succeed even though Iceberg table already exists
+	if resp.Topics[0].ErrorCode != 0 {
+		t.Errorf("expected no error, got error code %d", resp.Topics[0].ErrorCode)
+	}
+
+	// Verify topic was created
+	_, err = topicStore.GetTopic(ctx, "existing-iceberg-topic")
+	if err != nil {
+		t.Errorf("topic should exist: %v", err)
+	}
+}

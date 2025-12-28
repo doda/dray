@@ -1845,7 +1845,7 @@
     "scope": [
       "internal/iceberg/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "iceberg-append-files",

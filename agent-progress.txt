@@ -610,3 +610,10 @@ Start with project-setup, then follow spec phases:
 - Verified no data loss/duplication checks using fetch verification and offset continuity
 - Issues found: none
 - Tests: not run (working agent already ran)
+[review] iceberg-table-creation
+- Scope: internal/iceberg/catalog/table_creator.go, internal/iceberg/catalog/table_creator_test.go, internal/protocol/create_topics.go, internal/protocol/create_topics_test.go, task_list.json
+- Verified TableCreator wraps catalog calls with default schema/partition spec/properties and idempotent create/drop/load/exists behavior
+- Verified CreateTopicsHandler wires table creation in duality mode with namespace and cluster ID properties
+- Verified tests cover schema, partition spec, properties, and existing table behavior
+- Issues found: none
+- Tests: not run (working agent already ran)
