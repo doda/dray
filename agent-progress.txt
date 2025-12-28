@@ -323,3 +323,10 @@ Start with project-setup, then follow spec phases:
 - Verified helper methods (Host/Port, ParseZoneID) and registry getters
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T07:26:00Z] Reviewed zone-id-parsing
+- Scope: internal/server/server.go, internal/server/server_test.go, task_list.json
+- Verified zone_id parsing from client.id and propagation into RequestHeader and context
+- Verified logging includes zoneId field and context helpers are provided
+- Verified handling of empty/missing zone_id gracefully
+- Issues found: none
+- Tests: not run (already run by working agent)

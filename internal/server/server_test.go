@@ -590,6 +590,138 @@ func TestAPIKey(t *testing.T) {
 	}
 }
 
+func TestParseZoneID(t *testing.T) {
+	tests := []struct {
+		name     string
+		clientID string
+		want     string
+	}{
+		{
+			name:     "simple zone_id",
+			clientID: "zone_id=us-east-1a",
+			want:     "us-east-1a",
+		},
+		{
+			name:     "zone_id with other fields",
+			clientID: "app=myservice,zone_id=us-west-2b,version=1.0",
+			want:     "us-west-2b",
+		},
+		{
+			name:     "zone_id first",
+			clientID: "zone_id=eu-west-1a,app=test",
+			want:     "eu-west-1a",
+		},
+		{
+			name:     "no zone_id",
+			clientID: "app=myservice,version=1.0",
+			want:     "",
+		},
+		{
+			name:     "empty client_id",
+			clientID: "",
+			want:     "",
+		},
+		{
+			name:     "zone_id with spaces (trimmed)",
+			clientID: " zone_id=us-east-1c , app=test",
+			want:     "us-east-1c",
+		},
+		{
+			name:     "plain client_id without k=v format",
+			clientID: "my-application",
+			want:     "",
+		},
+		{
+			name:     "zone_id empty value",
+			clientID: "zone_id=",
+			want:     "",
+		},
+		{
+			name:     "zone_id with dashes and numbers",
+			clientID: "zone_id=ap-southeast-2a,foo=bar",
+			want:     "ap-southeast-2a",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseZoneID(tt.clientID)
+			if got != tt.want {
+				t.Errorf("parseZoneID(%q) = %q, want %q", tt.clientID, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseRequestHeader_ZoneID(t *testing.T) {
+	tests := []struct {
+		name       string
+		clientID   string
+		wantZoneID string
+	}{
+		{
+			name:       "zone_id extracted from clientId",
+			clientID:   "zone_id=us-east-1a,app=test",
+			wantZoneID: "us-east-1a",
+		},
+		{
+			name:       "no zone_id in clientId",
+			clientID:   "my-app-client",
+			wantZoneID: "",
+		},
+		{
+			name:       "empty clientId",
+			clientID:   "",
+			wantZoneID: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headerLen := 10 + len(tt.clientID)
+			buf := make([]byte, headerLen)
+			binary.BigEndian.PutUint16(buf[0:2], 18)    // apiKey
+			binary.BigEndian.PutUint16(buf[2:4], 2)     // apiVersion
+			binary.BigEndian.PutUint32(buf[4:8], 12345) // correlationId
+			binary.BigEndian.PutUint16(buf[8:10], uint16(len(tt.clientID)))
+			copy(buf[10:], tt.clientID)
+
+			header, _, err := parseRequestHeader(buf)
+			if err != nil {
+				t.Fatalf("parseRequestHeader failed: %v", err)
+			}
+
+			if header.ClientID != tt.clientID {
+				t.Errorf("ClientID = %q, want %q", header.ClientID, tt.clientID)
+			}
+			if header.ZoneID != tt.wantZoneID {
+				t.Errorf("ZoneID = %q, want %q", header.ZoneID, tt.wantZoneID)
+			}
+		})
+	}
+}
+
+func TestZoneIDContext(t *testing.T) {
+	ctx := context.Background()
+
+	// Test empty context
+	if got := ZoneIDFromContext(ctx); got != "" {
+		t.Errorf("ZoneIDFromContext on empty context = %q, want empty", got)
+	}
+
+	// Test with zone set
+	ctx = WithZoneID(ctx, "us-east-1a")
+	if got := ZoneIDFromContext(ctx); got != "us-east-1a" {
+		t.Errorf("ZoneIDFromContext = %q, want %q", got, "us-east-1a")
+	}
+
+	// Test overwriting zone
+	ctx = WithZoneID(ctx, "eu-west-1b")
+	if got := ZoneIDFromContext(ctx); got != "eu-west-1b" {
+		t.Errorf("ZoneIDFromContext after overwrite = %q, want %q", got, "eu-west-1b")
+	}
+}
+
 // Helper functions
 
 func buildKafkaRequest(apiKey, apiVersion int16, correlationID int32, clientID string, payload []byte) []byte {

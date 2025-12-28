@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,6 +34,27 @@ type RequestHeader struct {
 	APIVersion    int16
 	CorrelationID int32
 	ClientID      string
+	// ZoneID is extracted from ClientID per spec 7.1.
+	// If ClientID contains "zone_id=<value>", ZoneID will be set.
+	// Empty if not present or invalid.
+	ZoneID string
+}
+
+// zoneContextKey is the context key for storing the client's zone_id.
+type zoneContextKey struct{}
+
+// ZoneIDFromContext retrieves the zone_id from context.
+// Returns empty string if not set.
+func ZoneIDFromContext(ctx context.Context) string {
+	if v := ctx.Value(zoneContextKey{}); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
+// WithZoneID returns a new context with the given zone_id.
+func WithZoneID(ctx context.Context, zoneID string) context.Context {
+	return context.WithValue(ctx, zoneContextKey{}, zoneID)
 }
 
 // Config holds the TCP server configuration.
@@ -201,11 +223,16 @@ func (s *Server) handleConn(conn net.Conn) {
 			"apiVersion":    header.APIVersion,
 			"correlationId": header.CorrelationID,
 			"clientId":      header.ClientID,
+			"zoneId":        header.ZoneID,
 		})
 		reqLogger.Debug("request received")
 
 		ctx := context.Background()
 		ctx = logging.WithLoggerCtx(ctx, reqLogger)
+		// Store zone_id in context for handlers (per spec 7.1)
+		if header.ZoneID != "" {
+			ctx = WithZoneID(ctx, header.ZoneID)
+		}
 
 		response, err := s.handler.HandleRequest(ctx, header, payload)
 		if err != nil {
@@ -294,6 +321,9 @@ func parseRequestHeader(buf []byte) (*RequestHeader, int, error) {
 		}
 		header.ClientID = string(buf[offset : offset+int(clientIDLen)])
 		offset += int(clientIDLen)
+
+		// Extract zone_id from clientId per spec section 7.1
+		header.ZoneID = parseZoneID(header.ClientID)
 	}
 
 	// Check if we need to parse tagged fields.
@@ -438,4 +468,23 @@ func EncodeResponseHeader(correlationID int32) []byte {
 // APIKey returns the name of a Kafka API by its key.
 func APIKey(key int16) string {
 	return kmsg.Key(key).Name()
+}
+
+// parseZoneID extracts zone_id from a Kafka client.id string.
+// Per spec section 7.1, client.id may contain comma-separated k=v pairs.
+// Example: "zone_id=us-east-1a,app=myservice"
+// Returns empty string if zone_id is not found.
+func parseZoneID(clientID string) string {
+	if clientID == "" {
+		return ""
+	}
+
+	for _, part := range strings.Split(clientID, ",") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "zone_id=") {
+			return strings.TrimPrefix(part, "zone_id=")
+		}
+	}
+
+	return ""
 }
