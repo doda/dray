@@ -809,3 +809,10 @@ Start with project-setup, then follow spec phases:
 - Verified helper constructors support default and custom Prometheus registries for tests
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[review] drayd-broker-mode
+- Scope: cmd/drayd/main.go, cmd/drayd/broker.go, cmd/drayd/broker_test.go, task_list.json
+- Verified broker subcommand parsing, config loading/overrides, and broker startup wiring
+- Verified broker registers with metadata store and handles graceful shutdown via signals
+- Verified broker handler routes core Kafka APIs and health server starts
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)
