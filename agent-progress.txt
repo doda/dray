@@ -533,3 +533,10 @@ Start with project-setup, then follow spec phases:
 - Noted missing response length guards in a couple tests; added checks to avoid panics
 - No functional issues found after adjustments
 - Tests: not re-run (per instructions; prior agent already ran)
+[review] offset-retention-sweeper
+- Scope: internal/groups/offset_retention_sweep.go, internal/groups/offset_retention_sweep_test.go
+- Verified sweeper scans committed offsets, checks lease holder, deletes expired offsets by ExpireTimestamp
+- Verified per-group sweep enforces lease ownership and handles no-expiry offsets
+- Verified periodic Start/Stop behavior matches session sweeper pattern
+- Issues found: none
+- Tests: not run (already run by working agent)
