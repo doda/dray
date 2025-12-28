@@ -1506,7 +1506,7 @@
     "scope": [
       "internal/groups/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "kip848-range-assignor",

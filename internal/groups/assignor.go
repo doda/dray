@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"sort"
+	"strconv"
 )
 
 // Assignor is the interface for partition assignment strategies.
@@ -339,4 +340,352 @@ func (r *RoundRobinAssignor) Assign(members map[string]*Subscription, topics map
 // NewRoundRobinAssignor creates a new round-robin assignor.
 func NewRoundRobinAssignor() Assignor {
 	return &RoundRobinAssignor{}
+}
+
+// UniformAssignor implements the uniform partition assignment strategy for KIP-848.
+// It balances partitions evenly across members while minimizing partition movement
+// on rebalance through sticky behavior. This is the default assignor for KIP-848
+// consumer groups.
+//
+// The algorithm:
+// 1. Use current assignments as a starting point (sticky behavior)
+// 2. Calculate target: each member should have floor(P/M) or ceil(P/M) partitions
+// 3. Revoke partitions from over-assigned members
+// 4. Assign unassigned partitions to under-assigned members
+// 5. Balance across members to minimize difference in partition counts
+type UniformAssignor struct{}
+
+// Name returns the assignor name.
+func (u *UniformAssignor) Name() string {
+	return "uniform"
+}
+
+// Assign implements the uniform assignment strategy.
+// members: map of memberID -> subscription
+// topics: map of topicName -> partition count
+// Returns memberID -> list of TopicPartition assignments
+//
+// The algorithm implements global balancing:
+// 1. Calculate total partitions across all topics each member can consume
+// 2. Compute global target: each member gets floor(total/M) or ceil(total/M) partitions
+// 3. Remainder allocation is based on current assignment counts (sticky-aware)
+// 4. Keep existing assignments up to target, revoke excess
+// 5. Assign unassigned partitions to under-assigned members
+func (u *UniformAssignor) Assign(members map[string]*Subscription, topics map[string]int32) (map[string][]TopicPartition, error) {
+	if len(members) == 0 {
+		return nil, nil
+	}
+
+	// Initialize result for all members
+	result := make(map[string][]TopicPartition)
+	for memberID := range members {
+		result[memberID] = nil
+	}
+
+	// Build topic subscription mapping: topic -> list of subscribed members
+	topicSubscribers := make(map[string][]string)
+	for memberID, sub := range members {
+		for _, topic := range sub.Topics {
+			topicSubscribers[topic] = append(topicSubscribers[topic], memberID)
+		}
+	}
+
+	// Sort subscribers for deterministic assignment
+	for topic := range topicSubscribers {
+		sort.Strings(topicSubscribers[topic])
+	}
+
+	// Collect topic names sorted for deterministic processing
+	topicNames := make([]string, 0, len(topics))
+	for topic := range topics {
+		topicNames = append(topicNames, topic)
+	}
+	sort.Strings(topicNames)
+
+	// Get sorted member IDs
+	memberIDs := make([]string, 0, len(members))
+	for memberID := range members {
+		memberIDs = append(memberIDs, memberID)
+	}
+	sort.Strings(memberIDs)
+
+	// Try to parse existing assignments from user data (for sticky behavior)
+	currentAssignments := u.parseCurrentAssignments(members)
+
+	// Calculate global target: total partitions each member should handle
+	// Members are grouped by their subscription set - members with identical
+	// subscriptions should get the same number of partitions.
+	// For simplicity, we compute per-topic targets but use global counts
+	// to determine remainder allocation.
+
+	// First pass: count total partitions each member can receive
+	memberCapacity := make(map[string]int32)
+	for _, topic := range topicNames {
+		numPartitions := topics[topic]
+		subscribers := topicSubscribers[topic]
+		if len(subscribers) == 0 || numPartitions <= 0 {
+			continue
+		}
+
+		// Each subscriber to this topic can receive partitions
+		for _, memberID := range subscribers {
+			memberCapacity[memberID] += numPartitions
+		}
+	}
+
+	// Phase 1: Collect valid sticky assignments and track what's already assigned
+	// assignedPartitions tracks which member has which partition (globally)
+	assignedPartitions := make(map[string]string) // "topic:partition" -> memberID
+	memberAssignments := make(map[string][]TopicPartition)
+
+	for _, memberID := range memberIDs {
+		if partitions, ok := currentAssignments[memberID]; ok {
+			for _, tp := range partitions {
+				// Check if this topic-partition is valid
+				if numPartitions, exists := topics[tp.Topic]; !exists || tp.Partition >= numPartitions {
+					continue // topic doesn't exist or partition out of range
+				}
+				// Check if member is subscribed to this topic
+				if _, subscribed := memberCapacity[memberID]; !subscribed {
+					continue
+				}
+				subscribed := false
+				if sub, ok := members[memberID]; ok {
+					for _, t := range sub.Topics {
+						if t == tp.Topic {
+							subscribed = true
+							break
+						}
+					}
+				}
+				if !subscribed {
+					continue
+				}
+				key := partitionKey(tp)
+				if _, already := assignedPartitions[key]; !already {
+					memberAssignments[memberID] = append(memberAssignments[memberID], tp)
+					assignedPartitions[key] = memberID
+				}
+			}
+		}
+	}
+
+	// Phase 2: Calculate per-topic targets with global-aware remainder allocation
+	// For each topic, compute base and remainder, but allocate remainder to members
+	// with fewer current total assignments to minimize movement
+	for _, topic := range topicNames {
+		numPartitions := topics[topic]
+		subscribers := topicSubscribers[topic]
+		if len(subscribers) == 0 || numPartitions <= 0 {
+			continue
+		}
+
+		numSubscribers := int32(len(subscribers))
+		baseCount := numPartitions / numSubscribers
+		remainder := numPartitions % numSubscribers
+
+		// Build target counts for each subscriber
+		// Remainder goes to members with fewer total current assignments
+		targets := make(map[string]int32)
+		for _, memberID := range subscribers {
+			targets[memberID] = baseCount
+		}
+
+		// Allocate remainder based on current total assignments (fewest first, then by memberID for determinism)
+		if remainder > 0 {
+			// Sort subscribers by current assignment count (ascending), then by memberID
+			type memberCount struct {
+				memberID string
+				count    int
+			}
+			counts := make([]memberCount, len(subscribers))
+			for i, memberID := range subscribers {
+				counts[i] = memberCount{memberID: memberID, count: len(memberAssignments[memberID])}
+			}
+			sort.Slice(counts, func(i, j int) bool {
+				if counts[i].count != counts[j].count {
+					return counts[i].count < counts[j].count
+				}
+				return counts[i].memberID < counts[j].memberID
+			})
+
+			// Give extra partition to members with lowest counts
+			for i := int32(0); i < remainder; i++ {
+				targets[counts[i].memberID]++
+			}
+		}
+
+		// Collect current assignments for this topic
+		topicAssignments := make(map[string][]TopicPartition)
+		for _, memberID := range subscribers {
+			for _, tp := range memberAssignments[memberID] {
+				if tp.Topic == topic {
+					topicAssignments[memberID] = append(topicAssignments[memberID], tp)
+				}
+			}
+		}
+
+		// Revoke excess partitions from over-assigned members
+		for _, memberID := range subscribers {
+			current := topicAssignments[memberID]
+			target := targets[memberID]
+
+			if int32(len(current)) > target {
+				// Sort to keep lower partition numbers for determinism
+				sort.Slice(current, func(i, j int) bool {
+					return current[i].Partition < current[j].Partition
+				})
+
+				keep := current[:target]
+				revoke := current[target:]
+
+				topicAssignments[memberID] = keep
+				for _, tp := range revoke {
+					delete(assignedPartitions, partitionKey(tp))
+					// Also remove from memberAssignments
+					newAssign := make([]TopicPartition, 0)
+					for _, existing := range memberAssignments[memberID] {
+						if existing.Topic != tp.Topic || existing.Partition != tp.Partition {
+							newAssign = append(newAssign, existing)
+						}
+					}
+					memberAssignments[memberID] = newAssign
+				}
+			}
+		}
+
+		// Find unassigned partitions for this topic
+		unassignedPartitions := make([]TopicPartition, 0)
+		for p := int32(0); p < numPartitions; p++ {
+			key := partitionKey(TopicPartition{Topic: topic, Partition: p})
+			if _, assigned := assignedPartitions[key]; !assigned {
+				unassignedPartitions = append(unassignedPartitions, TopicPartition{Topic: topic, Partition: p})
+			}
+		}
+
+		// Sort for deterministic assignment
+		sort.Slice(unassignedPartitions, func(i, j int) bool {
+			return unassignedPartitions[i].Partition < unassignedPartitions[j].Partition
+		})
+
+		// Assign unassigned partitions to under-assigned members
+		for _, tp := range unassignedPartitions {
+			// Find member with lowest count that's still under target
+			var targetMember string
+			minCount := int32(-1)
+
+			for _, memberID := range subscribers {
+				count := int32(len(topicAssignments[memberID]))
+				target := targets[memberID]
+
+				if count < target && (minCount < 0 || count < minCount) {
+					minCount = count
+					targetMember = memberID
+				}
+			}
+
+			if targetMember != "" {
+				topicAssignments[targetMember] = append(topicAssignments[targetMember], tp)
+				assignedPartitions[partitionKey(tp)] = targetMember
+				memberAssignments[targetMember] = append(memberAssignments[targetMember], tp)
+			}
+		}
+	}
+
+	// Build final result from memberAssignments
+	for memberID, partitions := range memberAssignments {
+		result[memberID] = partitions
+	}
+
+	return result, nil
+}
+
+// parseCurrentAssignments extracts current assignments from member user data.
+// For sticky behavior, members encode their current assignment in the subscription userData.
+// If no user data is provided, returns empty assignments.
+func (u *UniformAssignor) parseCurrentAssignments(members map[string]*Subscription) map[string][]TopicPartition {
+	assignments := make(map[string][]TopicPartition)
+
+	for memberID, sub := range members {
+		if len(sub.UserData) == 0 {
+			continue
+		}
+
+		// Try to parse as assignment data (same format as EncodeAssignment output)
+		partitions, err := decodeAssignmentData(sub.UserData)
+		if err == nil && len(partitions) > 0 {
+			assignments[memberID] = partitions
+		}
+	}
+
+	return assignments
+}
+
+// decodeAssignmentData decodes assignment data from user data bytes.
+// Format is the same as EncodeAssignment output.
+func decodeAssignmentData(data []byte) ([]TopicPartition, error) {
+	if len(data) < 6 {
+		return nil, errors.New("data too short")
+	}
+
+	offset := 0
+
+	// Version
+	offset += 2
+
+	// Topics array length
+	if offset+4 > len(data) {
+		return nil, errors.New("truncated at topics length")
+	}
+	topicsLen := int32(binary.BigEndian.Uint32(data[offset:]))
+	offset += 4
+
+	if topicsLen < 0 {
+		return nil, errors.New("invalid topics length")
+	}
+
+	var result []TopicPartition
+	for i := int32(0); i < topicsLen; i++ {
+		// Topic name length
+		if offset+2 > len(data) {
+			return nil, errors.New("truncated at topic name length")
+		}
+		topicLen := int(binary.BigEndian.Uint16(data[offset:]))
+		offset += 2
+
+		// Topic name
+		if offset+topicLen > len(data) {
+			return nil, errors.New("truncated at topic name")
+		}
+		topic := string(data[offset : offset+topicLen])
+		offset += topicLen
+
+		// Partitions array length
+		if offset+4 > len(data) {
+			return nil, errors.New("truncated at partitions length")
+		}
+		partitionsLen := int32(binary.BigEndian.Uint32(data[offset:]))
+		offset += 4
+
+		for j := int32(0); j < partitionsLen; j++ {
+			if offset+4 > len(data) {
+				return nil, errors.New("truncated at partition id")
+			}
+			partition := int32(binary.BigEndian.Uint32(data[offset:]))
+			offset += 4
+			result = append(result, TopicPartition{Topic: topic, Partition: partition})
+		}
+	}
+
+	return result, nil
+}
+
+// partitionKey returns a unique string key for a topic-partition pair.
+func partitionKey(tp TopicPartition) string {
+	return tp.Topic + ":" + strconv.Itoa(int(tp.Partition))
+}
+
+// NewUniformAssignor creates a new uniform assignor.
+func NewUniformAssignor() Assignor {
+	return &UniformAssignor{}
 }
