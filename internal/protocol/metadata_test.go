@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -692,6 +693,153 @@ func TestMetadataHandler_ZoneFilteredLeadersDistribution(t *testing.T) {
 	for _, p := range topic.Partitions {
 		if p.Leader != 1 && p.Leader != 2 {
 			t.Errorf("partition %d has leader %d not from zone-a", p.Partition, p.Leader)
+		}
+	}
+}
+
+// mockLeaderSelector implements PartitionLeaderSelector for testing.
+type mockLeaderSelector struct {
+	leaders map[string]int32 // key: "topic-partition"
+}
+
+func (m *mockLeaderSelector) GetPartitionLeader(_ context.Context, zoneID, topic string, partition int32) (int32, error) {
+	key := fmt.Sprintf("%s-%d", topic, partition)
+	if leader, ok := m.leaders[key]; ok {
+		return leader, nil
+	}
+	return -1, nil
+}
+
+func TestMetadataHandler_WithLeaderSelector(t *testing.T) {
+	ctx := context.Background()
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+
+	// Create a topic with 3 partitions
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "selector-test",
+		PartitionCount: 3,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	lister := &mockBrokerLister{
+		brokers: []BrokerInfo{
+			{NodeID: 1, Host: "broker1", Port: 9092},
+			{NodeID: 2, Host: "broker2", Port: 9092},
+			{NodeID: 3, Host: "broker3", Port: 9092},
+		},
+	}
+
+	// Create a custom leader selector that assigns specific leaders
+	selector := &mockLeaderSelector{
+		leaders: map[string]int32{
+			"selector-test-0": 3, // partition 0 -> broker 3
+			"selector-test-1": 1, // partition 1 -> broker 1
+			"selector-test-2": 2, // partition 2 -> broker 2
+		},
+	}
+
+	handler := NewMetadataHandler(MetadataHandlerConfig{
+		ClusterID:      "test-cluster",
+		ControllerID:   1,
+		LocalBroker:    BrokerInfo{NodeID: 1, Host: "localhost", Port: 9092},
+		BrokerLister:   lister,
+		LeaderSelector: selector,
+	}, topicStore)
+
+	req := kmsg.NewPtrMetadataRequest()
+	topicName := "selector-test"
+	reqTopic := kmsg.NewMetadataRequestTopic()
+	reqTopic.Topic = &topicName
+	req.Topics = append(req.Topics, reqTopic)
+
+	resp := handler.Handle(ctx, 9, req, "")
+
+	if len(resp.Topics) != 1 {
+		t.Fatalf("expected 1 topic, got %d", len(resp.Topics))
+	}
+
+	topic := resp.Topics[0]
+	if len(topic.Partitions) != 3 {
+		t.Fatalf("expected 3 partitions, got %d", len(topic.Partitions))
+	}
+
+	// Verify leaders match what the selector returned
+	expectedLeaders := map[int32]int32{
+		0: 3,
+		1: 1,
+		2: 2,
+	}
+
+	for _, p := range topic.Partitions {
+		expected := expectedLeaders[p.Partition]
+		if p.Leader != expected {
+			t.Errorf("partition %d: expected leader %d, got %d", p.Partition, expected, p.Leader)
+		}
+	}
+}
+
+func TestMetadataHandler_LeaderSelectorDeterministic(t *testing.T) {
+	ctx := context.Background()
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "deterministic-test",
+		PartitionCount: 5,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	lister := &mockBrokerLister{
+		brokers: []BrokerInfo{
+			{NodeID: 1, Host: "broker1", Port: 9092},
+			{NodeID: 2, Host: "broker2", Port: 9092},
+			{NodeID: 3, Host: "broker3", Port: 9092},
+		},
+	}
+
+	// Use a deterministic selector (same key always returns same result)
+	selector := &mockLeaderSelector{
+		leaders: map[string]int32{
+			"deterministic-test-0": 1,
+			"deterministic-test-1": 2,
+			"deterministic-test-2": 3,
+			"deterministic-test-3": 1,
+			"deterministic-test-4": 2,
+		},
+	}
+
+	handler := NewMetadataHandler(MetadataHandlerConfig{
+		ClusterID:      "test-cluster",
+		ControllerID:   1,
+		LocalBroker:    BrokerInfo{NodeID: 1, Host: "localhost", Port: 9092},
+		BrokerLister:   lister,
+		LeaderSelector: selector,
+	}, topicStore)
+
+	req := kmsg.NewPtrMetadataRequest()
+	topicName := "deterministic-test"
+	reqTopic := kmsg.NewMetadataRequestTopic()
+	reqTopic.Topic = &topicName
+	req.Topics = append(req.Topics, reqTopic)
+
+	// Make two requests and verify leaders are identical
+	resp1 := handler.Handle(ctx, 9, req, "")
+	resp2 := handler.Handle(ctx, 9, req, "")
+
+	topic1 := resp1.Topics[0]
+	topic2 := resp2.Topics[0]
+
+	for i := 0; i < len(topic1.Partitions); i++ {
+		if topic1.Partitions[i].Leader != topic2.Partitions[i].Leader {
+			t.Errorf("partition %d: leaders differ between requests (%d vs %d)",
+				i, topic1.Partitions[i].Leader, topic2.Partitions[i].Leader)
 		}
 	}
 }

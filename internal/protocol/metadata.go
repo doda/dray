@@ -35,6 +35,7 @@ type MetadataHandlerConfig struct {
 	DefaultReplication  int16
 	LocalBroker         BrokerInfo
 	BrokerLister        BrokerLister
+	LeaderSelector      PartitionLeaderSelector
 }
 
 // BrokerLister provides access to registered brokers.
@@ -42,6 +43,15 @@ type BrokerLister interface {
 	// ListBrokers returns all registered brokers. If zoneID is non-empty,
 	// it may filter to return only brokers in the specified zone.
 	ListBrokers(ctx context.Context, zoneID string) ([]BrokerInfo, error)
+}
+
+// PartitionLeaderSelector provides deterministic partition-to-broker mapping
+// using rendezvous hashing. This enables zone-aware client connection affinity.
+type PartitionLeaderSelector interface {
+	// GetPartitionLeader returns the affinity broker for the given partition.
+	// The zoneID filters to zone-specific brokers when non-empty.
+	// Returns the NodeID of the selected broker, or -1 if none available.
+	GetPartitionLeader(ctx context.Context, zoneID, topic string, partition int32) (int32, error)
 }
 
 // MetadataHandler handles Metadata (key 3) requests.
@@ -208,7 +218,7 @@ func (h *MetadataHandler) buildTopicMetadata(ctx context.Context, version int16,
 	// Build partition metadata
 	brokers := h.getBrokers(ctx, zoneID)
 	for _, p := range partitions {
-		partition := h.buildPartitionMetadata(version, p, brokers)
+		partition := h.buildPartitionMetadata(ctx, version, topicName, p, brokers, zoneID)
 		topic.Partitions = append(topic.Partitions, partition)
 	}
 
@@ -216,7 +226,9 @@ func (h *MetadataHandler) buildTopicMetadata(ctx context.Context, version int16,
 }
 
 // buildPartitionMetadata builds metadata for a single partition.
-func (h *MetadataHandler) buildPartitionMetadata(version int16, p topics.PartitionMeta, brokers []BrokerInfo) kmsg.MetadataResponseTopicPartition {
+// Uses rendezvous hashing via LeaderSelector when available for deterministic
+// partition affinity, otherwise falls back to round-robin.
+func (h *MetadataHandler) buildPartitionMetadata(ctx context.Context, version int16, topicName string, p topics.PartitionMeta, brokers []BrokerInfo, zoneID string) kmsg.MetadataResponseTopicPartition {
 	partition := kmsg.NewMetadataResponseTopicPartition()
 	partition.Partition = p.Partition
 
@@ -226,10 +238,23 @@ func (h *MetadataHandler) buildPartitionMetadata(version int16, p topics.Partiti
 		partition.ErrorCode = errNone
 	}
 
-	// Assign leader from available brokers (simple round-robin based on partition)
+	// Assign leader from available brokers
 	if len(brokers) > 0 {
-		leaderIdx := int(p.Partition) % len(brokers)
-		partition.Leader = brokers[leaderIdx].NodeID
+		// Use rendezvous hashing when LeaderSelector is available
+		if h.cfg.LeaderSelector != nil {
+			leader, err := h.cfg.LeaderSelector.GetPartitionLeader(ctx, zoneID, topicName, p.Partition)
+			if err == nil && leader != -1 {
+				partition.Leader = leader
+			} else {
+				// Fallback to round-robin if LeaderSelector fails
+				leaderIdx := int(p.Partition) % len(brokers)
+				partition.Leader = brokers[leaderIdx].NodeID
+			}
+		} else {
+			// Fallback: simple round-robin based on partition number
+			leaderIdx := int(p.Partition) % len(brokers)
+			partition.Leader = brokers[leaderIdx].NodeID
+		}
 
 		// Build replica list (all brokers since Dray is leaderless)
 		for _, b := range brokers {

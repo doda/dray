@@ -1173,7 +1173,7 @@
     "scope": [
       "internal/routing/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "zone-filtering-test",

@@ -155,3 +155,151 @@ func TestRegistryListerAdapter_EmptyRegistry(t *testing.T) {
 		t.Errorf("expected 0 brokers, got %d", len(brokers))
 	}
 }
+
+func TestRegistryListerAdapter_GetPartitionLeader(t *testing.T) {
+	store := metadata.NewMockStore()
+	defer store.Close()
+
+	ctx := context.Background()
+
+	configs := []RegistryConfig{
+		{ClusterID: "cluster-1", BrokerID: "broker-1", NodeID: 1, ZoneID: "us-east-1a", AdvertisedListeners: []string{"b1:9092"}},
+		{ClusterID: "cluster-1", BrokerID: "broker-2", NodeID: 2, ZoneID: "us-east-1a", AdvertisedListeners: []string{"b2:9092"}},
+		{ClusterID: "cluster-1", BrokerID: "broker-3", NodeID: 3, ZoneID: "us-east-1b", AdvertisedListeners: []string{"b3:9092"}},
+	}
+
+	var registry *Registry
+	for _, cfg := range configs {
+		r := NewRegistry(store, cfg)
+		if err := r.Register(ctx); err != nil {
+			t.Fatalf("Register failed: %v", err)
+		}
+		if registry == nil {
+			registry = r
+		}
+	}
+
+	adapter := NewRegistryListerAdapter(registry)
+
+	t.Run("deterministic leader selection", func(t *testing.T) {
+		// Same topic-partition should always return the same leader
+		leader1, err := adapter.GetPartitionLeader(ctx, "", "topic-1", 0)
+		if err != nil {
+			t.Fatalf("GetPartitionLeader failed: %v", err)
+		}
+
+		leader2, err := adapter.GetPartitionLeader(ctx, "", "topic-1", 0)
+		if err != nil {
+			t.Fatalf("GetPartitionLeader failed: %v", err)
+		}
+
+		if leader1 != leader2 {
+			t.Errorf("non-deterministic leader: %d vs %d", leader1, leader2)
+		}
+	})
+
+	t.Run("different partitions may have different leaders", func(t *testing.T) {
+		// With 3 brokers and many partitions, we should see distribution
+		leaders := make(map[int32]int)
+		for i := int32(0); i < 100; i++ {
+			leader, err := adapter.GetPartitionLeader(ctx, "", "topic-1", i)
+			if err != nil {
+				t.Fatalf("GetPartitionLeader failed: %v", err)
+			}
+			leaders[leader]++
+		}
+
+		// Should have at least 2 different leaders
+		if len(leaders) < 2 {
+			t.Errorf("expected multiple leaders, got %d", len(leaders))
+		}
+	})
+
+	t.Run("zone-filtered leader selection", func(t *testing.T) {
+		// When filtering to us-east-1a, leader should be 1 or 2
+		leader, err := adapter.GetPartitionLeader(ctx, "us-east-1a", "topic-1", 0)
+		if err != nil {
+			t.Fatalf("GetPartitionLeader failed: %v", err)
+		}
+
+		if leader != 1 && leader != 2 {
+			t.Errorf("expected leader 1 or 2 for zone us-east-1a, got %d", leader)
+		}
+	})
+
+	t.Run("fallback when zone has no brokers", func(t *testing.T) {
+		leader, err := adapter.GetPartitionLeader(ctx, "us-west-2a", "topic-1", 0)
+		if err != nil {
+			t.Fatalf("GetPartitionLeader failed: %v", err)
+		}
+
+		// Should fall back to any broker
+		if leader < 1 || leader > 3 {
+			t.Errorf("expected valid leader, got %d", leader)
+		}
+	})
+}
+
+func TestRegistryListerAdapter_GetPartitionLeader_NoBrokers(t *testing.T) {
+	store := metadata.NewMockStore()
+	defer store.Close()
+
+	registry := NewRegistry(store, RegistryConfig{
+		ClusterID: "cluster-1",
+	})
+
+	adapter := NewRegistryListerAdapter(registry)
+
+	ctx := context.Background()
+	leader, err := adapter.GetPartitionLeader(ctx, "", "topic-1", 0)
+	if err != nil {
+		t.Fatalf("GetPartitionLeader failed: %v", err)
+	}
+
+	if leader != -1 {
+		t.Errorf("expected -1 for no brokers, got %d", leader)
+	}
+}
+
+func TestAffinityListerAdapter(t *testing.T) {
+	store := metadata.NewMockStore()
+	defer store.Close()
+
+	ctx := context.Background()
+
+	configs := []RegistryConfig{
+		{ClusterID: "cluster-1", BrokerID: "broker-1", NodeID: 1, ZoneID: "us-east-1a", AdvertisedListeners: []string{"b1:9092"}},
+		{ClusterID: "cluster-1", BrokerID: "broker-2", NodeID: 2, ZoneID: "us-east-1b", AdvertisedListeners: []string{"b2:9092"}},
+	}
+
+	var registry *Registry
+	for _, cfg := range configs {
+		r := NewRegistry(store, cfg)
+		if err := r.Register(ctx); err != nil {
+			t.Fatalf("Register failed: %v", err)
+		}
+		if registry == nil {
+			registry = r
+		}
+	}
+
+	adapter := NewAffinityListerAdapter(registry)
+
+	// Test ListBrokers (inherited from RegistryListerAdapter)
+	brokers, err := adapter.ListBrokers(ctx, "")
+	if err != nil {
+		t.Fatalf("ListBrokers failed: %v", err)
+	}
+	if len(brokers) != 2 {
+		t.Errorf("expected 2 brokers, got %d", len(brokers))
+	}
+
+	// Test GetPartitionLeader (inherited from RegistryListerAdapter)
+	leader, err := adapter.GetPartitionLeader(ctx, "", "topic-1", 0)
+	if err != nil {
+		t.Fatalf("GetPartitionLeader failed: %v", err)
+	}
+	if leader != 1 && leader != 2 {
+		t.Errorf("expected leader 1 or 2, got %d", leader)
+	}
+}

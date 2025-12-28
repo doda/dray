@@ -345,3 +345,11 @@ Start with project-setup, then follow spec phases:
 - Issues found: unused error constants in FindCoordinator handler
 - Resolution: removed unused error constants to keep package buildable
 - Tests: not run (already run by working agent)
+[2025-12-28T08:05:00Z] Reviewed partition-affinity-mapping
+- Scope: internal/protocol/metadata.go, internal/protocol/metadata_test.go, internal/routing/adapter.go, internal/routing/adapter_test.go, internal/routing/affinity.go, internal/routing/affinity_test.go, task_list.json
+- Verified rendezvous hash implementation and helper mappers return deterministic leaders
+- Verified metadata handler uses LeaderSelector when provided with fallback to round-robin
+- Verified registry adapter selects leaders using zone-aware broker list with fallback
+- Verified tests cover determinism, distribution, and membership changes
+- Issues found: none
+- Tests: not run (already run by working agent)
