@@ -85,3 +85,11 @@ Start with project-setup, then follow spec phases:
 - Verified tests cover session-bound lifecycle, renewal, updates, delete, and closed-store behavior
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T00:54:12Z] Reviewed wal-staging-marker
+- Scope: internal/wal/staging.go, internal/wal/staging_test.go
+- Verified staging marker JSON fields and key format (/wal/staging/<metaDomain>/<walId>) per spec 9.7
+- Verified staging marker written before WAL object and retained on object-store failure
+- Verified Flush returns staging key for deletion and DeleteStagingKey helper exists
+- Verified MetaDomain enforcement, reset behavior, and chunk offsets ordering
+- Issues found: none
+- Tests: not run (already run by working agent)
