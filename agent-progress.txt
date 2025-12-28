@@ -580,3 +580,11 @@ Start with project-setup, then follow spec phases:
 - Fix applied: guard against negative header counts to avoid panic while parsing records
 - Issues found: none after fix
 - Tests: not run (working agent already ran)
+[review] compaction-saga-state
+- Scope: internal/compaction/saga.go, internal/compaction/saga_test.go, task_list.json
+- Verified saga state machine: CREATED -> PARQUET_WRITTEN -> ICEBERG_COMMITTED -> INDEX_SWAPPED -> DONE with FAILED terminal
+- Verified durable progress markers stored in metadata with CAS on transitions
+- Verified recovery helpers (ListIncompleteJobs, ResumeJob) and cleanup semantics
+- Checked error handling for invalid IDs, missing jobs, and concurrent modification
+- Issues found: none
+- Tests: not run (working agent already ran)

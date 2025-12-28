@@ -1750,7 +1750,7 @@
     "scope": [
       "internal/compaction/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "compaction-index-swap",
