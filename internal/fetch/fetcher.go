@@ -8,6 +8,13 @@ import (
 	"github.com/dray-io/dray/internal/objectstore"
 )
 
+// Source constants for metrics tracking.
+const (
+	SourceWAL     = "wal"
+	SourceParquet = "parquet"
+	SourceNone    = "none"
+)
+
 // Fetcher handles fetching record batches from WAL or Parquet storage.
 type Fetcher struct {
 	walReader     *WALReader
@@ -48,6 +55,8 @@ type FetchResponse struct {
 	EndOffset int64
 	// OffsetBeyondHWM is true if fetchOffset >= hwm.
 	OffsetBeyondHWM bool
+	// Source indicates where the data came from (wal, parquet, or none).
+	Source string
 }
 
 // Fetch retrieves record batches for the given request.
@@ -71,6 +80,7 @@ func (f *Fetcher) Fetch(ctx context.Context, req *FetchRequest) (*FetchResponse,
 		return &FetchResponse{
 			HighWatermark:   lookupResult.HWM,
 			OffsetBeyondHWM: true,
+			Source:          SourceNone,
 		}, nil
 	}
 
@@ -78,6 +88,7 @@ func (f *Fetcher) Fetch(ctx context.Context, req *FetchRequest) (*FetchResponse,
 	if !lookupResult.Found {
 		return &FetchResponse{
 			HighWatermark: lookupResult.HWM,
+			Source:        SourceNone,
 		}, nil
 	}
 
@@ -85,18 +96,21 @@ func (f *Fetcher) Fetch(ctx context.Context, req *FetchRequest) (*FetchResponse,
 
 	// Read batches from storage based on file type
 	var fetchResult *FetchResult
+	var source string
 	switch entry.FileType {
 	case index.FileTypeWAL:
 		fetchResult, err = f.walReader.ReadBatches(ctx, entry, req.FetchOffset, req.MaxBytes)
 		if err != nil {
 			return nil, err
 		}
+		source = SourceWAL
 
 	case index.FileTypeParquet:
 		fetchResult, err = f.parquetReader.ReadBatches(ctx, entry, req.FetchOffset, req.MaxBytes)
 		if err != nil {
 			return nil, err
 		}
+		source = SourceParquet
 
 	default:
 		return nil, errors.New("fetch: unknown file type")
@@ -116,5 +130,6 @@ func (f *Fetcher) Fetch(ctx context.Context, req *FetchRequest) (*FetchResponse,
 		HighWatermark: lookupResult.HWM,
 		StartOffset:   fetchResult.StartOffset,
 		EndOffset:     fetchResult.EndOffset,
+		Source:        source,
 	}, nil
 }

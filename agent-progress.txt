@@ -758,3 +758,11 @@ Start with project-setup, then follow spec phases:
 - Verified tests cover histogram buckets and handler metric increments
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[review] fetch-latency-metrics
+- Scope: internal/fetch/fetcher.go, internal/metrics/doc.go, internal/metrics/fetch.go, internal/metrics/fetch_test.go, internal/metrics/server_test.go, internal/protocol/fetch.go, internal/protocol/fetch_test.go, task_list.json
+- Verified fetch latency histogram and request counters recorded with success/failure labels
+- Verified source-specific latency and request counters recorded for wal/parquet/none paths
+- Verified fetch handler records latency for all exit paths and treats any partition error as failure
+- Verified Prometheus /metrics server exposes fetch metrics and supports custom registry
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)

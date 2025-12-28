@@ -189,3 +189,73 @@ func TestServer_CloseWithoutStart(t *testing.T) {
 		t.Errorf("Close on unstarted server returned error: %v", err)
 	}
 }
+
+func TestServerWithFetchMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewFetchMetricsWithRegistry(reg)
+	m.RecordSuccess(0.005)
+	m.RecordFailure(0.010)
+	m.RecordSourceLatency(0.003, SourceWAL)
+	m.RecordSourceLatency(0.008, SourceParquet)
+	m.RecordSourceLatency(0.001, SourceNone)
+
+	s := NewServerWithRegistry(":0", reg)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer s.Close()
+
+	time.Sleep(10 * time.Millisecond)
+
+	resp, err := http.Get("http://" + s.Addr() + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+
+	bodyStr := string(body)
+
+	// Check for fetch latency metrics
+	if !strings.Contains(bodyStr, "dray_fetch_latency_seconds") {
+		t.Error("expected dray_fetch_latency_seconds in metrics output")
+	}
+	if !strings.Contains(bodyStr, "dray_fetch_requests_total") {
+		t.Error("expected dray_fetch_requests_total in metrics output")
+	}
+
+	// Check for source-specific metrics
+	if !strings.Contains(bodyStr, "dray_fetch_source_latency_seconds") {
+		t.Error("expected dray_fetch_source_latency_seconds in metrics output")
+	}
+	if !strings.Contains(bodyStr, "dray_fetch_source_requests_total") {
+		t.Error("expected dray_fetch_source_requests_total in metrics output")
+	}
+
+	// Check for status labels
+	if !strings.Contains(bodyStr, `status="success"`) {
+		t.Error("expected status=success label in metrics output")
+	}
+	if !strings.Contains(bodyStr, `status="failure"`) {
+		t.Error("expected status=failure label in metrics output")
+	}
+
+	// Check for source labels
+	if !strings.Contains(bodyStr, `source="wal"`) {
+		t.Error("expected source=wal label in metrics output")
+	}
+	if !strings.Contains(bodyStr, `source="parquet"`) {
+		t.Error("expected source=parquet label in metrics output")
+	}
+	if !strings.Contains(bodyStr, `source="none"`) {
+		t.Error("expected source=none label in metrics output")
+	}
+}

@@ -2,6 +2,8 @@
 //
 // This package exposes metrics for various Dray operations including:
 //   - Produce request latency (p50, p99, p999) broken down by success/failure
+//   - Fetch request latency (p50, p99, p999) broken down by success/failure
+//   - Fetch request latency broken down by source (wal, parquet, none)
 //   - Request counters by status
 //
 // Metrics are exposed via a dedicated HTTP server on /metrics in Prometheus format.
@@ -10,9 +12,11 @@
 //
 //	// Create and register metrics
 //	produceMetrics := metrics.NewProduceMetrics()
+//	fetchMetrics := metrics.NewFetchMetrics()
 //
 //	// Wire into handlers
 //	produceHandler := protocol.NewProduceHandler(...).WithMetrics(produceMetrics)
+//	fetchHandler := protocol.NewFetchHandler(...).WithMetrics(fetchMetrics)
 //
 //	// Start metrics server
 //	metricsServer := metrics.NewServer(":9090")

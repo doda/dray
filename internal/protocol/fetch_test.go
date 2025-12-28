@@ -11,10 +11,13 @@ import (
 	"github.com/dray-io/dray/internal/fetch"
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/metadata"
+	"github.com/dray-io/dray/internal/metrics"
 	"github.com/dray-io/dray/internal/objectstore"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/dray-io/dray/internal/wal"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
@@ -913,5 +916,238 @@ func TestFetchHandler_LongPoll_NoWatcherFallback(t *testing.T) {
 
 	if partResp.ErrorCode != 0 {
 		t.Errorf("expected success, got error code %d", partResp.ErrorCode)
+	}
+}
+
+// TestFetchHandler_MetricsRecording tests that fetch metrics are recorded.
+func TestFetchHandler_MetricsRecording(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	fetchMetrics := metrics.NewFetchMetricsWithRegistry(reg)
+
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx := context.Background()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	streamID := result.Partitions[0].StreamID
+	err = streamManager.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	mockObjStore := NewMockObjectStore()
+	fetcher := fetch.NewFetcher(mockObjStore, streamManager)
+	handler := NewFetchHandler(FetchHandlerConfig{MaxBytes: 1024 * 1024}, topicStore, fetcher, streamManager).
+		WithMetrics(fetchMetrics)
+
+	// Make a successful fetch request (empty stream)
+	req := buildFetchRequest("test-topic", 0, 0)
+	resp := handler.Handle(ctx, 12, req)
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != 0 {
+		t.Errorf("expected success, got error code %d", partResp.ErrorCode)
+	}
+
+	// Verify latency histogram was recorded for success
+	successHist := fetchMetrics.LatencyHistogram.WithLabelValues(metrics.StatusSuccess)
+	metric := &dto.Metric{}
+	if err := successHist.(prometheus.Metric).Write(metric); err != nil {
+		t.Fatalf("failed to write metric: %v", err)
+	}
+	if got := metric.Histogram.GetSampleCount(); got != 1 {
+		t.Errorf("success sample count = %d, want 1", got)
+	}
+
+	// Verify request counter was incremented
+	successCounter := fetchMetrics.RequestsTotal.WithLabelValues(metrics.StatusSuccess)
+	counterMetric := &dto.Metric{}
+	if err := successCounter.Write(counterMetric); err != nil {
+		t.Fatalf("failed to write counter: %v", err)
+	}
+	if got := counterMetric.Counter.GetValue(); got != 1 {
+		t.Errorf("success counter = %f, want 1", got)
+	}
+
+	// Verify source latency was recorded (should be "none" for empty stream)
+	noneHist := fetchMetrics.SourceLatencyHistogram.WithLabelValues(metrics.SourceNone)
+	noneMetric := &dto.Metric{}
+	if err := noneHist.(prometheus.Metric).Write(noneMetric); err != nil {
+		t.Fatalf("failed to write none metric: %v", err)
+	}
+	if got := noneMetric.Histogram.GetSampleCount(); got != 1 {
+		t.Errorf("none source sample count = %d, want 1", got)
+	}
+}
+
+// TestFetchHandler_MetricsFailure tests that failure metrics are recorded on error.
+func TestFetchHandler_MetricsFailure(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	fetchMetrics := metrics.NewFetchMetricsWithRegistry(reg)
+
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx := context.Background()
+
+	mockObjStore := NewMockObjectStore()
+	fetcher := fetch.NewFetcher(mockObjStore, streamManager)
+	handler := NewFetchHandler(FetchHandlerConfig{MaxBytes: 1024 * 1024}, topicStore, fetcher, streamManager).
+		WithMetrics(fetchMetrics)
+
+	// Make a fetch request for non-existent topic
+	req := buildFetchRequest("nonexistent-topic", 0, 0)
+	resp := handler.Handle(ctx, 12, req)
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode == 0 {
+		t.Error("expected error for nonexistent topic")
+	}
+
+	// Verify latency histogram was recorded for failure
+	failureHist := fetchMetrics.LatencyHistogram.WithLabelValues(metrics.StatusFailure)
+	metric := &dto.Metric{}
+	if err := failureHist.(prometheus.Metric).Write(metric); err != nil {
+		t.Fatalf("failed to write metric: %v", err)
+	}
+	if got := metric.Histogram.GetSampleCount(); got != 1 {
+		t.Errorf("failure sample count = %d, want 1", got)
+	}
+
+	// Verify request counter was incremented
+	failureCounter := fetchMetrics.RequestsTotal.WithLabelValues(metrics.StatusFailure)
+	counterMetric := &dto.Metric{}
+	if err := failureCounter.Write(counterMetric); err != nil {
+		t.Fatalf("failed to write counter: %v", err)
+	}
+	if got := counterMetric.Counter.GetValue(); got != 1 {
+		t.Errorf("failure counter = %f, want 1", got)
+	}
+}
+
+// TestFetchHandler_MetricsWithWALData tests that WAL source metrics are recorded.
+func TestFetchHandler_MetricsWithWALData(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	fetchMetrics := metrics.NewFetchMetricsWithRegistry(reg)
+
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx := context.Background()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	streamID := result.Partitions[0].StreamID
+	err = streamManager.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Create a WAL object with some records
+	mockObjStore := NewMockObjectStore()
+	walPath := "wal/domain=0/test.wal"
+
+	// Build record batch
+	batch := buildRecordBatch(5)
+
+	// Build WAL with chunk
+	walID := uuid.New()
+	walObj := wal.NewWAL(walID, 0, time.Now().UnixMilli())
+
+	parsedStreamID := parseStreamIDToUint64(streamID)
+
+	walObj.AddChunk(wal.Chunk{
+		StreamID:       parsedStreamID,
+		Batches:        []wal.BatchEntry{{Data: batch}},
+		RecordCount:    5,
+		MinTimestampMs: time.Now().UnixMilli(),
+		MaxTimestampMs: time.Now().UnixMilli(),
+	})
+
+	walData, err := wal.EncodeToBytes(walObj)
+	if err != nil {
+		t.Fatalf("failed to encode WAL: %v", err)
+	}
+
+	mockObjStore.Put(ctx, walPath, bytes.NewReader(walData), int64(len(walData)), "application/octet-stream")
+
+	chunkOffset := uint64(wal.HeaderSize)
+	chunkLength := 4 + uint32(len(batch))
+
+	// Create index entry
+	_, err = streamManager.AppendIndexEntry(ctx, index.AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    5,
+		ChunkSizeBytes: int64(chunkLength),
+		CreatedAtMs:    time.Now().UnixMilli(),
+		MinTimestampMs: time.Now().UnixMilli(),
+		MaxTimestampMs: time.Now().UnixMilli(),
+		WalID:          walID.String(),
+		WalPath:        walPath,
+		ChunkOffset:    chunkOffset,
+		ChunkLength:    chunkLength,
+	})
+	if err != nil {
+		t.Fatalf("failed to append index entry: %v", err)
+	}
+
+	fetcher := fetch.NewFetcher(mockObjStore, streamManager)
+	handler := NewFetchHandler(FetchHandlerConfig{MaxBytes: 1024 * 1024}, topicStore, fetcher, streamManager).
+		WithMetrics(fetchMetrics)
+
+	req := buildFetchRequest("test-topic", 0, 0)
+	resp := handler.Handle(ctx, 12, req)
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != 0 {
+		t.Errorf("expected success, got error code %d", partResp.ErrorCode)
+	}
+
+	// Verify source latency was recorded for WAL
+	walHist := fetchMetrics.SourceLatencyHistogram.WithLabelValues(metrics.SourceWAL)
+	walMetric := &dto.Metric{}
+	if err := walHist.(prometheus.Metric).Write(walMetric); err != nil {
+		t.Fatalf("failed to write WAL metric: %v", err)
+	}
+	if got := walMetric.Histogram.GetSampleCount(); got != 1 {
+		t.Errorf("WAL source sample count = %d, want 1", got)
+	}
+
+	// Verify source counter was incremented for WAL
+	walCounter := fetchMetrics.SourceRequestsTotal.WithLabelValues(metrics.SourceWAL)
+	walCounterMetric := &dto.Metric{}
+	if err := walCounter.Write(walCounterMetric); err != nil {
+		t.Fatalf("failed to write WAL counter: %v", err)
+	}
+	if got := walCounterMetric.Counter.GetValue(); got != 1 {
+		t.Errorf("WAL source counter = %f, want 1", got)
 	}
 }

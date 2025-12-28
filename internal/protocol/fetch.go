@@ -10,6 +10,7 @@ import (
 	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/fetch"
 	"github.com/dray-io/dray/internal/index"
+	"github.com/dray-io/dray/internal/metrics"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -34,6 +35,7 @@ type FetchHandler struct {
 	streamManager *index.StreamManager
 	hwmWatcher    *fetch.HWMWatcher
 	enforcer      *auth.Enforcer
+	metrics       *metrics.FetchMetrics
 }
 
 // NewFetchHandler creates a new Fetch handler.
@@ -63,6 +65,12 @@ func (h *FetchHandler) WithEnforcer(enforcer *auth.Enforcer) *FetchHandler {
 	return h
 }
 
+// WithMetrics sets the fetch metrics collector for this handler.
+func (h *FetchHandler) WithMetrics(m *metrics.FetchMetrics) *FetchHandler {
+	h.metrics = m
+	return h
+}
+
 // Handle processes a Fetch request.
 // Per the task requirements, it:
 //  1. Resolves streamId from topic/partition
@@ -73,9 +81,20 @@ func (h *FetchHandler) WithEnforcer(enforcer *auth.Enforcer) *FetchHandler {
 //  6. Returns batches up to maxBytes
 //  7. Sets high watermark in response
 //  8. If fetchOffset >= hwm and maxWaitMs > 0, waits for new data via long-poll
-func (h *FetchHandler) Handle(ctx context.Context, version int16, req *kmsg.FetchRequest) *kmsg.FetchResponse {
-	resp := kmsg.NewPtrFetchResponse()
+func (h *FetchHandler) Handle(ctx context.Context, version int16, req *kmsg.FetchRequest) (resp *kmsg.FetchResponse) {
+	startTime := time.Now()
+
+	resp = kmsg.NewPtrFetchResponse()
 	resp.SetVersion(version)
+
+	// Record metrics on exit
+	defer func() {
+		if h.metrics != nil {
+			duration := time.Since(startTime).Seconds()
+			hasError := h.responseHasError(resp)
+			h.metrics.RecordLatency(duration, !hasError)
+		}
+	}()
 
 	// Set throttle time (version >= 1)
 	if version >= 1 {
@@ -185,6 +204,7 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 		waitResult, err := h.hwmWatcher.WaitForHWM(ctx, streamID, fetchOffset, maxWait)
 		if err != nil {
 			// On error, return current state with HWM
+			h.recordSourceLatency(time.Time{}, fetch.SourceNone) // empty fetch
 			return h.buildEmptyPartitionResponse(version, partReq.Partition, hwm)
 		}
 
@@ -193,6 +213,7 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 
 		// If still no new data after waiting, return empty response
 		if !waitResult.NewDataAvailable {
+			h.recordSourceLatency(time.Time{}, fetch.SourceNone) // empty fetch
 			return h.buildEmptyPartitionResponse(version, partReq.Partition, hwm)
 		}
 	}
@@ -203,7 +224,8 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 		maxBytes = int64(h.cfg.MaxBytes)
 	}
 
-	// Fetch records
+	// Fetch records - track latency by source
+	fetchStart := time.Now()
 	fetchResp, err := h.fetcher.Fetch(ctx, &fetch.FetchRequest{
 		StreamID:    streamID,
 		FetchOffset: fetchOffset,
@@ -218,6 +240,9 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 		}
 		return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, hwm)
 	}
+
+	// Record source-specific latency
+	h.recordSourceLatency(fetchStart, fetchResp.Source)
 
 	// If offset is beyond HWM and no watcher configured (or maxWaitMs=0),
 	// just return empty response with current HWM
@@ -246,6 +271,21 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 	}
 
 	return partResp
+}
+
+// recordSourceLatency records source-specific latency metrics.
+// If start is zero, records a minimal latency for empty/none fetches.
+func (h *FetchHandler) recordSourceLatency(start time.Time, source string) {
+	if h.metrics == nil {
+		return
+	}
+	var duration float64
+	if start.IsZero() {
+		duration = 0
+	} else {
+		duration = time.Since(start).Seconds()
+	}
+	h.metrics.RecordSourceLatency(duration, source)
 }
 
 // buildEmptyPartitionResponse builds a successful response with no record batches.
@@ -279,6 +319,18 @@ func (h *FetchHandler) buildPartitionError(version int16, partition int32, error
 	}
 
 	return partResp
+}
+
+// responseHasError checks if any partition in the response has an error code.
+func (h *FetchHandler) responseHasError(resp *kmsg.FetchResponse) bool {
+	for _, topic := range resp.Topics {
+		for _, partition := range topic.Partitions {
+			if partition.ErrorCode != errNoError {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // NOTE: parseTopicID, parseHexByte, hexVal are defined in metadata.go
