@@ -519,3 +519,10 @@ Start with project-setup, then follow spec phases:
 - Verified response version handling across v0-v9
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T13:36:22Z] Reviewed offset-fetch-handler
+- Scope: internal/protocol/offset_fetch.go, internal/protocol/offset_fetch_test.go, task_list.json
+- Verified OffsetFetch handler reads committed offsets, returns per-partition data, supports fetch-all for v2+ and batched v8+ groups
+- Verified lease manager coordination errors map to NOT_COORDINATOR/COORDINATOR_NOT_AVAILABLE
+- Verified response versioning for v0-v9, leader epoch handling for v5+, and missing offsets return -1
+- Issues found: none
+- Tests: not run (already run by working agent)
