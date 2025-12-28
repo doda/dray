@@ -603,3 +603,10 @@ Start with project-setup, then follow spec phases:
 - Confirmed compaction path swaps WAL index for Parquet and fetches re-read from compacted storage
 - Issues found: none
 - Tests: not run (working agent already ran)
+[review] compaction-crash-recovery-test
+- Scope: tests/integration/compaction_crash_recovery_test.go, task_list.json
+- Verified crash recovery coverage at PARQUET_WRITTEN, ICEBERG_COMMITTED, INDEX_SWAPPED, and CREATED states
+- Verified recovery resumes job and completes remaining saga transitions
+- Verified no data loss/duplication checks using fetch verification and offset continuity
+- Issues found: none
+- Tests: not run (working agent already ran)
