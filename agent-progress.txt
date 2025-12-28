@@ -261,3 +261,11 @@ Start with project-setup, then follow spec phases:
 - Issue found: race on producedOffsets with goroutines; removed concurrency and noisy debug logs
 - Issue found: non-ASCII test content not required for task; replaced with ASCII string
 - Tests: not run (already run by working agent)
+[2025-12-28T06:15:12Z] Reviewed topic-metadata-storage
+- Scope: internal/topics/store.go, internal/topics/store_test.go, internal/metadata/keys/keys.go, task_list.json
+- Verified topic metadata stored at /dray/v1/topics/<topicName> with topicId, partitionCount, config, createdAtMs
+- Verified partition entries stored at /dray/v1/topics/<topicName>/partitions/<p> with streamId, state, createdAtMs
+- Verified transactional create prevents duplicate topics and creates all partitions atomically
+- Verified list helpers filter out partition keys while returning topic-only entries
+- Issues found: none
+- Tests: not run (already run by working agent)

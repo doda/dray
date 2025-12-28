@@ -964,7 +964,7 @@
     "scope": [
       "internal/topics/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "create-topics-handler",
