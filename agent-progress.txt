@@ -774,3 +774,11 @@ Start with project-setup, then follow spec phases:
 - Issues found: minor comment mismatch in WAL size bucket description
 - Fix applied: aligned bucket description with 128MB upper bucket in internal/metrics/wal.go
 - Tests: not run (trusted prior run by working agent)
+[review] compaction-backlog-metrics
+- Scope: internal/metrics/compaction.go, internal/metrics/compaction_test.go, internal/metrics/doc.go, task_list.json
+- Verified compaction backlog gauges track total bytes/files and per-stream bytes/files
+- Verified backlog exceeded gauge toggles based on configured thresholds
+- Verified backlog scanner aggregates stream WAL entries into totals and per-stream metrics
+- Verified scanner runs immediately on start and stops cleanly
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)

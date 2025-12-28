@@ -8,6 +8,11 @@
 //   - WAL flush size histogram (bytes per WAL object)
 //   - WAL flush latency histogram (seconds per flush operation)
 //   - WAL objects created counter (for computing objects/second via rate())
+//   - Compaction backlog metrics:
+//   - Total WAL bytes pending compaction
+//   - Total WAL files pending compaction
+//   - Per-stream backlog metrics
+//   - Backlog exceeded alert gauge (for threshold-based alerting)
 //
 // Metrics are exposed via a dedicated HTTP server on /metrics in Prometheus format.
 //
@@ -17,11 +22,20 @@
 //	produceMetrics := metrics.NewProduceMetrics()
 //	fetchMetrics := metrics.NewFetchMetrics()
 //	walMetrics := metrics.NewWALMetrics()
+//	compactionMetrics := metrics.NewCompactionMetrics()
 //
 //	// Wire into handlers
 //	produceHandler := protocol.NewProduceHandler(...).WithMetrics(produceMetrics)
 //	fetchHandler := protocol.NewFetchHandler(...).WithMetrics(fetchMetrics)
 //	stagingWriter := wal.NewStagingWriter(store, meta, &wal.StagingWriterConfig{Metrics: walMetrics})
+//
+//	// Configure compaction backlog alerting thresholds
+//	compactionMetrics.SetThresholds(1024*1024*1024, 1000) // 1GB or 1000 files
+//
+//	// Start backlog scanner for periodic updates
+//	scanner := metrics.NewBacklogScanner(compactionMetrics, indexLister, 30*time.Second)
+//	scanner.Start()
+//	defer scanner.Stop()
 //
 //	// Start metrics server
 //	metricsServer := metrics.NewServer(":9090")

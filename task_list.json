@@ -2257,7 +2257,7 @@
     "scope": [
       "internal/metrics/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "gc-backlog-metrics",
