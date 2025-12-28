@@ -1371,3 +1371,606 @@ func TestCommitter_WALWriteFailure_MultipleStreams(t *testing.T) {
 		t.Error("request 1 Result should be nil on WAL failure")
 	}
 }
+
+// --- Metadata Commit Failure Tests (produce-failure-metadata-commit task) ---
+
+// failingMetadataStore wraps MockStore and fails on Txn calls after a threshold.
+// This simulates successful staging marker writes but failed commit transactions.
+type failingMetadataStore struct {
+	*metadata.MockStore
+	mu            sync.Mutex
+	txnCallCount  int
+	failAfterTxns int // Fail after this many Txn calls
+	txnErr        error
+}
+
+func newFailingMetadataStore(failAfterTxns int) *failingMetadataStore {
+	return &failingMetadataStore{
+		MockStore:     metadata.NewMockStore(),
+		failAfterTxns: failAfterTxns,
+		txnErr:        errors.New("simulated metadata commit failure"),
+	}
+}
+
+func (s *failingMetadataStore) Txn(ctx context.Context, partitionKey string, fn func(metadata.Txn) error) error {
+	s.mu.Lock()
+	s.txnCallCount++
+	count := s.txnCallCount
+	s.mu.Unlock()
+
+	if count > s.failAfterTxns {
+		return s.txnErr
+	}
+	return s.MockStore.Txn(ctx, partitionKey, fn)
+}
+
+var _ metadata.MetadataStore = (*failingMetadataStore)(nil)
+
+// TestCommitter_MetadataCommitFailure_ReturnsError verifies that when metadata
+// commit fails after WAL write, an error is returned to the client.
+func TestCommitter_MetadataCommitFailure_ReturnsError(t *testing.T) {
+	// Create a metadata store that fails on Txn after 0 successful calls
+	// (immediately fails on the first commit transaction)
+	metaStore := newFailingMetadataStore(0)
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream using the underlying MockStore (bypasses failing Txn)
+	streamMgr := index.NewStreamManager(metaStore.MockStore)
+	streamID := "test-stream-meta-fail"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Create pending requests
+	streamHash := parseStreamID(streamID)
+	requests := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit - should fail due to metadata commit failure
+	err = committer.Commit(ctx, 0, requests)
+
+	// Must return an error
+	if err == nil {
+		t.Fatal("expected error to be returned when metadata commit fails")
+	}
+
+	// The error should indicate metadata/commit failure
+	errStr := err.Error()
+	if !strings.Contains(errStr, "metadata") && !strings.Contains(errStr, "commit") {
+		t.Errorf("error should indicate metadata commit failure, got: %v", err)
+	}
+
+	// Verify result was not set
+	if requests[0].Result != nil {
+		t.Error("request Result should be nil when metadata commit fails")
+	}
+}
+
+// TestCommitter_MetadataCommitFailure_WALWritten verifies that WAL object is written
+// to object storage even when metadata commit fails.
+func TestCommitter_MetadataCommitFailure_WALWritten(t *testing.T) {
+	metaStore := newFailingMetadataStore(0)
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore.MockStore)
+	streamID := "test-stream-wal-written"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Create pending requests
+	streamHash := parseStreamID(streamID)
+	requests := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit - should fail
+	_ = committer.Commit(ctx, 0, requests)
+
+	// Verify WAL object was written to object storage (before metadata commit failed)
+	objStore.mu.Lock()
+	walCount := len(objStore.objects)
+	objStore.mu.Unlock()
+
+	if walCount != 1 {
+		t.Errorf("expected 1 WAL object in storage (orphaned), got %d", walCount)
+	}
+}
+
+// TestCommitter_MetadataCommitFailure_StagingMarkerRemains verifies that the
+// staging marker remains when metadata commit fails, enabling orphan GC.
+func TestCommitter_MetadataCommitFailure_StagingMarkerRemains(t *testing.T) {
+	metaStore := newFailingMetadataStore(0)
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore.MockStore)
+	streamID := "test-stream-staging-remains"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Create pending requests
+	streamHash := parseStreamID(streamID)
+	requests := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit - should fail
+	err = committer.Commit(ctx, 0, requests)
+	if err == nil {
+		t.Fatal("expected commit to fail")
+	}
+
+	// Verify staging marker exists (for orphan GC to clean up)
+	allKeys := metaStore.MockStore.GetAllKeys()
+	foundStaging := false
+	for _, key := range allKeys {
+		if len(key) > 12 && key[:12] == "/wal/staging" {
+			foundStaging = true
+			break
+		}
+	}
+
+	if !foundStaging {
+		t.Error("staging marker should remain after metadata commit failure (for orphan GC)")
+	}
+}
+
+// TestCommitter_MetadataCommitFailure_NoIndexEntries verifies that no index
+// entries are created when metadata commit fails.
+func TestCommitter_MetadataCommitFailure_NoIndexEntries(t *testing.T) {
+	metaStore := newFailingMetadataStore(0)
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore.MockStore)
+	streamID := "test-stream-no-index"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Record initial index entry count
+	entriesBefore, err := streamMgr.ListIndexEntries(ctx, streamID, 10)
+	if err != nil {
+		t.Fatalf("failed to list initial index entries: %v", err)
+	}
+
+	// Create pending requests
+	streamHash := parseStreamID(streamID)
+	requests := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit - should fail
+	err = committer.Commit(ctx, 0, requests)
+	if err == nil {
+		t.Fatal("expected commit to fail")
+	}
+
+	// Verify no new index entries were created
+	entriesAfter, err := streamMgr.ListIndexEntries(ctx, streamID, 10)
+	if err != nil {
+		t.Fatalf("failed to list index entries after failure: %v", err)
+	}
+
+	if len(entriesAfter) != len(entriesBefore) {
+		t.Errorf("index entries should not have changed: was %d, now %d",
+			len(entriesBefore), len(entriesAfter))
+	}
+}
+
+// TestCommitter_MetadataCommitFailure_HWMUnchanged verifies that HWM is not
+// updated when metadata commit fails.
+func TestCommitter_MetadataCommitFailure_HWMUnchanged(t *testing.T) {
+	metaStore := newFailingMetadataStore(0)
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore.MockStore)
+	streamID := "test-stream-hwm-unchanged"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Record initial HWM
+	hwmBefore, _, err := streamMgr.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("failed to get initial HWM: %v", err)
+	}
+
+	// Create pending requests
+	streamHash := parseStreamID(streamID)
+	requests := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit - should fail
+	err = committer.Commit(ctx, 0, requests)
+	if err == nil {
+		t.Fatal("expected commit to fail")
+	}
+
+	// Verify HWM was not updated
+	hwmAfter, _, err := streamMgr.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("failed to get HWM after failure: %v", err)
+	}
+
+	if hwmAfter != hwmBefore {
+		t.Errorf("HWM should not have changed on metadata commit failure: was %d, now %d",
+			hwmBefore, hwmAfter)
+	}
+}
+
+// TestCommitter_MetadataCommitFailure_NoWALObjectRecord verifies that no WAL
+// object record is created when metadata commit fails.
+func TestCommitter_MetadataCommitFailure_NoWALObjectRecord(t *testing.T) {
+	metaStore := newFailingMetadataStore(0)
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore.MockStore)
+	streamID := "test-stream-no-wal-record"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Count initial WAL object records
+	allKeysBefore := metaStore.MockStore.GetAllKeys()
+	walRecordCountBefore := 0
+	for _, key := range allKeysBefore {
+		if len(key) > 12 && key[:12] == "/wal/objects" {
+			walRecordCountBefore++
+		}
+	}
+
+	// Create pending requests
+	streamHash := parseStreamID(streamID)
+	requests := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit - should fail
+	err = committer.Commit(ctx, 0, requests)
+	if err == nil {
+		t.Fatal("expected commit to fail")
+	}
+
+	// Verify no new WAL object record was created
+	allKeysAfter := metaStore.MockStore.GetAllKeys()
+	walRecordCountAfter := 0
+	for _, key := range allKeysAfter {
+		if len(key) > 12 && key[:12] == "/wal/objects" {
+			walRecordCountAfter++
+		}
+	}
+
+	if walRecordCountAfter != walRecordCountBefore {
+		t.Errorf("WAL object records should not have changed: was %d, now %d",
+			walRecordCountBefore, walRecordCountAfter)
+	}
+}
+
+// TestCommitter_MetadataCommitFailure_MultipleStreams verifies that when metadata
+// commit fails for one stream, no streams get their metadata committed.
+func TestCommitter_MetadataCommitFailure_MultipleStreams(t *testing.T) {
+	metaStore := newFailingMetadataStore(0)
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create two streams
+	streamMgr := index.NewStreamManager(metaStore.MockStore)
+	stream1ID := "test-stream-multi-1"
+	stream2ID := "test-stream-multi-2"
+
+	err := streamMgr.CreateStreamWithID(ctx, stream1ID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream1: %v", err)
+	}
+	err = streamMgr.CreateStreamWithID(ctx, stream2ID, "test-topic", 1)
+	if err != nil {
+		t.Fatalf("failed to create stream2: %v", err)
+	}
+
+	// Record initial state
+	hwm1Before, _, _ := streamMgr.GetHWM(ctx, stream1ID)
+	hwm2Before, _, _ := streamMgr.GetHWM(ctx, stream2ID)
+
+	// Create pending requests for both streams
+	stream1Hash := parseStreamID(stream1ID)
+	stream2Hash := parseStreamID(stream2ID)
+
+	requests := []*PendingRequest{
+		{
+			StreamID:       stream1Hash,
+			StreamIDStr:    stream1ID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+		{
+			StreamID:       stream2Hash,
+			StreamIDStr:    stream2ID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch2")}},
+			RecordCount:    5,
+			MinTimestampMs: 1500,
+			MaxTimestampMs: 2500,
+			Size:           80,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit - should fail
+	err = committer.Commit(ctx, 0, requests)
+	if err == nil {
+		t.Fatal("expected commit to fail")
+	}
+
+	// Verify no HWM changes for either stream
+	hwm1After, _, _ := streamMgr.GetHWM(ctx, stream1ID)
+	hwm2After, _, _ := streamMgr.GetHWM(ctx, stream2ID)
+
+	if hwm1After != hwm1Before {
+		t.Errorf("stream1 HWM should not change on metadata failure: was %d, now %d",
+			hwm1Before, hwm1After)
+	}
+	if hwm2After != hwm2Before {
+		t.Errorf("stream2 HWM should not change on metadata failure: was %d, now %d",
+			hwm2Before, hwm2After)
+	}
+
+	// Verify no results set
+	if requests[0].Result != nil {
+		t.Error("request 0 Result should be nil on metadata failure")
+	}
+	if requests[1].Result != nil {
+		t.Error("request 1 Result should be nil on metadata failure")
+	}
+}
+
+// TestBuffer_MetadataCommitFailure_PropagatesError verifies that metadata commit
+// failure is properly propagated through the buffer to waiting requests.
+func TestBuffer_MetadataCommitFailure_PropagatesError(t *testing.T) {
+	metaStore := newFailingMetadataStore(0)
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore.MockStore)
+	streamID := "test-stream-buffer-error"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Create buffer
+	buffer := NewBuffer(BufferConfig{
+		MaxBufferBytes: 10000,
+		FlushSizeBytes: 50,
+		LingerMs:       0,
+		NumDomains:     4,
+		OnFlush:        committer.CreateFlushHandler(),
+	})
+	defer buffer.Close()
+
+	// Add a request
+	req, err := buffer.Add(ctx, streamID, []wal.BatchEntry{{Data: make([]byte, 100)}}, 10, 1000, 2000)
+	if err != nil {
+		t.Fatalf("failed to add to buffer: %v", err)
+	}
+
+	// Wait for the request to complete
+	select {
+	case <-req.Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for request completion")
+	}
+
+	// Verify error was propagated
+	if req.Err == nil {
+		t.Error("expected error to be propagated to request when metadata commit fails")
+	}
+
+	// Verify result was not set
+	if req.Result != nil {
+		t.Error("expected Result to be nil when metadata commit fails")
+	}
+}
+
+// TestCommitter_MetadataCommitFailure_SubsequentRequestsSucceed verifies that after a
+// metadata commit failure, subsequent requests can succeed if the failure is transient.
+func TestCommitter_MetadataCommitFailure_SubsequentRequestsSucceed(t *testing.T) {
+	// Create a metadata store that fails on the first Txn call only
+	metaStore := &transientFailingMetadataStore{
+		MockStore:   metadata.NewMockStore(),
+		failOnce:    true,
+		txnErr:      errors.New("simulated transient metadata failure"),
+	}
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore.MockStore)
+	streamID := "test-stream-transient-fail"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	streamHash := parseStreamID(streamID)
+
+	// First commit - should fail
+	requests1 := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	err = committer.Commit(ctx, 0, requests1)
+	if err == nil {
+		t.Fatal("expected first commit to fail")
+	}
+
+	// Second commit - should succeed (transient failure resolved)
+	requests2 := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch2")}},
+			RecordCount:    5,
+			MinTimestampMs: 2000,
+			MaxTimestampMs: 3000,
+			Size:           50,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	err = committer.Commit(ctx, 0, requests2)
+	if err != nil {
+		t.Fatalf("expected second commit to succeed, got: %v", err)
+	}
+
+	if requests2[0].Result == nil {
+		t.Error("expected second request to have Result set")
+	}
+
+	// Verify HWM was updated only for successful request
+	hwm, _, err := streamMgr.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("failed to get HWM: %v", err)
+	}
+	// Only second request's 5 records should be committed
+	if hwm != 5 {
+		t.Errorf("expected HWM 5 (only second request committed), got %d", hwm)
+	}
+}
+
+// transientFailingMetadataStore fails on the first Txn call then succeeds.
+type transientFailingMetadataStore struct {
+	*metadata.MockStore
+	mu       sync.Mutex
+	failOnce bool
+	failed   bool
+	txnErr   error
+}
+
+func (s *transientFailingMetadataStore) Txn(ctx context.Context, partitionKey string, fn func(metadata.Txn) error) error {
+	s.mu.Lock()
+	shouldFail := s.failOnce && !s.failed
+	if shouldFail {
+		s.failed = true
+	}
+	s.mu.Unlock()
+
+	if shouldFail {
+		return s.txnErr
+	}
+	return s.MockStore.Txn(ctx, partitionKey, fn)
+}
+
+var _ metadata.MetadataStore = (*transientFailingMetadataStore)(nil)

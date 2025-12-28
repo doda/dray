@@ -182,3 +182,11 @@ Start with project-setup, then follow spec phases:
 - Verified tests cover no HWM/index updates, error propagation through buffer, and transient failure recovery
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T03:14:20Z] Reviewed produce-failure-metadata-commit
+- Scope: internal/produce/commit_test.go, internal/produce/commit.go, task_list.json
+- Verified metadata commit failure propagates error and leaves WAL object orphaned
+- Verified staging marker remains for orphan GC on metadata commit failure
+- Verified no index/HWM updates or WAL object records are created on failure
+- Verified multi-stream failure leaves all request results unset
+- Issues found: none
+- Tests: not run (already run by working agent)
