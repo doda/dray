@@ -2293,7 +2293,7 @@
     "scope": [
       "internal/metrics/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "object-store-latency-metrics",

@@ -19,6 +19,10 @@
 //   - Pending Parquet deletes (Parquet files replaced by compaction)
 //   - Staging WAL count (total in-flight and orphaned staging markers)
 //   - Eligible WAL/Parquet deletes (objects ready for immediate deletion)
+//   - Oxia operation metrics:
+//     - Get/Put/Delete/List/Txn/PutEphemeral latency histograms
+//     - Operation counts by type and status (success/failure)
+//     - Retry counts by operation type
 //
 // Metrics are exposed via a dedicated HTTP server on /metrics in Prometheus format.
 //
@@ -30,11 +34,16 @@
 //	walMetrics := metrics.NewWALMetrics()
 //	compactionMetrics := metrics.NewCompactionMetrics()
 //	gcMetrics := metrics.NewGCMetrics()
+//	oxiaMetrics := metrics.NewOxiaMetrics()
 //
 //	// Wire into handlers
 //	produceHandler := protocol.NewProduceHandler(...).WithMetrics(produceMetrics)
 //	fetchHandler := protocol.NewFetchHandler(...).WithMetrics(fetchMetrics)
 //	stagingWriter := wal.NewStagingWriter(store, meta, &wal.StagingWriterConfig{Metrics: walMetrics})
+//
+//	// Wrap Oxia store with instrumentation
+//	rawStore, _ := oxia.New(ctx, oxia.Config{...})
+//	instrumentedStore := metadata.NewInstrumentedStore(rawStore, oxiaMetrics)
 //
 //	// Configure compaction backlog alerting thresholds
 //	compactionMetrics.SetThresholds(1024*1024*1024, 1000) // 1GB or 1000 files

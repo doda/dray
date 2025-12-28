@@ -789,3 +789,9 @@ Start with project-setup, then follow spec phases:
 - Verified tests cover metric registration, record helpers, scanner start/stop, and error handling
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[review] oxia-latency-metrics
+- Scope: internal/metadata/instrumented.go, internal/metadata/instrumented_test.go, internal/metrics/oxia.go, internal/metrics/oxia_test.go, internal/metrics/doc.go, go.mod, task_list.json
+- Verified Oxia operation latency histograms and request counters broken down by operation/status
+- Verified retry counters by operation type and metadata instrumentation wrapper records per-op latency
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)
