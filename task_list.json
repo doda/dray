@@ -1395,7 +1395,7 @@
     "scope": [
       "internal/groups/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "classic-roundrobin-assignor",
