@@ -124,3 +124,11 @@ Start with project-setup, then follow spec phases:
 - Verified test store List semantics for prefix vs range and added lookup coverage
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T01:48:12Z] Reviewed index-cache
+- Scope: internal/index/index_cache.go, internal/index/index_cache_test.go, internal/metadata/mock.go, go.mod
+- Verified cache stores index entries with versions and enforces monotonic updates
+- Verified notification watcher updates/invalidates entries on delete/update events
+- Verified memory and per-stream bounds are enforced via eviction
+- Fixed GetEntriesInRange to sort by endOffset and return nil when cache cannot satisfy the fetch offset
+- Issues found: range lookup returned unsorted map iteration and could return arbitrary entry ordering
+- Tests: not run (already run by working agent)

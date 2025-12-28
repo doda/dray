@@ -527,7 +527,7 @@
     "scope": [
       "internal/index/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "concurrent-append-test",
