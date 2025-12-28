@@ -1023,7 +1023,7 @@
     "scope": [
       "internal/topics/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "describe-configs-handler",

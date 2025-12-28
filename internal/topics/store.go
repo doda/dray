@@ -146,6 +146,7 @@ type CreateTopicResult struct {
 
 // CreateTopic creates a new topic with partitions.
 // Uses a transaction to atomically create topic metadata and all partitions.
+// Config values are validated before storage.
 func (s *Store) CreateTopic(ctx context.Context, req CreateTopicRequest) (*CreateTopicResult, error) {
 	if req.Name == "" {
 		return nil, ErrInvalidTopicName
@@ -154,12 +155,18 @@ func (s *Store) CreateTopic(ctx context.Context, req CreateTopicRequest) (*Creat
 		return nil, ErrInvalidPartitions
 	}
 
+	// Validate and normalize configs
+	normalizedConfig, err := NormalizeConfigs(req.Config)
+	if err != nil {
+		return nil, err
+	}
+
 	topicID := uuid.New().String()
 	topic := TopicMeta{
 		Name:           req.Name,
 		TopicID:        topicID,
 		PartitionCount: req.PartitionCount,
-		Config:         req.Config,
+		Config:         normalizedConfig,
 		CreatedAtMs:    req.NowMs,
 	}
 
@@ -298,6 +305,150 @@ func (s *Store) DeleteTopic(ctx context.Context, name string) (*DeleteTopicResul
 		Topic:      *topic,
 		Partitions: partitions,
 	}, nil
+}
+
+// GetTopicConfig retrieves the configuration for a topic.
+// Returns all stored config values.
+func (s *Store) GetTopicConfig(ctx context.Context, topicName string) (map[string]string, error) {
+	topic, err := s.GetTopic(ctx, topicName)
+	if err != nil {
+		return nil, err
+	}
+	if topic.Config == nil {
+		return make(map[string]string), nil
+	}
+	result := make(map[string]string, len(topic.Config))
+	for k, v := range topic.Config {
+		result[k] = v
+	}
+	return result, nil
+}
+
+// UpdateTopicConfigRequest holds parameters for updating topic config.
+type UpdateTopicConfigRequest struct {
+	TopicName string
+	Configs   map[string]string
+	NowMs     int64
+}
+
+// UpdateTopicConfig updates configuration values for a topic.
+// This performs a full replace of the config map.
+// All config values are validated before storage.
+func (s *Store) UpdateTopicConfig(ctx context.Context, req UpdateTopicConfigRequest) error {
+	if req.TopicName == "" {
+		return ErrInvalidTopicName
+	}
+
+	// Validate configs
+	normalizedConfig, err := NormalizeConfigs(req.Configs)
+	if err != nil {
+		return err
+	}
+
+	topicKey := keys.TopicKeyPath(req.TopicName)
+
+	return s.meta.Txn(ctx, topicKey, func(txn metadata.Txn) error {
+		data, _, err := txn.Get(topicKey)
+		if err != nil {
+			if errors.Is(err, metadata.ErrKeyNotFound) {
+				return ErrTopicNotFound
+			}
+			return err
+		}
+
+		var topic TopicMeta
+		if err := json.Unmarshal(data, &topic); err != nil {
+			return fmt.Errorf("topics: unmarshal topic: %w", err)
+		}
+
+		topic.Config = normalizedConfig
+
+		updatedData, err := json.Marshal(topic)
+		if err != nil {
+			return fmt.Errorf("topics: marshal topic: %w", err)
+		}
+
+		txn.Put(topicKey, updatedData)
+		return nil
+	})
+}
+
+// SetTopicConfig sets a single config value for a topic.
+// The value is validated before storage.
+func (s *Store) SetTopicConfig(ctx context.Context, topicName, key, value string) error {
+	if topicName == "" {
+		return ErrInvalidTopicName
+	}
+
+	if err := ValidateConfig(key, value); err != nil {
+		return err
+	}
+
+	topicKey := keys.TopicKeyPath(topicName)
+
+	return s.meta.Txn(ctx, topicKey, func(txn metadata.Txn) error {
+		data, _, err := txn.Get(topicKey)
+		if err != nil {
+			if errors.Is(err, metadata.ErrKeyNotFound) {
+				return ErrTopicNotFound
+			}
+			return err
+		}
+
+		var topic TopicMeta
+		if err := json.Unmarshal(data, &topic); err != nil {
+			return fmt.Errorf("topics: unmarshal topic: %w", err)
+		}
+
+		if topic.Config == nil {
+			topic.Config = make(map[string]string)
+		}
+		topic.Config[key] = value
+
+		updatedData, err := json.Marshal(topic)
+		if err != nil {
+			return fmt.Errorf("topics: marshal topic: %w", err)
+		}
+
+		txn.Put(topicKey, updatedData)
+		return nil
+	})
+}
+
+// DeleteTopicConfig removes a config key from a topic.
+func (s *Store) DeleteTopicConfig(ctx context.Context, topicName, key string) error {
+	if topicName == "" {
+		return ErrInvalidTopicName
+	}
+
+	topicKey := keys.TopicKeyPath(topicName)
+
+	return s.meta.Txn(ctx, topicKey, func(txn metadata.Txn) error {
+		data, _, err := txn.Get(topicKey)
+		if err != nil {
+			if errors.Is(err, metadata.ErrKeyNotFound) {
+				return ErrTopicNotFound
+			}
+			return err
+		}
+
+		var topic TopicMeta
+		if err := json.Unmarshal(data, &topic); err != nil {
+			return fmt.Errorf("topics: unmarshal topic: %w", err)
+		}
+
+		if topic.Config != nil {
+			delete(topic.Config, key)
+		}
+
+		updatedData, err := json.Marshal(topic)
+		if err != nil {
+			return fmt.Errorf("topics: marshal topic: %w", err)
+		}
+
+		txn.Put(topicKey, updatedData)
+		return nil
+	})
 }
 
 func contains(s, substr string) bool {
