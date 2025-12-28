@@ -1561,7 +1561,7 @@
     "scope": [
       "tests/integration/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "offset-commit-handler",

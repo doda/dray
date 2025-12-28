@@ -503,3 +503,11 @@ Start with project-setup, then follow spec phases:
 - Verified tests cover conversion, mismatch handling, and error paths
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T13:02:11Z] Reviewed kip848-integration-test
+- Scope: tests/integration/kip848_consumer_group_test.go, task_list.json
+- Verified KIP-848 consumer group heartbeat join returns member ID, epoch, and assignment
+- Verified rebalance scenarios: add member, remove member, and subscription update behavior
+- Verified static membership uses instance ID and preserves member ID across rejoin
+- Verified concurrent join coverage and assignment totals across members
+- Issues found: none
+- Tests: not run (already run by working agent)
