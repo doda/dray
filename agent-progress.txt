@@ -429,3 +429,10 @@ Start with project-setup, then follow spec phases:
 - Issues found: missing ThrottleMillis initialization for v1+ responses
 - Resolution: set ThrottleMillis=0 for v1+ in handler
 - Tests: not run (already run by working agent)
+[2025-12-28T10:08:22Z] Reviewed delete-groups-handler
+- Scope: internal/protocol/delete_groups.go, internal/protocol/delete_groups_test.go, task_list.json
+- Verified DeleteGroups deletes empty/dead groups, rejects active members, and cleans up offsets
+- Verified coordinator lease handling returns NOT_COORDINATOR / COORDINATOR_NOT_AVAILABLE appropriately
+- Verified response versions set ThrottleMillis for v1+ and preserve group IDs
+- Issues found: none
+- Tests: not run (already run by working agent)
