@@ -2275,7 +2275,7 @@
     "scope": [
       "internal/metrics/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "oxia-latency-metrics",

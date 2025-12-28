@@ -13,6 +13,12 @@
 //   - Total WAL files pending compaction
 //   - Per-stream backlog metrics
 //   - Backlog exceeded alert gauge (for threshold-based alerting)
+//   - GC backlog metrics:
+//   - Orphan WAL count (uncommitted WAL objects older than TTL)
+//   - Pending WAL deletes (WAL objects awaiting grace period)
+//   - Pending Parquet deletes (Parquet files replaced by compaction)
+//   - Staging WAL count (total in-flight and orphaned staging markers)
+//   - Eligible WAL/Parquet deletes (objects ready for immediate deletion)
 //
 // Metrics are exposed via a dedicated HTTP server on /metrics in Prometheus format.
 //
@@ -23,6 +29,7 @@
 //	fetchMetrics := metrics.NewFetchMetrics()
 //	walMetrics := metrics.NewWALMetrics()
 //	compactionMetrics := metrics.NewCompactionMetrics()
+//	gcMetrics := metrics.NewGCMetrics()
 //
 //	// Wire into handlers
 //	produceHandler := protocol.NewProduceHandler(...).WithMetrics(produceMetrics)
@@ -36,6 +43,11 @@
 //	scanner := metrics.NewBacklogScanner(compactionMetrics, indexLister, 30*time.Second)
 //	scanner.Start()
 //	defer scanner.Stop()
+//
+//	// Start GC backlog scanner for periodic updates
+//	gcScanner := metrics.NewGCBacklogScanner(gcMetrics, gcStatsProvider, 30*time.Second)
+//	gcScanner.Start()
+//	defer gcScanner.Stop()
 //
 //	// Start metrics server
 //	metricsServer := metrics.NewServer(":9090")

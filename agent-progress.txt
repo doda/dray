@@ -782,3 +782,10 @@ Start with project-setup, then follow spec phases:
 - Verified scanner runs immediately on start and stops cleanly
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[review] gc-backlog-metrics
+- Scope: internal/metrics/gc.go, internal/metrics/gc_test.go, internal/metrics/doc.go, task_list.json
+- Verified GC backlog gauges cover orphan WALs, pending/eligible WAL deletes, pending/eligible Parquet deletes, and staging WAL count
+- Verified GC backlog scanner periodically updates metrics and handles provider errors by leaving prior values intact
+- Verified tests cover metric registration, record helpers, scanner start/stop, and error handling
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)
