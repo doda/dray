@@ -87,10 +87,25 @@ var supportedAPIs = []APIVersionEntry{
 //
 // This list is for documentation; we simply don't include them in supportedAPIs.
 
+// saslAPIs are the SASL authentication APIs, included only when SASL is enabled.
+var saslAPIs = []APIVersionEntry{
+	{APIKey: 17, MinVersion: 0, MaxVersion: 1}, // SaslHandshake
+	{APIKey: 36, MinVersion: 0, MaxVersion: 2}, // SaslAuthenticate
+}
+
 // GetSupportedAPIs returns the list of APIs supported by this broker.
+// Does not include SASL APIs - use GetSupportedAPIsWithSASL for that.
 func GetSupportedAPIs() []APIVersionEntry {
 	result := make([]APIVersionEntry, len(supportedAPIs))
 	copy(result, supportedAPIs)
+	return result
+}
+
+// GetSupportedAPIsWithSASL returns the list of APIs including SASL APIs.
+func GetSupportedAPIsWithSASL() []APIVersionEntry {
+	result := make([]APIVersionEntry, 0, len(supportedAPIs)+len(saslAPIs))
+	result = append(result, supportedAPIs...)
+	result = append(result, saslAPIs...)
 	return result
 }
 
@@ -119,14 +134,28 @@ func GetAPIVersionRange(apiKey int16) (minVersion, maxVersion int16, supported b
 // This handler can be called before full authentication and is used by clients
 // to discover the broker's supported API versions.
 func HandleApiVersions(version int16, req *kmsg.ApiVersionsRequest) *kmsg.ApiVersionsResponse {
+	return HandleApiVersionsWithOptions(version, req, false)
+}
+
+// HandleApiVersionsWithOptions handles the ApiVersions request with options.
+// When saslEnabled is true, SASL APIs are included in the response.
+func HandleApiVersionsWithOptions(version int16, req *kmsg.ApiVersionsRequest, saslEnabled bool) *kmsg.ApiVersionsResponse {
 	resp := kmsg.NewPtrApiVersionsResponse()
 	resp.SetVersion(version)
 
 	// Set error code to 0 (no error)
 	resp.ErrorCode = 0
 
+	// Get the appropriate API list
+	var apis []APIVersionEntry
+	if saslEnabled {
+		apis = GetSupportedAPIsWithSASL()
+	} else {
+		apis = GetSupportedAPIs()
+	}
+
 	// Populate the API keys
-	for _, api := range supportedAPIs {
+	for _, api := range apis {
 		apiKey := kmsg.NewApiVersionsResponseApiKey()
 		apiKey.ApiKey = api.APIKey
 		apiKey.MinVersion = api.MinVersion

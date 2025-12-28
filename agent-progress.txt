@@ -712,3 +712,11 @@ Start with project-setup, then follow spec phases:
 - Verified TLS tests cover reload, multiple connections, and Kafka client integration over TLS
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[review] sasl-plain-auth
+- Scope: internal/auth/credentials.go, internal/auth/credentials_test.go, internal/auth/sasl.go, internal/auth/sasl_test.go, internal/config/config.go, internal/config/config_test.go, internal/protocol/api_versions.go, tests/integration/sasl_auth_test.go, task_list.json
+- Verified SASL/PLAIN handshake/auth logic parses auth bytes and validates credentials
+- Verified credential store supports file and env string sources with constant-time compares
+- Verified SASL config defaults and validation cover mechanism and credential source requirements
+- Verified API versions include SASL keys when requested via SASL-enabled option
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)

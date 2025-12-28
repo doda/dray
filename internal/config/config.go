@@ -19,6 +19,7 @@ const DefaultConfigPath = "/etc/dray/config.yaml"
 // Config holds all configuration for a Dray broker.
 type Config struct {
 	Broker        BrokerConfig        `yaml:"broker"`
+	SASL          SASLConfig          `yaml:"sasl"`
 	Metadata      MetadataConfig      `yaml:"metadata"`
 	ObjectStore   ObjectStoreConfig   `yaml:"objectStore"`
 	WAL           WALConfig           `yaml:"wal"`
@@ -37,6 +38,21 @@ type TLSConfig struct {
 	Enabled  bool   `yaml:"enabled" env:"DRAY_TLS_ENABLED"`
 	CertFile string `yaml:"certFile" env:"DRAY_TLS_CERT_FILE"`
 	KeyFile  string `yaml:"keyFile" env:"DRAY_TLS_KEY_FILE"`
+}
+
+// SASLConfig holds SASL authentication configuration.
+type SASLConfig struct {
+	Enabled bool   `yaml:"enabled" env:"DRAY_SASL_ENABLED"`
+	// Mechanism is the SASL mechanism to use ("PLAIN" only for now).
+	Mechanism string `yaml:"mechanism" env:"DRAY_SASL_MECHANISM"`
+	// CredentialsSource specifies where to load credentials from ("file" or "env").
+	CredentialsSource string `yaml:"credentialsSource" env:"DRAY_SASL_CREDENTIALS_SOURCE"`
+	// CredentialsFile path to file containing credentials (when source is "file").
+	// Format: one "username:password" pair per line.
+	CredentialsFile string `yaml:"credentialsFile" env:"DRAY_SASL_CREDENTIALS_FILE"`
+	// Credentials loaded from environment (when source is "env").
+	// Format: "DRAY_SASL_USERS=user1:pass1,user2:pass2"
+	Users string `yaml:"users" env:"DRAY_SASL_USERS"`
 }
 
 type MetadataConfig struct {
@@ -83,6 +99,11 @@ func Default() *Config {
 	return &Config{
 		Broker: BrokerConfig{
 			ListenAddr: ":9092",
+		},
+		SASL: SASLConfig{
+			Enabled:           false,
+			Mechanism:         "PLAIN",
+			CredentialsSource: "env",
 		},
 		Metadata: MetadataConfig{
 			OxiaEndpoint: "localhost:6648",
@@ -183,6 +204,21 @@ func (c *Config) Validate() error {
 		}
 		if c.Broker.TLS.KeyFile == "" {
 			errs = append(errs, errors.New("broker.tls.keyFile is required when TLS is enabled"))
+		}
+	}
+
+	// SASL validation
+	if c.SASL.Enabled {
+		validMechanisms := map[string]bool{"PLAIN": true}
+		if !validMechanisms[c.SASL.Mechanism] {
+			errs = append(errs, fmt.Errorf("sasl.mechanism must be one of: PLAIN; got %q", c.SASL.Mechanism))
+		}
+		validSources := map[string]bool{"file": true, "env": true}
+		if !validSources[c.SASL.CredentialsSource] {
+			errs = append(errs, fmt.Errorf("sasl.credentialsSource must be one of: file, env; got %q", c.SASL.CredentialsSource))
+		}
+		if c.SASL.CredentialsSource == "file" && c.SASL.CredentialsFile == "" {
+			errs = append(errs, errors.New("sasl.credentialsFile is required when sasl.credentialsSource is 'file'"))
 		}
 	}
 

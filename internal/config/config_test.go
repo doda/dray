@@ -632,3 +632,168 @@ func TestTLSConfigEnvOverrides(t *testing.T) {
 		t.Errorf("expected key file /env/key.pem, got %s", cfg.Broker.TLS.KeyFile)
 	}
 }
+
+func TestSASLConfigDefaults(t *testing.T) {
+	cfg := Default()
+
+	if cfg.SASL.Enabled {
+		t.Error("expected SASL to be disabled by default")
+	}
+	if cfg.SASL.Mechanism != "PLAIN" {
+		t.Errorf("expected default mechanism PLAIN, got %s", cfg.SASL.Mechanism)
+	}
+	if cfg.SASL.CredentialsSource != "env" {
+		t.Errorf("expected default credentials source env, got %s", cfg.SASL.CredentialsSource)
+	}
+}
+
+func TestSASLConfigValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		modifier func(*Config)
+		wantErr  bool
+	}{
+		{
+			name: "SASL disabled is valid without configuration",
+			modifier: func(c *Config) {
+				c.SASL.Enabled = false
+			},
+			wantErr: false,
+		},
+		{
+			name: "SASL enabled with PLAIN mechanism is valid",
+			modifier: func(c *Config) {
+				c.SASL.Enabled = true
+				c.SASL.Mechanism = "PLAIN"
+				c.SASL.CredentialsSource = "env"
+			},
+			wantErr: false,
+		},
+		{
+			name: "SASL enabled with invalid mechanism is invalid",
+			modifier: func(c *Config) {
+				c.SASL.Enabled = true
+				c.SASL.Mechanism = "SCRAM-SHA-256"
+				c.SASL.CredentialsSource = "env"
+			},
+			wantErr: true,
+		},
+		{
+			name: "SASL enabled with invalid credentials source is invalid",
+			modifier: func(c *Config) {
+				c.SASL.Enabled = true
+				c.SASL.Mechanism = "PLAIN"
+				c.SASL.CredentialsSource = "database"
+			},
+			wantErr: true,
+		},
+		{
+			name: "SASL enabled with file source but no file path is invalid",
+			modifier: func(c *Config) {
+				c.SASL.Enabled = true
+				c.SASL.Mechanism = "PLAIN"
+				c.SASL.CredentialsSource = "file"
+				c.SASL.CredentialsFile = ""
+			},
+			wantErr: true,
+		},
+		{
+			name: "SASL enabled with file source and file path is valid",
+			modifier: func(c *Config) {
+				c.SASL.Enabled = true
+				c.SASL.Mechanism = "PLAIN"
+				c.SASL.CredentialsSource = "file"
+				c.SASL.CredentialsFile = "/etc/dray/sasl_users.txt"
+			},
+			wantErr: false,
+		},
+		{
+			name: "SASL enabled with env source is valid",
+			modifier: func(c *Config) {
+				c.SASL.Enabled = true
+				c.SASL.Mechanism = "PLAIN"
+				c.SASL.CredentialsSource = "env"
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.modifier(cfg)
+			err := cfg.Validate()
+
+			if tt.wantErr && err == nil {
+				t.Error("expected validation error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestSASLConfigFromYAML(t *testing.T) {
+	yamlContent := `
+broker:
+  listenAddr: ":9093"
+sasl:
+  enabled: true
+  mechanism: "PLAIN"
+  credentialsSource: "file"
+  credentialsFile: "/etc/dray/sasl_users.txt"
+metadata:
+  oxiaEndpoint: "localhost:6648"
+  namespace: "dray"
+  numDomains: 16
+`
+	cfg, err := LoadFromBytes([]byte(yamlContent))
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if !cfg.SASL.Enabled {
+		t.Error("expected SASL to be enabled")
+	}
+	if cfg.SASL.Mechanism != "PLAIN" {
+		t.Errorf("expected mechanism PLAIN, got %s", cfg.SASL.Mechanism)
+	}
+	if cfg.SASL.CredentialsSource != "file" {
+		t.Errorf("expected credentials source file, got %s", cfg.SASL.CredentialsSource)
+	}
+	if cfg.SASL.CredentialsFile != "/etc/dray/sasl_users.txt" {
+		t.Errorf("expected credentials file /etc/dray/sasl_users.txt, got %s", cfg.SASL.CredentialsFile)
+	}
+}
+
+func TestSASLConfigEnvOverrides(t *testing.T) {
+	os.Setenv("DRAY_SASL_ENABLED", "true")
+	os.Setenv("DRAY_SASL_MECHANISM", "PLAIN")
+	os.Setenv("DRAY_SASL_CREDENTIALS_SOURCE", "env")
+	os.Setenv("DRAY_SASL_USERS", "alice:secret,bob:password")
+	defer func() {
+		os.Unsetenv("DRAY_SASL_ENABLED")
+		os.Unsetenv("DRAY_SASL_MECHANISM")
+		os.Unsetenv("DRAY_SASL_CREDENTIALS_SOURCE")
+		os.Unsetenv("DRAY_SASL_USERS")
+	}()
+
+	cfg, err := LoadFromPath("/nonexistent/path/config.yaml")
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if !cfg.SASL.Enabled {
+		t.Error("expected SASL to be enabled via env")
+	}
+	if cfg.SASL.Mechanism != "PLAIN" {
+		t.Errorf("expected mechanism PLAIN, got %s", cfg.SASL.Mechanism)
+	}
+	if cfg.SASL.CredentialsSource != "env" {
+		t.Errorf("expected credentials source env, got %s", cfg.SASL.CredentialsSource)
+	}
+	if cfg.SASL.Users != "alice:secret,bob:password" {
+		t.Errorf("expected users alice:secret,bob:password, got %s", cfg.SASL.Users)
+	}
+}
