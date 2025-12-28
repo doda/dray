@@ -617,3 +617,10 @@ Start with project-setup, then follow spec phases:
 - Verified tests cover schema, partition spec, properties, and existing table behavior
 - Issues found: none
 - Tests: not run (working agent already ran)
+[review] iceberg-append-files
+- Scope: internal/iceberg/catalog/appender.go, internal/iceberg/catalog/appender_test.go, task_list.json
+- Verified appender loads table, appends files, retries on commit conflict with backoff and refresh
+- Verified helpers build DataFile stats and bounds consistent with schema field IDs
+- Verified tests cover success path, retries, conflict handling, context cancel, and stats helpers
+- Issues found: none
+- Tests: not run (working agent already ran)
