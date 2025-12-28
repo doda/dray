@@ -548,3 +548,11 @@ Start with project-setup, then follow spec phases:
 - Fix applied: return nil when no entries selected before min-entries check
 - Issues found: none after fix
 - Tests: not re-run (per instructions; prior agent already ran)
+[review] compaction-lock
+- Scope: internal/compaction/lock.go, internal/compaction/lock_test.go, task_list.json
+- Verified lock manager uses ephemeral keys at /compaction/locks/<streamId> with CAS for acquire/renew
+- Verified contention handling returns existing lock holder and avoids clobbering on version mismatch
+- Verified explicit release uses expected version and local cache cleanup
+- Verified helper methods: GetLock, HoldsLock, IsLockHolder, ReleaseAllLocks, ListHeldLocks
+- Issues found: none
+- Tests: not run (already run by working agent)

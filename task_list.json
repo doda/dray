@@ -1672,7 +1672,7 @@
     "scope": [
       "internal/compaction/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "parquet-writer",
