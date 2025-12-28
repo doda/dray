@@ -710,7 +710,7 @@
     "scope": [
       "internal/produce/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "produce-idempotence-rejection",

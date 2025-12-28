@@ -71,8 +71,9 @@ func (h *ProduceHandler) Handle(ctx context.Context, version int16, req *kmsg.Pr
 	}
 
 	// Reject transactional requests per spec 14.3
+	// Use UNSUPPORTED_FOR_MESSAGE_FORMAT to indicate transactions are not supported
 	if req.TransactionID != nil && *req.TransactionID != "" {
-		return h.buildErrorResponse(version, req, errTransactionalIDNotFound)
+		return h.buildErrorResponse(version, req, errUnsupportedForMessageFormat)
 	}
 
 	// Process each topic
@@ -234,8 +235,15 @@ func (h *ProduceHandler) buildPartitionError(version int16, partition int32, err
 	return resp
 }
 
+// errInvalidRecordBatch indicates the record batch format is invalid.
+var errInvalidRecordBatch = errors.New("invalid record batch format")
+
+// kafkaBatchMagicV2 is the magic byte for Kafka record batch format v2.
+const kafkaBatchMagicV2 = 2
+
 // parseRecordBatches extracts batch entries from raw Kafka record batch data.
 // Returns the batches, total record count, min timestamp, and max timestamp.
+// Validates that record batches have the correct magic byte (v2 format).
 func parseRecordBatches(data []byte) ([]wal.BatchEntry, uint32, int64, int64, error) {
 	if len(data) == 0 {
 		return nil, 0, 0, 0, nil
@@ -253,19 +261,15 @@ func parseRecordBatches(data []byte) ([]wal.BatchEntry, uint32, int64, int64, er
 		// batchLength: 4 bytes
 		// ...rest of batch
 		if offset+12 > len(data) {
-			break
+			return nil, 0, 0, 0, errInvalidRecordBatch
 		}
 
 		batchLength := int(beUint32(data[offset+8:offset+12])) + 12 // +12 for baseOffset and batchLength
 		if offset+batchLength > len(data) {
-			break
+			return nil, 0, 0, 0, errInvalidRecordBatch
 		}
 
-		batchData := make([]byte, batchLength)
-		copy(batchData, data[offset:offset+batchLength])
-		batches = append(batches, wal.BatchEntry{Data: batchData})
-
-		// Extract record count and timestamps from batch header
+		// Validate minimum batch size: must have at least up to recordCount field
 		// Kafka record batch format (after batchLength):
 		// partitionLeaderEpoch: 4 bytes (offset 12)
 		// magic: 1 byte (offset 16)
@@ -278,24 +282,36 @@ func parseRecordBatches(data []byte) ([]wal.BatchEntry, uint32, int64, int64, er
 		// producerEpoch: 2 bytes (offset 51)
 		// firstSequence: 4 bytes (offset 53)
 		// recordCount: 4 bytes (offset 57)
-		if batchLength >= 61 {
-			recordCount := beUint32(data[offset+57 : offset+61])
-			totalRecords += recordCount
+		if batchLength < 61 {
+			return nil, 0, 0, 0, errInvalidRecordBatch
+		}
 
-			batchFirstTs := beInt64(data[offset+27 : offset+35])
-			batchMaxTs := beInt64(data[offset+35 : offset+43])
+		// Validate magic byte (must be 2 for v2 record batch format)
+		magic := data[offset+16]
+		if magic != kafkaBatchMagicV2 {
+			return nil, 0, 0, 0, errInvalidRecordBatch
+		}
 
-			if firstBatch {
+		batchData := make([]byte, batchLength)
+		copy(batchData, data[offset:offset+batchLength])
+		batches = append(batches, wal.BatchEntry{Data: batchData})
+
+		recordCount := beUint32(data[offset+57 : offset+61])
+		totalRecords += recordCount
+
+		batchFirstTs := beInt64(data[offset+27 : offset+35])
+		batchMaxTs := beInt64(data[offset+35 : offset+43])
+
+		if firstBatch {
+			minTs = batchFirstTs
+			maxTs = batchMaxTs
+			firstBatch = false
+		} else {
+			if batchFirstTs < minTs {
 				minTs = batchFirstTs
+			}
+			if batchMaxTs > maxTs {
 				maxTs = batchMaxTs
-				firstBatch = false
-			} else {
-				if batchFirstTs < minTs {
-					minTs = batchFirstTs
-				}
-				if batchMaxTs > maxTs {
-					maxTs = batchMaxTs
-				}
 			}
 		}
 

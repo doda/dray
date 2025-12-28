@@ -161,3 +161,10 @@ Start with project-setup, then follow spec phases:
 - Verified multi-request same stream offset allocation is contiguous and second commit continues HWM
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T02:54:13Z] Reviewed produce-validation
+- Scope: internal/protocol/produce.go, internal/protocol/produce_test.go, task_list.json
+- Verified transactional requests return UNSUPPORTED_FOR_MESSAGE_FORMAT per spec 14.3
+- Verified record batch parsing rejects invalid/truncated batches and invalid magic byte
+- Verified parseRecordBatches maps invalid batch format to UNSUPPORTED_FOR_MESSAGE_FORMAT
+- Issues found: none
+- Tests: not run (already run by working agent)

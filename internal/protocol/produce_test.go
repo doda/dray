@@ -194,11 +194,11 @@ func TestProduceHandler_RejectTransactional(t *testing.T) {
 
 	resp := handler.Handle(ctx, 9, req)
 
-	// All partitions should have TRANSACTIONAL_ID_NOT_FOUND error
+	// All partitions should have UNSUPPORTED_FOR_MESSAGE_FORMAT error per spec 14.3
 	for _, topicResp := range resp.Topics {
 		for _, partResp := range topicResp.Partitions {
-			if partResp.ErrorCode != errTransactionalIDNotFound {
-				t.Errorf("expected TRANSACTIONAL_ID_NOT_FOUND error (%d), got %d", errTransactionalIDNotFound, partResp.ErrorCode)
+			if partResp.ErrorCode != errUnsupportedForMessageFormat {
+				t.Errorf("expected UNSUPPORTED_FOR_MESSAGE_FORMAT error (%d), got %d", errUnsupportedForMessageFormat, partResp.ErrorCode)
 			}
 		}
 	}
@@ -552,6 +552,202 @@ func buildIdempotentRecordBatch(recordCount int) []byte {
 
 	// firstSequence (4 bytes) = 0
 	batch = append(batch, 0, 0, 0, 0)
+
+	// recordCount (4 bytes)
+	batch = append(batch, 0, 0, 0, byte(recordCount))
+
+	return batch
+}
+
+// TestProduceHandler_InvalidMagicByte tests that record batches with invalid magic byte are rejected.
+func TestProduceHandler_InvalidMagicByte(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx := context.Background()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{StartOffset: 0, EndOffset: int64(req.RecordCount)}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer)
+
+	// Build request with invalid magic byte
+	req := kmsg.NewPtrProduceRequest()
+	req.Acks = -1
+	req.SetVersion(9)
+
+	topicReq := kmsg.NewProduceRequestTopic()
+	topicReq.Topic = "test-topic"
+
+	partReq := kmsg.NewProduceRequestTopicPartition()
+	partReq.Partition = 0
+	partReq.Records = buildRecordBatchWithMagic(1, 0) // Invalid magic byte 0
+
+	topicReq.Partitions = append(topicReq.Partitions, partReq)
+	req.Topics = append(req.Topics, topicReq)
+
+	resp := handler.Handle(ctx, 9, req)
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != errUnsupportedForMessageFormat {
+		t.Errorf("expected UNSUPPORTED_FOR_MESSAGE_FORMAT error (%d), got %d", errUnsupportedForMessageFormat, partResp.ErrorCode)
+	}
+}
+
+// TestProduceHandler_TruncatedBatch tests that truncated record batches are rejected.
+func TestProduceHandler_TruncatedBatch(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx := context.Background()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{StartOffset: 0, EndOffset: int64(req.RecordCount)}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer)
+
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{
+			name: "too short for header",
+			data: []byte{0, 0, 0, 0, 0, 0, 0, 0}, // Only 8 bytes, need 12
+		},
+		{
+			name: "length mismatch",
+			data: func() []byte {
+				batch := make([]byte, 20)
+				// batchLength claims 100 bytes but only 20 provided
+				batch[8], batch[9], batch[10], batch[11] = 0, 0, 0, 100
+				return batch
+			}(),
+		},
+		{
+			name: "too short for record batch",
+			data: func() []byte {
+				batch := make([]byte, 40)
+				// Set batchLength to 28 (40 - 12 = 28, but need at least 49 for minimal batch)
+				batch[8], batch[9], batch[10], batch[11] = 0, 0, 0, 28
+				return batch
+			}(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := kmsg.NewPtrProduceRequest()
+			req.Acks = -1
+			req.SetVersion(9)
+
+			topicReq := kmsg.NewProduceRequestTopic()
+			topicReq.Topic = "test-topic"
+
+			partReq := kmsg.NewProduceRequestTopicPartition()
+			partReq.Partition = 0
+			partReq.Records = tt.data
+
+			topicReq.Partitions = append(topicReq.Partitions, partReq)
+			req.Topics = append(req.Topics, topicReq)
+
+			resp := handler.Handle(ctx, 9, req)
+
+			if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+				t.Fatalf("unexpected response structure")
+			}
+
+			partResp := resp.Topics[0].Partitions[0]
+			if partResp.ErrorCode != errUnsupportedForMessageFormat {
+				t.Errorf("expected UNSUPPORTED_FOR_MESSAGE_FORMAT error (%d), got %d", errUnsupportedForMessageFormat, partResp.ErrorCode)
+			}
+		})
+	}
+}
+
+// buildRecordBatchWithMagic creates a record batch with a specified magic byte.
+func buildRecordBatchWithMagic(recordCount int, magic byte) []byte {
+	batch := make([]byte, 0, 80)
+
+	// baseOffset (8 bytes)
+	batch = append(batch, 0, 0, 0, 0, 0, 0, 0, 0)
+
+	// batchLength (4 bytes)
+	batch = append(batch, 0, 0, 0, 49)
+
+	// partitionLeaderEpoch (4 bytes)
+	batch = append(batch, 0, 0, 0, 0)
+
+	// magic (1 byte) - using parameter
+	batch = append(batch, magic)
+
+	// crc (4 bytes)
+	batch = append(batch, 0, 0, 0, 0)
+
+	// attributes (2 bytes)
+	batch = append(batch, 0, 0)
+
+	// lastOffsetDelta (4 bytes)
+	batch = append(batch, 0, 0, 0, byte(recordCount-1))
+
+	// firstTimestamp (8 bytes)
+	ts := time.Now().UnixMilli()
+	batch = append(batch,
+		byte(ts>>56), byte(ts>>48), byte(ts>>40), byte(ts>>32),
+		byte(ts>>24), byte(ts>>16), byte(ts>>8), byte(ts))
+
+	// maxTimestamp (8 bytes)
+	batch = append(batch,
+		byte(ts>>56), byte(ts>>48), byte(ts>>40), byte(ts>>32),
+		byte(ts>>24), byte(ts>>16), byte(ts>>8), byte(ts))
+
+	// producerId (8 bytes) = -1
+	batch = append(batch, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)
+
+	// producerEpoch (2 bytes) = -1
+	batch = append(batch, 0xff, 0xff)
+
+	// firstSequence (4 bytes) = -1
+	batch = append(batch, 0xff, 0xff, 0xff, 0xff)
 
 	// recordCount (4 bytes)
 	batch = append(batch, 0, 0, 0, byte(recordCount))
