@@ -2,8 +2,11 @@ package index
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1260,5 +1263,372 @@ func TestLookupOffset_LargeOffsets(t *testing.T) {
 	}
 	if result.Entry.EndOffset != 51000 {
 		t.Errorf("Entry.EndOffset = %d, want 51000", result.Entry.EndOffset)
+	}
+}
+
+// TestConcurrentAppendIndexEntry verifies that concurrent offset index appends
+// produce monotonic, non-overlapping offsets. This tests the invariant I1
+// (linearizable write ordering per partition) under concurrent access.
+//
+// Steps verified:
+// 1. Run 2+ concurrent writers to same stream
+// 2. Verify all offsets are monotonically increasing
+// 3. Verify no offset ranges overlap
+// 4. Verify total records equals sum of all appends
+func TestConcurrentAppendIndexEntry(t *testing.T) {
+	store := newConcurrentTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	const (
+		numWriters       = 5
+		appendsPerWriter = 20
+		recordsPerAppend = 10
+	)
+
+	type appendResult struct {
+		writerID    int
+		startOffset int64
+		endOffset   int64
+		err         error
+	}
+
+	results := make(chan appendResult, numWriters*appendsPerWriter)
+	var wg sync.WaitGroup
+
+	for w := 0; w < numWriters; w++ {
+		wg.Add(1)
+		go func(writerID int) {
+			defer wg.Done()
+			for i := 0; i < appendsPerWriter; i++ {
+				// Retry loop for handling version conflicts
+				for retries := 0; retries < 100; retries++ {
+					result, err := sm.AppendIndexEntry(ctx, AppendRequest{
+						StreamID:       streamID,
+						RecordCount:    recordsPerAppend,
+						ChunkSizeBytes: 1000,
+						CreatedAtMs:    time.Now().UnixMilli(),
+						WalID:          uuid.New().String(),
+						WalPath:        "s3://bucket/wal/test.wo",
+						ChunkOffset:    0,
+						ChunkLength:    1000,
+					})
+					if err == nil {
+						results <- appendResult{
+							writerID:    writerID,
+							startOffset: result.StartOffset,
+							endOffset:   result.EndOffset,
+						}
+						break
+					}
+					if errors.Is(err, metadata.ErrVersionMismatch) || errors.Is(err, metadata.ErrTxnConflict) {
+						// Expected during concurrent access, retry
+						continue
+					}
+					// Unexpected error
+					results <- appendResult{writerID: writerID, err: err}
+					return
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+	close(results)
+
+	// Collect all results
+	var allResults []appendResult
+	for r := range results {
+		if r.err != nil {
+			t.Fatalf("Writer %d failed: %v", r.writerID, r.err)
+		}
+		allResults = append(allResults, r)
+	}
+
+	// Verify we got the expected number of successful appends
+	expectedAppends := numWriters * appendsPerWriter
+	if len(allResults) != expectedAppends {
+		t.Fatalf("Expected %d appends, got %d", expectedAppends, len(allResults))
+	}
+
+	// Sort results by startOffset for verification
+	sort.Slice(allResults, func(i, j int) bool {
+		return allResults[i].startOffset < allResults[j].startOffset
+	})
+
+	// Verify 1: All offsets are monotonically increasing
+	// Verify 2: No offset ranges overlap (each entry's startOffset == previous entry's endOffset)
+	for i := 1; i < len(allResults); i++ {
+		prev := allResults[i-1]
+		curr := allResults[i]
+
+		// Start offset should be strictly greater than previous start
+		if curr.startOffset <= prev.startOffset {
+			t.Errorf("Offsets not monotonic: entry %d startOffset (%d) <= entry %d startOffset (%d)",
+				i, curr.startOffset, i-1, prev.startOffset)
+		}
+
+		// No overlap: current startOffset should equal previous endOffset
+		if curr.startOffset != prev.endOffset {
+			t.Errorf("Offset gap or overlap: entry %d endOffset (%d) != entry %d startOffset (%d)",
+				i-1, prev.endOffset, i, curr.startOffset)
+		}
+
+		// Each entry should span exactly recordsPerAppend offsets
+		if curr.endOffset-curr.startOffset != recordsPerAppend {
+			t.Errorf("Entry %d has wrong span: %d - %d = %d, expected %d",
+				i, curr.endOffset, curr.startOffset, curr.endOffset-curr.startOffset, recordsPerAppend)
+		}
+	}
+
+	// Verify first entry starts at 0
+	if allResults[0].startOffset != 0 {
+		t.Errorf("First entry should start at 0, got %d", allResults[0].startOffset)
+	}
+
+	// Verify 3: Total records equals sum of all appends
+	expectedTotalRecords := int64(numWriters * appendsPerWriter * recordsPerAppend)
+	lastEntry := allResults[len(allResults)-1]
+	if lastEntry.endOffset != expectedTotalRecords {
+		t.Errorf("Total records mismatch: last endOffset = %d, expected %d",
+			lastEntry.endOffset, expectedTotalRecords)
+	}
+
+	// Verify HWM matches the last endOffset
+	hwm, _, err := sm.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("GetHWM failed: %v", err)
+	}
+	if hwm != expectedTotalRecords {
+		t.Errorf("HWM = %d, expected %d", hwm, expectedTotalRecords)
+	}
+
+	// Verify index entries match the results
+	entries, err := sm.ListIndexEntries(ctx, streamID, 0)
+	if err != nil {
+		t.Fatalf("ListIndexEntries failed: %v", err)
+	}
+	if len(entries) != expectedAppends {
+		t.Errorf("Expected %d index entries, got %d", expectedAppends, len(entries))
+	}
+}
+
+// concurrentTestStore wraps MockStore for concurrent testing.
+// It properly handles version conflicts and provides true atomicity.
+type concurrentTestStore struct {
+	*metadata.MockStore
+}
+
+func newConcurrentTestStore() *concurrentTestStore {
+	return &concurrentTestStore{MockStore: metadata.NewMockStore()}
+}
+
+// TestConcurrentAppendIndexEntry_TwoWriters is a simpler test with exactly 2 writers
+// to ensure the basic concurrent behavior works.
+func TestConcurrentAppendIndexEntry_TwoWriters(t *testing.T) {
+	store := newConcurrentTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	const (
+		appendsPerWriter = 50
+		recordsPerAppend = 5
+	)
+
+	type appendResult struct {
+		startOffset int64
+		endOffset   int64
+	}
+
+	results1 := make([]appendResult, 0, appendsPerWriter)
+	results2 := make([]appendResult, 0, appendsPerWriter)
+
+	var wg sync.WaitGroup
+	var mu1, mu2 sync.Mutex
+
+	// Writer 1
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < appendsPerWriter; i++ {
+			for retries := 0; retries < 100; retries++ {
+				result, err := sm.AppendIndexEntry(ctx, AppendRequest{
+					StreamID:       streamID,
+					RecordCount:    recordsPerAppend,
+					ChunkSizeBytes: 500,
+					CreatedAtMs:    time.Now().UnixMilli(),
+					WalID:          uuid.New().String(),
+					WalPath:        "s3://bucket/wal/w1.wo",
+					ChunkOffset:    0,
+					ChunkLength:    500,
+				})
+				if err == nil {
+					mu1.Lock()
+					results1 = append(results1, appendResult{result.StartOffset, result.EndOffset})
+					mu1.Unlock()
+					break
+				}
+				if errors.Is(err, metadata.ErrVersionMismatch) || errors.Is(err, metadata.ErrTxnConflict) {
+					continue
+				}
+				t.Errorf("Writer 1 unexpected error: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Writer 2
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < appendsPerWriter; i++ {
+			for retries := 0; retries < 100; retries++ {
+				result, err := sm.AppendIndexEntry(ctx, AppendRequest{
+					StreamID:       streamID,
+					RecordCount:    recordsPerAppend,
+					ChunkSizeBytes: 500,
+					CreatedAtMs:    time.Now().UnixMilli(),
+					WalID:          uuid.New().String(),
+					WalPath:        "s3://bucket/wal/w2.wo",
+					ChunkOffset:    0,
+					ChunkLength:    500,
+				})
+				if err == nil {
+					mu2.Lock()
+					results2 = append(results2, appendResult{result.StartOffset, result.EndOffset})
+					mu2.Unlock()
+					break
+				}
+				if errors.Is(err, metadata.ErrVersionMismatch) || errors.Is(err, metadata.ErrTxnConflict) {
+					continue
+				}
+				t.Errorf("Writer 2 unexpected error: %v", err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	// Verify both writers completed all appends
+	if len(results1) != appendsPerWriter {
+		t.Errorf("Writer 1: expected %d appends, got %d", appendsPerWriter, len(results1))
+	}
+	if len(results2) != appendsPerWriter {
+		t.Errorf("Writer 2: expected %d appends, got %d", appendsPerWriter, len(results2))
+	}
+
+	// Combine and sort all results
+	allResults := append(results1, results2...)
+	sort.Slice(allResults, func(i, j int) bool {
+		return allResults[i].startOffset < allResults[j].startOffset
+	})
+
+	// Verify monotonicity and no overlaps
+	for i := 1; i < len(allResults); i++ {
+		if allResults[i].startOffset != allResults[i-1].endOffset {
+			t.Errorf("Gap or overlap at index %d: prev.endOffset=%d, curr.startOffset=%d",
+				i, allResults[i-1].endOffset, allResults[i].startOffset)
+		}
+	}
+
+	// Verify total
+	expectedTotal := int64(2 * appendsPerWriter * recordsPerAppend)
+	hwm, _, _ := sm.GetHWM(ctx, streamID)
+	if hwm != expectedTotal {
+		t.Errorf("HWM = %d, expected %d", hwm, expectedTotal)
+	}
+}
+
+// TestConcurrentAppendIndexEntry_HighContention tests with many writers and few appends
+// to maximize contention and version conflict retries.
+func TestConcurrentAppendIndexEntry_HighContention(t *testing.T) {
+	store := newConcurrentTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	const (
+		numWriters       = 20
+		appendsPerWriter = 5
+		recordsPerAppend = 3
+	)
+
+	var successCount int64
+	var wg sync.WaitGroup
+
+	for w := 0; w < numWriters; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < appendsPerWriter; i++ {
+				for retries := 0; retries < 200; retries++ {
+					_, err := sm.AppendIndexEntry(ctx, AppendRequest{
+						StreamID:       streamID,
+						RecordCount:    recordsPerAppend,
+						ChunkSizeBytes: 100,
+						CreatedAtMs:    time.Now().UnixMilli(),
+						WalID:          uuid.New().String(),
+						WalPath:        "s3://bucket/wal/test.wo",
+						ChunkOffset:    0,
+						ChunkLength:    100,
+					})
+					if err == nil {
+						atomic.AddInt64(&successCount, 1)
+						break
+					}
+					if errors.Is(err, metadata.ErrVersionMismatch) || errors.Is(err, metadata.ErrTxnConflict) {
+						continue
+					}
+					t.Errorf("Unexpected error: %v", err)
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	expectedAppends := int64(numWriters * appendsPerWriter)
+	if successCount != expectedAppends {
+		t.Errorf("Expected %d successful appends, got %d", expectedAppends, successCount)
+	}
+
+	// Verify final state
+	expectedHWM := expectedAppends * recordsPerAppend
+	hwm, _, _ := sm.GetHWM(ctx, streamID)
+	if hwm != expectedHWM {
+		t.Errorf("HWM = %d, expected %d", hwm, expectedHWM)
+	}
+
+	entries, _ := sm.ListIndexEntries(ctx, streamID, 0)
+	if len(entries) != int(expectedAppends) {
+		t.Errorf("Expected %d entries, got %d", expectedAppends, len(entries))
+	}
+
+	// Verify entries are contiguous
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].StartOffset < entries[j].StartOffset
+	})
+
+	for i := 1; i < len(entries); i++ {
+		if entries[i].StartOffset != entries[i-1].EndOffset {
+			t.Errorf("Gap at index %d: prev.endOffset=%d, curr.startOffset=%d",
+				i, entries[i-1].EndOffset, entries[i].StartOffset)
+		}
 	}
 }

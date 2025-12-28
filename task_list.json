@@ -545,7 +545,7 @@
     "scope": [
       "internal/index/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "tcp-server",
