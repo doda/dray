@@ -2165,7 +2165,7 @@
     "scope": [
       "internal/server/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "health-readiness-endpoint",

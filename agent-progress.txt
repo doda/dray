@@ -735,3 +735,10 @@ Start with project-setup, then follow spec phases:
 - Verified integration/unit tests cover allow/deny, prefixed patterns, deny precedence, disabled enforcement, and context helpers
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[review] health-liveness-endpoint
+- Scope: internal/server/health.go, internal/server/health_test.go, task_list.json
+- Verified /healthz handler returns 200 when healthy, 503 when shutting down or goroutines stale
+- Verified goroutine registration/update/unregister affects liveness status
+- Verified health server Start/Close binds and serves /healthz
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)
