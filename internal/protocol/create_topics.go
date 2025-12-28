@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/iceberg/catalog"
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/topics"
@@ -40,6 +41,13 @@ type CreateTopicsHandler struct {
 	topicStore    *topics.Store
 	streamManager *index.StreamManager
 	tableCreator  *catalog.TableCreator
+	enforcer      *auth.Enforcer
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *CreateTopicsHandler) WithEnforcer(enforcer *auth.Enforcer) *CreateTopicsHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // NewCreateTopicsHandler creates a new CreateTopics handler.
@@ -96,6 +104,14 @@ func (h *CreateTopicsHandler) handleTopic(ctx context.Context, version int16, to
 			resp.ErrorMessage = &errMsg
 		}
 		return resp
+	}
+
+	// Check ACL before processing - need CREATE permission on cluster
+	if h.enforcer != nil {
+		if errCode := h.enforcer.AuthorizeClusterFromCtx(ctx, auth.OperationCreate); errCode != nil {
+			resp.ErrorCode = *errCode
+			return resp
+		}
 	}
 
 	// Determine partition count

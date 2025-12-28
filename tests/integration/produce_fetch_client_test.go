@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/fetch"
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/logging"
@@ -190,11 +191,15 @@ func (b *testBroker) start() {
 		b.topicStore,
 	)
 
+	// Create a disabled enforcer - ACL enforcement is off so all operations are allowed.
+	// This demonstrates proper wiring while not blocking test operations.
+	enforcer := auth.NewEnforcer(nil, auth.EnforcerConfig{Enabled: false}, nil)
+
 	produceHandler := protocol.NewProduceHandler(
 		protocol.ProduceHandlerConfig{},
 		b.topicStore,
 		b.buffer,
-	)
+	).WithEnforcer(enforcer)
 
 	fetcher := fetch.NewFetcher(b.objStore, b.streamManager)
 	fetchHandler := protocol.NewFetchHandler(
@@ -202,7 +207,7 @@ func (b *testBroker) start() {
 		b.topicStore,
 		fetcher,
 		b.streamManager,
-	)
+	).WithEnforcer(enforcer)
 
 	listOffsetsHandler := protocol.NewListOffsetsHandler(b.topicStore, b.streamManager)
 

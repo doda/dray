@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -26,6 +27,28 @@ type Handler interface {
 	// HandleRequest processes a request and returns the response bytes.
 	// The response should NOT include the length prefix - that will be added by the server.
 	HandleRequest(ctx context.Context, header *RequestHeader, payload []byte) ([]byte, error)
+}
+
+// AuthHandler is an optional interface for handlers that support SASL authentication.
+// When implemented, the server will call SetAuthResult after successful SASL authentication.
+type AuthHandler interface {
+	Handler
+	// SetAuthResult is called by handlers when SASL authentication completes.
+	// Returns the authenticated username if authentication succeeded.
+	SetAuthResult(ctx context.Context, username string)
+}
+
+// connStateKey is the context key for storing connection state pointer.
+type connStateKey struct{}
+
+// SetAuthenticated sets the authenticated username for the current connection.
+// This should be called by SASL handlers after successful authentication.
+func SetAuthenticated(ctx context.Context, username string) {
+	if v := ctx.Value(connStateKey{}); v != nil {
+		state := v.(*connState)
+		state.authenticated = true
+		state.username = username
+	}
 }
 
 // RequestHeader contains the parsed Kafka request header.
@@ -55,6 +78,12 @@ func ZoneIDFromContext(ctx context.Context) string {
 // WithZoneID returns a new context with the given zone_id.
 func WithZoneID(ctx context.Context, zoneID string) context.Context {
 	return context.WithValue(ctx, zoneContextKey{}, zoneID)
+}
+
+// connState tracks per-connection authentication state.
+type connState struct {
+	authenticated bool
+	username      string // authenticated username (empty if not authenticated)
 }
 
 // Config holds the TCP server configuration.
@@ -205,6 +234,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	connID := s.connID.Add(1)
 	remoteAddr := conn.RemoteAddr().String()
 
+	// Extract client host for ACL checks
+	clientHost := auth.ExtractHostFromAddr(conn.RemoteAddr())
+
 	s.mu.Lock()
 	s.conns[conn] = struct{}{}
 	s.mu.Unlock()
@@ -220,6 +252,9 @@ func (s *Server) handleConn(conn net.Conn) {
 		"remoteAddr": remoteAddr,
 	})
 	logger.Debug("connection accepted")
+
+	// Track connection authentication state
+	state := &connState{}
 
 	for {
 		if s.closed.Load() {
@@ -255,6 +290,16 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		ctx := context.Background()
 		ctx = logging.WithLoggerCtx(ctx, reqLogger)
+
+		// Store connection state in context for SASL handlers to update
+		ctx = context.WithValue(ctx, connStateKey{}, state)
+
+		// Set principal and host in context for ACL enforcement
+		// If authenticated via SASL, use the authenticated username; otherwise use ANONYMOUS
+		principal := auth.MakePrincipal(state.username)
+		ctx = auth.WithPrincipal(ctx, principal)
+		ctx = auth.WithHost(ctx, clientHost)
+
 		// Store zone_id in context for handlers (per spec 7.1)
 		if header.ZoneID != "" {
 			ctx = WithZoneID(ctx, header.ZoneID)

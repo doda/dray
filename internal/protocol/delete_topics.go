@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/iceberg/catalog"
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/topics"
@@ -27,6 +28,7 @@ type DeleteTopicsHandler struct {
 	topicStore     *topics.Store
 	streamManager  *index.StreamManager
 	icebergCatalog catalog.Catalog
+	enforcer       *auth.Enforcer
 }
 
 // NewDeleteTopicsHandler creates a new DeleteTopics handler.
@@ -42,6 +44,12 @@ func NewDeleteTopicsHandler(
 		streamManager:  streamManager,
 		icebergCatalog: icebergCatalog,
 	}
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *DeleteTopicsHandler) WithEnforcer(enforcer *auth.Enforcer) *DeleteTopicsHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // Handle processes a DeleteTopics request.
@@ -124,6 +132,14 @@ func (h *DeleteTopicsHandler) handleTopic(ctx context.Context, version int16, na
 			resp.ErrorMessage = &errMsg
 		}
 		return resp
+	}
+
+	// Check ACL before processing - need DELETE permission on topic
+	if h.enforcer != nil {
+		if errCode := h.enforcer.AuthorizeTopicFromCtx(ctx, topicName, auth.OperationDelete); errCode != nil {
+			resp.ErrorCode = *errCode
+			return resp
+		}
 	}
 
 	// Get topic metadata before deletion for response

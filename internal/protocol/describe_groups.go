@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/groups"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -23,6 +24,7 @@ const (
 type DescribeGroupsHandler struct {
 	store        *groups.Store
 	leaseManager *groups.LeaseManager
+	enforcer     *auth.Enforcer
 }
 
 // NewDescribeGroupsHandler creates a new DescribeGroups handler.
@@ -31,6 +33,12 @@ func NewDescribeGroupsHandler(store *groups.Store, leaseManager *groups.LeaseMan
 		store:        store,
 		leaseManager: leaseManager,
 	}
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *DescribeGroupsHandler) WithEnforcer(enforcer *auth.Enforcer) *DescribeGroupsHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // Handle processes a DescribeGroups request.
@@ -63,6 +71,14 @@ func (h *DescribeGroupsHandler) describeGroup(ctx context.Context, version int16
 	if groupID == "" {
 		group.ErrorCode = errDescribeGroupsInvalidGroupID
 		return group
+	}
+
+	// Check ACL before processing - need DESCRIBE permission on group
+	if h.enforcer != nil {
+		if errCode := h.enforcer.AuthorizeGroupFromCtx(ctx, groupID, auth.OperationDescribe); errCode != nil {
+			group.ErrorCode = *errCode
+			return group
+		}
 	}
 
 	// Check coordinator lease if available

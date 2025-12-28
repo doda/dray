@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/groups"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
@@ -27,6 +28,7 @@ type DeleteGroupsHandler struct {
 	store        *groups.Store
 	leaseManager *groups.LeaseManager
 	meta         metadata.MetadataStore
+	enforcer     *auth.Enforcer
 }
 
 // NewDeleteGroupsHandler creates a new DeleteGroups handler.
@@ -36,6 +38,12 @@ func NewDeleteGroupsHandler(store *groups.Store, leaseManager *groups.LeaseManag
 		leaseManager: leaseManager,
 		meta:         meta,
 	}
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *DeleteGroupsHandler) WithEnforcer(enforcer *auth.Enforcer) *DeleteGroupsHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // Handle processes a DeleteGroups request.
@@ -65,6 +73,14 @@ func (h *DeleteGroupsHandler) deleteGroup(ctx context.Context, groupID string) k
 	if groupID == "" {
 		result.ErrorCode = errDeleteGroupsInvalidGroupID
 		return result
+	}
+
+	// Check ACL before processing - need DELETE permission on group
+	if h.enforcer != nil {
+		if errCode := h.enforcer.AuthorizeGroupFromCtx(ctx, groupID, auth.OperationDelete); errCode != nil {
+			result.ErrorCode = *errCode
+			return result
+		}
 	}
 
 	// Check coordinator lease if available

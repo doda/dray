@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/groups"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -47,6 +48,7 @@ type syncState struct {
 type SyncGroupHandler struct {
 	store        *groups.Store
 	leaseManager *groups.LeaseManager
+	enforcer     *auth.Enforcer
 
 	mu         sync.Mutex
 	syncStates map[string]*syncState // groupID -> state
@@ -61,6 +63,12 @@ func NewSyncGroupHandler(store *groups.Store, leaseManager *groups.LeaseManager)
 	}
 }
 
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *SyncGroupHandler) WithEnforcer(enforcer *auth.Enforcer) *SyncGroupHandler {
+	h.enforcer = enforcer
+	return h
+}
+
 // Handle processes a SyncGroup request.
 func (h *SyncGroupHandler) Handle(ctx context.Context, version int16, req *kmsg.SyncGroupRequest) *kmsg.SyncGroupResponse {
 	resp := kmsg.NewPtrSyncGroupResponse()
@@ -73,6 +81,14 @@ func (h *SyncGroupHandler) Handle(ctx context.Context, version int16, req *kmsg.
 	if req.Group == "" {
 		resp.ErrorCode = errInvalidGroupID
 		return resp
+	}
+
+	// Check ACL before processing - need READ permission on group
+	if h.enforcer != nil {
+		if errCode := h.enforcer.AuthorizeGroupFromCtx(ctx, req.Group, auth.OperationRead); errCode != nil {
+			resp.ErrorCode = *errCode
+			return resp
+		}
 	}
 
 	// Validate member ID

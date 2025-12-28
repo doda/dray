@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/groups"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -26,6 +27,7 @@ type LeaveGroupHandler struct {
 	store            *groups.Store
 	leaseManager     *groups.LeaseManager
 	joinGroupHandler *JoinGroupHandler
+	enforcer         *auth.Enforcer
 }
 
 // NewLeaveGroupHandler creates a new LeaveGroup handler.
@@ -35,6 +37,12 @@ func NewLeaveGroupHandler(store *groups.Store, leaseManager *groups.LeaseManager
 		leaseManager:     leaseManager,
 		joinGroupHandler: joinGroupHandler,
 	}
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *LeaveGroupHandler) WithEnforcer(enforcer *auth.Enforcer) *LeaveGroupHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // Handle processes a LeaveGroup request.
@@ -48,6 +56,14 @@ func (h *LeaveGroupHandler) Handle(ctx context.Context, version int16, req *kmsg
 	if req.Group == "" {
 		resp.ErrorCode = errLeaveGroupInvalidGroupID
 		return resp
+	}
+
+	// Check ACL before processing - need READ permission on group
+	if h.enforcer != nil {
+		if errCode := h.enforcer.AuthorizeGroupFromCtx(ctx, req.Group, auth.OperationRead); errCode != nil {
+			resp.ErrorCode = *errCode
+			return resp
+		}
 	}
 
 	// Check coordinator lease if available

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/fetch"
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/topics"
@@ -32,6 +33,7 @@ type FetchHandler struct {
 	fetcher       *fetch.Fetcher
 	streamManager *index.StreamManager
 	hwmWatcher    *fetch.HWMWatcher
+	enforcer      *auth.Enforcer
 }
 
 // NewFetchHandler creates a new Fetch handler.
@@ -53,6 +55,12 @@ func NewFetchHandlerWithWatcher(cfg FetchHandlerConfig, topicStore *topics.Store
 		streamManager: streamManager,
 		hwmWatcher:    hwmWatcher,
 	}
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *FetchHandler) WithEnforcer(enforcer *auth.Enforcer) *FetchHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // Handle processes a Fetch request.
@@ -92,6 +100,19 @@ func (h *FetchHandler) Handle(ctx context.Context, version int16, req *kmsg.Fetc
 			meta, err := h.topicStore.GetTopicByID(ctx, topicIDStr)
 			if err == nil {
 				topicName = meta.Name
+			}
+		}
+
+		// Check ACL before processing - need READ permission to fetch
+		if h.enforcer != nil {
+			if errCode := h.enforcer.AuthorizeTopicFromCtx(ctx, topicName, auth.OperationRead); errCode != nil {
+				// Authorization failed - add error for all partitions
+				for _, partReq := range topicReq.Partitions {
+					partResp := h.buildPartitionError(version, partReq.Partition, *errCode, 0)
+					topicResp.Partitions = append(topicResp.Partitions, partResp)
+				}
+				resp.Topics = append(resp.Topics, topicResp)
+				continue
 			}
 		}
 

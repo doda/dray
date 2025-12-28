@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/produce"
 	"github.com/dray-io/dray/internal/topics"
@@ -17,6 +18,7 @@ const (
 	errNoError                     int16 = 0
 	errUnknownTopicOrPartitionErr  int16 = 3
 	errInvalidRequiredAcks         int16 = 21
+	errTopicAuthorizationFailed    int16 = 29
 	errClusterAuthorizationFailed  int16 = 31
 	errUnsupportedForMessageFormat int16 = 43
 	errInvalidProducerEpoch        int16 = 47
@@ -40,6 +42,7 @@ type ProduceHandler struct {
 	cfg        ProduceHandlerConfig
 	topicStore *topics.Store
 	buffer     *produce.Buffer
+	enforcer   *auth.Enforcer
 }
 
 // NewProduceHandler creates a new Produce handler.
@@ -49,6 +52,12 @@ func NewProduceHandler(cfg ProduceHandlerConfig, topicStore *topics.Store, buffe
 		topicStore: topicStore,
 		buffer:     buffer,
 	}
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *ProduceHandler) WithEnforcer(enforcer *auth.Enforcer) *ProduceHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // Handle processes a Produce request.
@@ -84,6 +93,19 @@ func (h *ProduceHandler) Handle(ctx context.Context, version int16, req *kmsg.Pr
 	for _, topicData := range req.Topics {
 		topicResp := kmsg.NewProduceResponseTopic()
 		topicResp.Topic = topicData.Topic
+
+		// Check ACL before processing - need WRITE permission to produce
+		if h.enforcer != nil {
+			if errCode := h.enforcer.AuthorizeTopicFromCtx(ctx, topicData.Topic, auth.OperationWrite); errCode != nil {
+				// Authorization failed - add error for all partitions
+				for _, partData := range topicData.Partitions {
+					partResp := h.buildPartitionError(version, partData.Partition, *errCode)
+					topicResp.Partitions = append(topicResp.Partitions, partResp)
+				}
+				resp.Topics = append(resp.Topics, topicResp)
+				continue
+			}
+		}
 
 		// Get topic metadata
 		topicMeta, err := h.topicStore.GetTopic(ctx, topicData.Topic)

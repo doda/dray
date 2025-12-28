@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/groups"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/topics"
@@ -41,6 +42,7 @@ type ConsumerGroupHeartbeatHandler struct {
 	store        *groups.Store
 	leaseManager *groups.LeaseManager
 	topicStore   *topics.Store
+	enforcer     *auth.Enforcer
 }
 
 // NewConsumerGroupHeartbeatHandler creates a new ConsumerGroupHeartbeat handler.
@@ -50,6 +52,12 @@ func NewConsumerGroupHeartbeatHandler(store *groups.Store, leaseManager *groups.
 		leaseManager: leaseManager,
 		topicStore:   topicStore,
 	}
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *ConsumerGroupHeartbeatHandler) WithEnforcer(enforcer *auth.Enforcer) *ConsumerGroupHeartbeatHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // Handle processes a ConsumerGroupHeartbeat request.
@@ -63,6 +71,14 @@ func (h *ConsumerGroupHeartbeatHandler) Handle(ctx context.Context, version int1
 	if req.Group == "" {
 		resp.ErrorCode = errCGHBInvalidGroupID
 		return resp
+	}
+
+	// Check ACL before processing - need READ permission on group
+	if h.enforcer != nil {
+		if errCode := h.enforcer.AuthorizeGroupFromCtx(ctx, req.Group, auth.OperationRead); errCode != nil {
+			resp.ErrorCode = *errCode
+			return resp
+		}
 	}
 
 	nowMs := time.Now().UnixMilli()

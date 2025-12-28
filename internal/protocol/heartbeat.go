@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/groups"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -27,6 +28,7 @@ const (
 type HeartbeatHandler struct {
 	store        *groups.Store
 	leaseManager *groups.LeaseManager
+	enforcer     *auth.Enforcer
 }
 
 // NewHeartbeatHandler creates a new Heartbeat handler.
@@ -35,6 +37,12 @@ func NewHeartbeatHandler(store *groups.Store, leaseManager *groups.LeaseManager)
 		store:        store,
 		leaseManager: leaseManager,
 	}
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *HeartbeatHandler) WithEnforcer(enforcer *auth.Enforcer) *HeartbeatHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // Handle processes a Heartbeat request.
@@ -48,6 +56,14 @@ func (h *HeartbeatHandler) Handle(ctx context.Context, version int16, req *kmsg.
 	if req.Group == "" {
 		resp.ErrorCode = errHeartbeatInvalidGroupID
 		return resp
+	}
+
+	// Check ACL before processing - need READ permission on group
+	if h.enforcer != nil {
+		if errCode := h.enforcer.AuthorizeGroupFromCtx(ctx, req.Group, auth.OperationRead); errCode != nil {
+			resp.ErrorCode = *errCode
+			return resp
+		}
 	}
 
 	// Validate member ID

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/groups"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/google/uuid"
@@ -78,9 +79,16 @@ type JoinGroupHandler struct {
 	cfg          JoinGroupHandlerConfig
 	store        *groups.Store
 	leaseManager *groups.LeaseManager
+	enforcer     *auth.Enforcer
 
 	mu              sync.Mutex
 	rebalanceStates map[string]*rebalanceState // groupID -> state
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *JoinGroupHandler) WithEnforcer(enforcer *auth.Enforcer) *JoinGroupHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // NewJoinGroupHandler creates a new JoinGroup handler.
@@ -115,6 +123,14 @@ func (h *JoinGroupHandler) Handle(ctx context.Context, version int16, req *kmsg.
 	if req.Group == "" {
 		resp.ErrorCode = errInvalidGroupID
 		return resp
+	}
+
+	// Check ACL before processing - need READ permission on group
+	if h.enforcer != nil {
+		if errCode := h.enforcer.AuthorizeGroupFromCtx(ctx, req.Group, auth.OperationRead); errCode != nil {
+			resp.ErrorCode = *errCode
+			return resp
+		}
 	}
 
 	// Validate session timeout
