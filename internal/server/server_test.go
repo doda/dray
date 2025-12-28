@@ -164,10 +164,10 @@ func TestServerMultipleRequests(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// Send multiple requests
+	// Send multiple requests (ApiVersions v2, non-flexible header)
 	for i := 0; i < 5; i++ {
 		correlationID := int32(1000 + i)
-		request := buildKafkaRequest(18, 3, correlationID, "client", []byte("data"))
+		request := buildKafkaRequest(18, 2, correlationID, "client", []byte("data"))
 		if _, err := conn.Write(request); err != nil {
 			t.Fatalf("failed to write request %d: %v", i, err)
 		}
@@ -359,15 +359,15 @@ func TestParseRequestHeader(t *testing.T) {
 			name: "basic header",
 			buf: func() []byte {
 				b := make([]byte, 14)
-				binary.BigEndian.PutUint16(b[0:2], 18)    // apiKey
-				binary.BigEndian.PutUint16(b[2:4], 3)     // apiVersion
+				binary.BigEndian.PutUint16(b[0:2], 18)    // apiKey (ApiVersions)
+				binary.BigEndian.PutUint16(b[2:4], 2)     // apiVersion (v2, non-flexible)
 				binary.BigEndian.PutUint32(b[4:8], 12345) // correlationId
 				binary.BigEndian.PutUint16(b[8:10], 4)    // clientId length
 				copy(b[10:14], "test")                    // clientId
 				return b
 			}(),
 			wantAPIKey:     18,
-			wantAPIVersion: 3,
+			wantAPIVersion: 2,
 			wantCorrID:     12345,
 			wantClientID:   "test",
 			wantOffset:     14,
@@ -392,14 +392,14 @@ func TestParseRequestHeader(t *testing.T) {
 			name: "empty clientId",
 			buf: func() []byte {
 				b := make([]byte, 10)
-				binary.BigEndian.PutUint16(b[0:2], 3)  // apiKey
-				binary.BigEndian.PutUint16(b[2:4], 12) // apiVersion
+				binary.BigEndian.PutUint16(b[0:2], 3) // apiKey (Metadata)
+				binary.BigEndian.PutUint16(b[2:4], 8) // apiVersion (v8, non-flexible, <9)
 				binary.BigEndian.PutUint32(b[4:8], 99) // correlationId
 				binary.BigEndian.PutUint16(b[8:10], 0) // empty string
 				return b
 			}(),
 			wantAPIKey:     3,
-			wantAPIVersion: 12,
+			wantAPIVersion: 8,
 			wantCorrID:     99,
 			wantClientID:   "",
 			wantOffset:     10,
@@ -487,10 +487,10 @@ func TestReadRequest(t *testing.T) {
 		cfg: DefaultConfig(),
 	}
 
-	// Build a request with length prefix
+	// Build a request with length prefix (ApiVersions v2, non-flexible)
 	headerBuf := make([]byte, 14)
-	binary.BigEndian.PutUint16(headerBuf[0:2], 18)    // apiKey
-	binary.BigEndian.PutUint16(headerBuf[2:4], 3)     // apiVersion
+	binary.BigEndian.PutUint16(headerBuf[0:2], 18)    // apiKey (ApiVersions)
+	binary.BigEndian.PutUint16(headerBuf[2:4], 2)     // apiVersion (v2, non-flexible)
 	binary.BigEndian.PutUint32(headerBuf[4:8], 12345) // correlationId
 	binary.BigEndian.PutUint16(headerBuf[8:10], 4)    // clientId length
 	copy(headerBuf[10:14], "test")
@@ -510,8 +510,8 @@ func TestReadRequest(t *testing.T) {
 	if header.APIKey != 18 {
 		t.Errorf("APIKey = %d, want 18", header.APIKey)
 	}
-	if header.APIVersion != 3 {
-		t.Errorf("APIVersion = %d, want 3", header.APIVersion)
+	if header.APIVersion != 2 {
+		t.Errorf("APIVersion = %d, want 2", header.APIVersion)
 	}
 	if header.CorrelationID != 12345 {
 		t.Errorf("CorrelationID = %d, want 12345", header.CorrelationID)
