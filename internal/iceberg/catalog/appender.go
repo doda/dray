@@ -15,10 +15,18 @@ import (
 // compaction job ID. This enables idempotent commit detection per SPEC.md 11.7.
 const SnapshotPropertyJobID = "dray.job-id"
 
+// ErrLockNotAcquired is returned when the Iceberg lock could not be acquired
+// after all retry attempts.
+var ErrLockNotAcquired = errors.New("iceberg: failed to acquire commit lock")
+
 // AppenderConfig configures the data file appender.
 type AppenderConfig struct {
 	// Catalog is the Iceberg catalog to use for table operations.
 	Catalog Catalog
+
+	// LockManager is the Iceberg lock manager for single-writer enforcement.
+	// If nil, locking is disabled (not recommended for production).
+	LockManager *IcebergLockManager
 
 	// Namespace is the Iceberg namespace for tables.
 	// Default: ["dray"]
@@ -43,18 +51,33 @@ type AppenderConfig struct {
 	// JitterFactor is the random jitter factor (0-1).
 	// Default: 0.1
 	JitterFactor float64
+
+	// LockRetries is the maximum number of retries to acquire the lock.
+	// Default: 5
+	LockRetries int
+
+	// LockInitialBackoff is the initial backoff for lock acquisition retry.
+	// Default: 100ms
+	LockInitialBackoff time.Duration
+
+	// LockMaxBackoff is the maximum backoff for lock acquisition retry.
+	// Default: 5s
+	LockMaxBackoff time.Duration
 }
 
 // DefaultAppenderConfig returns sensible defaults for AppenderConfig.
 func DefaultAppenderConfig(catalog Catalog) AppenderConfig {
 	return AppenderConfig{
-		Catalog:           catalog,
-		Namespace:         []string{"dray"},
-		MaxRetries:        5,
-		InitialBackoff:    100 * time.Millisecond,
-		MaxBackoff:        10 * time.Second,
-		BackoffMultiplier: 2.0,
-		JitterFactor:      0.1,
+		Catalog:            catalog,
+		Namespace:          []string{"dray"},
+		MaxRetries:         5,
+		InitialBackoff:     100 * time.Millisecond,
+		MaxBackoff:         10 * time.Second,
+		BackoffMultiplier:  2.0,
+		JitterFactor:       0.1,
+		LockRetries:        5,
+		LockInitialBackoff: 100 * time.Millisecond,
+		LockMaxBackoff:     5 * time.Second,
 	}
 }
 
@@ -85,6 +108,15 @@ func NewAppender(cfg AppenderConfig) *Appender {
 	if len(cfg.Namespace) == 0 {
 		cfg.Namespace = []string{"dray"}
 	}
+	if cfg.LockRetries == 0 {
+		cfg.LockRetries = 5
+	}
+	if cfg.LockInitialBackoff == 0 {
+		cfg.LockInitialBackoff = 100 * time.Millisecond
+	}
+	if cfg.LockMaxBackoff == 0 {
+		cfg.LockMaxBackoff = 5 * time.Second
+	}
 
 	return &Appender{cfg: cfg}
 }
@@ -111,10 +143,12 @@ type AppendResult struct {
 // AppendFiles appends data files to an Iceberg table with retry on conflict.
 //
 // This method:
-//  1. Loads the table from the catalog
-//  2. Attempts to append the data files
-//  3. On commit conflict, refreshes the table and retries with exponential backoff
-//  4. Returns the new snapshot on success
+//  1. Acquires the ephemeral Iceberg lock for the topic (if LockManager is configured)
+//  2. Loads the table from the catalog
+//  3. Attempts to append the data files
+//  4. On commit conflict, refreshes the table and retries with exponential backoff
+//  5. Returns the new snapshot on success
+//  6. Releases the lock after commit completes (success or failure)
 //
 // The files parameter must contain valid DataFile entries with:
 //   - Path: Full object storage path to the Parquet file
@@ -125,7 +159,8 @@ type AppendResult struct {
 //   - Optional: ColumnSizes, ValueCounts, NullValueCounts, LowerBounds, UpperBounds
 //
 // Returns ErrTableNotFound if the table does not exist.
-// Returns error after MaxRetries if all attempts fail.
+// Returns ErrLockNotAcquired if the lock could not be acquired after retries.
+// Returns error after MaxRetries if all commit attempts fail.
 func (a *Appender) AppendFiles(ctx context.Context, topicName string, files []DataFile, opts *AppendFilesOptions) (*AppendResult, error) {
 	if a.cfg.Catalog == nil {
 		return nil, ErrCatalogUnavailable
@@ -133,6 +168,31 @@ func (a *Appender) AppendFiles(ctx context.Context, topicName string, files []Da
 
 	if len(files) == 0 {
 		return nil, errors.New("no files to append")
+	}
+
+	// Acquire the Iceberg commit lock if LockManager is configured
+	if a.cfg.LockManager != nil {
+		result, err := a.cfg.LockManager.AcquireWithRetry(
+			ctx, topicName,
+			a.cfg.LockRetries,
+			a.cfg.LockInitialBackoff,
+			a.cfg.LockMaxBackoff,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrLockNotAcquired, err)
+		}
+		if !result.Acquired {
+			return nil, fmt.Errorf("%w: held by writer %s", ErrLockNotAcquired, result.Lock.WriterID)
+		}
+		// Ensure lock is released after commit completes (success or failure)
+		defer func() {
+			if releaseErr := a.cfg.LockManager.ReleaseLock(ctx, topicName); releaseErr != nil {
+				slog.Warn("failed to release iceberg lock",
+					"topic", topicName,
+					"error", releaseErr,
+				)
+			}
+		}()
 	}
 
 	identifier := TableIdentifier{

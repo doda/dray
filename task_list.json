@@ -1900,7 +1900,7 @@
     "scope": [
       "internal/iceberg/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "iceberg-parquet-match-test",

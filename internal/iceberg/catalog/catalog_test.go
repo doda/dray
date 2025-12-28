@@ -13,6 +13,7 @@ type mockTable struct {
 	snapshots  []Snapshot
 	props      TableProperties
 	location   string
+	appendErr  error // if set, AppendFiles returns this error
 }
 
 func (t *mockTable) Identifier() TableIdentifier { return t.identifier }
@@ -32,6 +33,10 @@ func (t *mockTable) Snapshots(ctx context.Context) ([]Snapshot, error) {
 }
 
 func (t *mockTable) AppendFiles(ctx context.Context, files []DataFile, opts *AppendFilesOptions) (*Snapshot, error) {
+	if t.appendErr != nil {
+		return nil, t.appendErr
+	}
+
 	var parentID *int64
 	nextSnapshotID := int64(1)
 	if len(t.snapshots) > 0 {

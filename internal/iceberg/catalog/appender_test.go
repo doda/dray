@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/dray-io/dray/internal/metadata"
 )
 
 func TestNewAppender(t *testing.T) {
@@ -830,4 +832,237 @@ func TestSnapshotPropertyJobID(t *testing.T) {
 	if SnapshotPropertyJobID != "dray.job-id" {
 		t.Errorf("expected SnapshotPropertyJobID to be 'dray.job-id', got %s", SnapshotPropertyJobID)
 	}
+}
+
+func TestAppender_AppendFiles_WithLock(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("acquires and releases lock during commit", func(t *testing.T) {
+		catalog := newMockCatalog()
+		_, _ = catalog.CreateTableIfMissing(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "lock-test-topic",
+		}, CreateTableOptions{Schema: DefaultSchema()})
+
+		store := metadata.NewMockStore()
+		lockManager := NewIcebergLockManager(store, "writer-1")
+
+		cfg := DefaultAppenderConfig(catalog)
+		cfg.LockManager = lockManager
+		appender := NewAppender(cfg)
+
+		files := []DataFile{{
+			Path:           "s3://bucket/data/file.parquet",
+			Format:         FormatParquet,
+			PartitionValue: 0,
+			RecordCount:    1000,
+			FileSizeBytes:  10240,
+		}}
+
+		// Initially lock should not be held
+		if lockManager.HoldsLock("lock-test-topic") {
+			t.Error("expected lock not to be held before append")
+		}
+
+		result, err := appender.AppendFiles(ctx, "lock-test-topic", files, nil)
+		if err != nil {
+			t.Fatalf("AppendFiles failed: %v", err)
+		}
+		if result.Snapshot == nil {
+			t.Error("expected snapshot to be returned")
+		}
+
+		// After commit, lock should be released
+		if lockManager.HoldsLock("lock-test-topic") {
+			t.Error("expected lock to be released after append")
+		}
+
+		// Verify lock is not in metadata store
+		lock, err := lockManager.GetLock(ctx, "lock-test-topic")
+		if err != nil {
+			t.Fatalf("GetLock failed: %v", err)
+		}
+		if lock != nil {
+			t.Error("expected lock to be nil after release")
+		}
+	})
+
+	t.Run("releases lock even on commit failure", func(t *testing.T) {
+		catalog := newMockCatalog()
+		_, _ = catalog.CreateTableIfMissing(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "fail-topic",
+		}, CreateTableOptions{Schema: DefaultSchema()})
+
+		// Make the table fail on append
+		tbl, _ := catalog.LoadTable(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "fail-topic",
+		})
+		mockTbl := tbl.(*mockTable)
+		mockTbl.appendErr = errors.New("simulated failure")
+
+		store := metadata.NewMockStore()
+		lockManager := NewIcebergLockManager(store, "writer-1")
+
+		cfg := DefaultAppenderConfig(catalog)
+		cfg.LockManager = lockManager
+		cfg.MaxRetries = 1 // Don't retry
+		appender := NewAppender(cfg)
+
+		files := []DataFile{{
+			Path:           "s3://bucket/data/file.parquet",
+			Format:         FormatParquet,
+			PartitionValue: 0,
+			RecordCount:    1000,
+			FileSizeBytes:  10240,
+		}}
+
+		_, err := appender.AppendFiles(ctx, "fail-topic", files, nil)
+		if err == nil {
+			t.Error("expected error from AppendFiles")
+		}
+
+		// Lock should still be released after failure
+		if lockManager.HoldsLock("fail-topic") {
+			t.Error("expected lock to be released even after failure")
+		}
+	})
+
+	t.Run("fails when lock cannot be acquired", func(t *testing.T) {
+		catalog := newMockCatalog()
+		_, _ = catalog.CreateTableIfMissing(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "contention-topic",
+		}, CreateTableOptions{Schema: DefaultSchema()})
+
+		store := metadata.NewMockStore()
+		lockManager1 := NewIcebergLockManager(store, "writer-1")
+		lockManager2 := NewIcebergLockManager(store, "writer-2")
+
+		// Writer-1 acquires the lock
+		_, err := lockManager1.AcquireLock(ctx, "contention-topic")
+		if err != nil {
+			t.Fatalf("writer-1 failed to acquire lock: %v", err)
+		}
+
+		cfg := DefaultAppenderConfig(catalog)
+		cfg.LockManager = lockManager2
+		cfg.LockRetries = 2
+		cfg.LockInitialBackoff = 10 * time.Millisecond
+		cfg.LockMaxBackoff = 50 * time.Millisecond
+		appender := NewAppender(cfg)
+
+		files := []DataFile{{
+			Path:           "s3://bucket/data/file.parquet",
+			Format:         FormatParquet,
+			PartitionValue: 0,
+			RecordCount:    1000,
+			FileSizeBytes:  10240,
+		}}
+
+		_, err = appender.AppendFiles(ctx, "contention-topic", files, nil)
+		if err == nil {
+			t.Error("expected error when lock cannot be acquired")
+		}
+		if !errors.Is(err, ErrLockNotAcquired) {
+			t.Errorf("expected ErrLockNotAcquired, got %v", err)
+		}
+	})
+
+	t.Run("without lock manager skips locking", func(t *testing.T) {
+		catalog := newMockCatalog()
+		_, _ = catalog.CreateTableIfMissing(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "no-lock-topic",
+		}, CreateTableOptions{Schema: DefaultSchema()})
+
+		cfg := DefaultAppenderConfig(catalog)
+		// LockManager is nil by default
+		appender := NewAppender(cfg)
+
+		files := []DataFile{{
+			Path:           "s3://bucket/data/file.parquet",
+			Format:         FormatParquet,
+			PartitionValue: 0,
+			RecordCount:    1000,
+			FileSizeBytes:  10240,
+		}}
+
+		result, err := appender.AppendFiles(ctx, "no-lock-topic", files, nil)
+		if err != nil {
+			t.Fatalf("AppendFiles failed: %v", err)
+		}
+		if result.Snapshot == nil {
+			t.Error("expected snapshot to be returned")
+		}
+	})
+
+	t.Run("single writer enforcement", func(t *testing.T) {
+		catalog := newMockCatalog()
+		_, _ = catalog.CreateTableIfMissing(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "single-writer-topic",
+		}, CreateTableOptions{Schema: DefaultSchema()})
+
+		store := metadata.NewMockStore()
+
+		// Create two appenders with different writers
+		lm1 := NewIcebergLockManager(store, "writer-1")
+		lm2 := NewIcebergLockManager(store, "writer-2")
+
+		cfg1 := DefaultAppenderConfig(catalog)
+		cfg1.LockManager = lm1
+		cfg1.LockRetries = 1
+		cfg1.LockInitialBackoff = 10 * time.Millisecond
+		appender1 := NewAppender(cfg1)
+
+		cfg2 := DefaultAppenderConfig(catalog)
+		cfg2.LockManager = lm2
+		cfg2.LockRetries = 1
+		cfg2.LockInitialBackoff = 10 * time.Millisecond
+		appender2 := NewAppender(cfg2)
+
+		files := []DataFile{{
+			Path:           "s3://bucket/data/file.parquet",
+			Format:         FormatParquet,
+			PartitionValue: 0,
+			RecordCount:    1000,
+			FileSizeBytes:  10240,
+		}}
+
+		// Writer-1 acquires lock but holds it
+		_, err := lm1.AcquireLock(ctx, "single-writer-topic")
+		if err != nil {
+			t.Fatalf("writer-1 failed to acquire lock: %v", err)
+		}
+
+		// Writer-2 should fail to append since lock is held
+		_, err = appender2.AppendFiles(ctx, "single-writer-topic", files, nil)
+		if err == nil {
+			t.Error("expected error when another writer holds the lock")
+		}
+
+		// Release writer-1's lock
+		if err := lm1.ReleaseLock(ctx, "single-writer-topic"); err != nil {
+			t.Fatalf("failed to release lock: %v", err)
+		}
+
+		// Now both should be able to append (one at a time)
+		result1, err := appender1.AppendFiles(ctx, "single-writer-topic", files, nil)
+		if err != nil {
+			t.Fatalf("appender1 failed: %v", err)
+		}
+		if result1.Snapshot == nil {
+			t.Error("expected snapshot from appender1")
+		}
+
+		result2, err := appender2.AppendFiles(ctx, "single-writer-topic", files, nil)
+		if err != nil {
+			t.Fatalf("appender2 failed: %v", err)
+		}
+		if result2.Snapshot == nil {
+			t.Error("expected snapshot from appender2")
+		}
+	})
 }
