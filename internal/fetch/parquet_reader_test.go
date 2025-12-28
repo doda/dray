@@ -49,7 +49,7 @@ func TestParquetReader_ReadBatches(t *testing.T) {
 				{
 					Partition:   0,
 					Offset:      0,
-					TimestampMs: 1000,
+					Timestamp: 1000,
 					Key:         []byte("key1"),
 					Value:       []byte("value1"),
 				},
@@ -69,9 +69,9 @@ func TestParquetReader_ReadBatches(t *testing.T) {
 		{
 			name: "multiple records",
 			records: []ParquetRecordWithHeaders{
-				{Partition: 0, Offset: 0, TimestampMs: 1000, Key: []byte("k1"), Value: []byte("v1")},
-				{Partition: 0, Offset: 1, TimestampMs: 1001, Key: []byte("k2"), Value: []byte("v2")},
-				{Partition: 0, Offset: 2, TimestampMs: 1002, Key: []byte("k3"), Value: []byte("v3")},
+				{Partition: 0, Offset: 0, Timestamp: 1000, Key: []byte("k1"), Value: []byte("v1")},
+				{Partition: 0, Offset: 1, Timestamp: 1001, Key: []byte("k2"), Value: []byte("v2")},
+				{Partition: 0, Offset: 2, Timestamp: 1002, Key: []byte("k3"), Value: []byte("v3")},
 			},
 			entry: &index.IndexEntry{
 				FileType:    index.FileTypeParquet,
@@ -88,9 +88,9 @@ func TestParquetReader_ReadBatches(t *testing.T) {
 		{
 			name: "fetch from middle offset",
 			records: []ParquetRecordWithHeaders{
-				{Partition: 0, Offset: 0, TimestampMs: 1000, Key: []byte("k1"), Value: []byte("v1")},
-				{Partition: 0, Offset: 1, TimestampMs: 1001, Key: []byte("k2"), Value: []byte("v2")},
-				{Partition: 0, Offset: 2, TimestampMs: 1002, Key: []byte("k3"), Value: []byte("v3")},
+				{Partition: 0, Offset: 0, Timestamp: 1000, Key: []byte("k1"), Value: []byte("v1")},
+				{Partition: 0, Offset: 1, Timestamp: 1001, Key: []byte("k2"), Value: []byte("v2")},
+				{Partition: 0, Offset: 2, Timestamp: 1002, Key: []byte("k3"), Value: []byte("v3")},
 			},
 			entry: &index.IndexEntry{
 				FileType:    index.FileTypeParquet,
@@ -107,7 +107,7 @@ func TestParquetReader_ReadBatches(t *testing.T) {
 		{
 			name: "record with null key",
 			records: []ParquetRecordWithHeaders{
-				{Partition: 0, Offset: 0, TimestampMs: 1000, Key: nil, Value: []byte("value")},
+				{Partition: 0, Offset: 0, Timestamp: 1000, Key: nil, Value: []byte("value")},
 			},
 			entry: &index.IndexEntry{
 				FileType:    index.FileTypeParquet,
@@ -124,7 +124,7 @@ func TestParquetReader_ReadBatches(t *testing.T) {
 		{
 			name: "record with null value",
 			records: []ParquetRecordWithHeaders{
-				{Partition: 0, Offset: 0, TimestampMs: 1000, Key: []byte("key"), Value: nil},
+				{Partition: 0, Offset: 0, Timestamp: 1000, Key: []byte("key"), Value: nil},
 			},
 			entry: &index.IndexEntry{
 				FileType:    index.FileTypeParquet,
@@ -144,7 +144,7 @@ func TestParquetReader_ReadBatches(t *testing.T) {
 				{
 					Partition:   0,
 					Offset:      0,
-					TimestampMs: 1000,
+					Timestamp: 1000,
 					Key:         []byte("key"),
 					Value:       []byte("value"),
 					Headers: []ParquetHeader{
@@ -168,7 +168,7 @@ func TestParquetReader_ReadBatches(t *testing.T) {
 		{
 			name: "offset not in range",
 			records: []ParquetRecordWithHeaders{
-				{Partition: 0, Offset: 0, TimestampMs: 1000, Key: []byte("k1"), Value: []byte("v1")},
+				{Partition: 0, Offset: 0, Timestamp: 1000, Key: []byte("k1"), Value: []byte("v1")},
 			},
 			entry: &index.IndexEntry{
 				FileType:    index.FileTypeParquet,
@@ -221,9 +221,9 @@ func TestParquetReader_ReadBatches(t *testing.T) {
 
 func TestParquetReader_MaxBytesLimit(t *testing.T) {
 	records := []ParquetRecordWithHeaders{
-		{Partition: 0, Offset: 0, TimestampMs: 1000, Key: []byte("k1"), Value: []byte("v1")},
-		{Partition: 0, Offset: 1, TimestampMs: 1001, Key: []byte("k2"), Value: []byte("v2")},
-		{Partition: 0, Offset: 2, TimestampMs: 1002, Key: []byte("k3"), Value: []byte("v3")},
+		{Partition: 0, Offset: 0, Timestamp: 1000, Key: []byte("k1"), Value: []byte("v1")},
+		{Partition: 0, Offset: 1, Timestamp: 1001, Key: []byte("k2"), Value: []byte("v2")},
+		{Partition: 0, Offset: 2, Timestamp: 1002, Key: []byte("k3"), Value: []byte("v3")},
 	}
 
 	store := newMockStore()
@@ -308,7 +308,7 @@ func TestBuildKafkaRecordBatch_ValidStructure(t *testing.T) {
 	rec := ParquetRecordWithHeaders{
 		Partition:   0,
 		Offset:      100,
-		TimestampMs: 1000,
+		Timestamp: 1000,
 		Key:         []byte("testkey"),
 		Value:       []byte("testvalue"),
 		Headers: []ParquetHeader{
@@ -387,7 +387,7 @@ func TestBuildKafkaRecord(t *testing.T) {
 			rec: ParquetRecordWithHeaders{
 				Partition:   0,
 				Offset:      0,
-				TimestampMs: 1000,
+				Timestamp: 1000,
 				Key:         []byte("key"),
 				Value:       []byte("value"),
 			},
@@ -397,7 +397,7 @@ func TestBuildKafkaRecord(t *testing.T) {
 			rec: ParquetRecordWithHeaders{
 				Partition:   0,
 				Offset:      0,
-				TimestampMs: 1000,
+				Timestamp: 1000,
 				Key:         nil,
 				Value:       []byte("value"),
 			},
@@ -407,7 +407,7 @@ func TestBuildKafkaRecord(t *testing.T) {
 			rec: ParquetRecordWithHeaders{
 				Partition:   0,
 				Offset:      0,
-				TimestampMs: 1000,
+				Timestamp: 1000,
 				Key:         []byte("key"),
 				Value:       nil,
 			},
@@ -417,7 +417,7 @@ func TestBuildKafkaRecord(t *testing.T) {
 			rec: ParquetRecordWithHeaders{
 				Partition:   0,
 				Offset:      0,
-				TimestampMs: 1000,
+				Timestamp: 1000,
 				Key:         []byte("key"),
 				Value:       []byte("value"),
 				Headers: []ParquetHeader{
@@ -431,7 +431,7 @@ func TestBuildKafkaRecord(t *testing.T) {
 			rec: ParquetRecordWithHeaders{
 				Partition:   0,
 				Offset:      0,
-				TimestampMs: 1000,
+				Timestamp: 1000,
 				Key:         []byte{},
 				Value:       []byte{},
 			},
@@ -484,7 +484,7 @@ func TestParquetReader_ReconstructedBatches_CanBeParsed(t *testing.T) {
 		{
 			Partition:   0,
 			Offset:      0,
-			TimestampMs: 1000,
+			Timestamp: 1000,
 			Key:         []byte("testkey"),
 			Value:       []byte("testvalue"),
 			Headers: []ParquetHeader{
@@ -544,7 +544,7 @@ func TestParquetReader_HeaderOrderPreserved(t *testing.T) {
 		{
 			Partition:   0,
 			Offset:      0,
-			TimestampMs: 1000,
+			Timestamp: 1000,
 			Key:         []byte("key"),
 			Value:       []byte("value"),
 			Headers: []ParquetHeader{

@@ -1692,7 +1692,7 @@
     "scope": [
       "internal/compaction/worker/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "parquet-reader",

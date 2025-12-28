@@ -42,13 +42,13 @@ func NewParquetReader(store objectstore.Store) *ParquetReader {
 // ParquetRecord represents a single record from the Parquet schema.
 // Matches SPEC 5.3 schema.
 type ParquetRecord struct {
-	Partition   int32  `parquet:"partition"`
-	Offset      int64  `parquet:"offset"`
-	TimestampMs int64  `parquet:"timestamp_ms"`
-	Key         []byte `parquet:"key,optional"`
-	Value       []byte `parquet:"value,optional"`
+	Partition int32  `parquet:"partition"`
+	Offset    int64  `parquet:"offset"`
+	Timestamp int64  `parquet:"timestamp,timestamp(millisecond)"`
+	Key       []byte `parquet:"key,optional"`
+	Value     []byte `parquet:"value,optional"`
 	// Headers is a list of key-value pairs - handled separately
-	// Attributes, ProducerId, ProducerEpoch, BaseSequence are optional
+	// Attributes, ProducerId, ProducerEpoch, BaseSequence, RecordCRC are optional
 }
 
 // ParquetHeader represents a record header from Parquet.
@@ -61,7 +61,7 @@ type ParquetHeader struct {
 type ParquetRecordWithHeaders struct {
 	Partition     int32           `parquet:"partition"`
 	Offset        int64           `parquet:"offset"`
-	TimestampMs   int64           `parquet:"timestamp_ms"`
+	Timestamp     int64           `parquet:"timestamp,timestamp(millisecond)"`
 	Key           []byte          `parquet:"key,optional"`
 	Value         []byte          `parquet:"value,optional"`
 	Headers       []ParquetHeader `parquet:"headers,list"`
@@ -69,6 +69,7 @@ type ParquetRecordWithHeaders struct {
 	ProducerEpoch *int32          `parquet:"producer_epoch,optional"`
 	BaseSequence  *int32          `parquet:"base_sequence,optional"`
 	Attributes    int32           `parquet:"attributes"`
+	RecordCRC     *int32          `parquet:"record_crc,optional"`
 }
 
 // ReadBatches reads records from a Parquet file and reconstructs Kafka batches.
@@ -220,11 +221,11 @@ func buildKafkaRecordBatch(rec ParquetRecordWithHeaders) []byte {
 	offset += 4
 
 	// firstTimestamp
-	binary.BigEndian.PutUint64(batch[offset:], uint64(rec.TimestampMs))
+	binary.BigEndian.PutUint64(batch[offset:], uint64(rec.Timestamp))
 	offset += 8
 
 	// maxTimestamp
-	binary.BigEndian.PutUint64(batch[offset:], uint64(rec.TimestampMs))
+	binary.BigEndian.PutUint64(batch[offset:], uint64(rec.Timestamp))
 	offset += 8
 
 	// producerId (-1 = no idempotent producer)
