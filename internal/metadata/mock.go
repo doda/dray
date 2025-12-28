@@ -240,6 +240,18 @@ func (m *MockStore) TxnCallCount() int {
 	return m.txnCalls
 }
 
+// GetAllKeys returns all keys currently in the store (for testing).
+func (m *MockStore) GetAllKeys() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	keys := make([]string, 0, len(m.data))
+	for k := range m.data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 type txnOpPublic struct {
 	value           []byte
 	delete          bool

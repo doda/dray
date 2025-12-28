@@ -436,3 +436,424 @@ func TestCreateFlushHandler(t *testing.T) {
 		t.Error("expected non-nil flush handler")
 	}
 }
+
+// TestCommitter_FullProduceCommitFlow verifies all steps of produce-commit per spec 9.2-9.7:
+// 1. Write WAL object to storage
+// 2. Write staging marker before commit
+// 3. Execute atomic transaction per spec 9.2
+// 4. Allocate offsets for each stream chunk
+// 5. Create offset index entries
+// 6. Update hwm for each stream
+// 7. Create WAL object record with refCount
+// 8. Delete staging marker
+// 9. Return assigned offsets
+func TestCommitter_FullProduceCommitFlow(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create two streams in the same MetaDomain
+	streamMgr := index.NewStreamManager(metaStore)
+	stream1ID := "test-stream-001"
+	stream2ID := "test-stream-002"
+
+	err := streamMgr.CreateStreamWithID(ctx, stream1ID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream1: %v", err)
+	}
+	err = streamMgr.CreateStreamWithID(ctx, stream2ID, "test-topic", 1)
+	if err != nil {
+		t.Fatalf("failed to create stream2: %v", err)
+	}
+
+	// Verify initial HWM is 0 for both streams
+	hwm1Before, _, err := streamMgr.GetHWM(ctx, stream1ID)
+	if err != nil {
+		t.Fatalf("failed to get HWM for stream1: %v", err)
+	}
+	if hwm1Before != 0 {
+		t.Fatalf("expected initial HWM 0, got %d", hwm1Before)
+	}
+
+	hwm2Before, _, err := streamMgr.GetHWM(ctx, stream2ID)
+	if err != nil {
+		t.Fatalf("failed to get HWM for stream2: %v", err)
+	}
+	if hwm2Before != 0 {
+		t.Fatalf("expected initial HWM 0, got %d", hwm2Before)
+	}
+
+	// Create pending requests for two streams
+	stream1Hash := parseStreamID(stream1ID)
+	stream2Hash := parseStreamID(stream2ID)
+
+	requests := []*PendingRequest{
+		{
+			StreamID:       stream1Hash,
+			StreamIDStr:    stream1ID,
+			Batches:        []wal.BatchEntry{{Data: []byte("stream1-batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+		{
+			StreamID:       stream2Hash,
+			StreamIDStr:    stream2ID,
+			Batches:        []wal.BatchEntry{{Data: []byte("stream2-batch1")}},
+			RecordCount:    5,
+			MinTimestampMs: 1500,
+			MaxTimestampMs: 2500,
+			Size:           80,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit
+	err = committer.Commit(ctx, 0, requests)
+	if err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	// Step 1: Verify WAL object was written to storage
+	objStore.mu.Lock()
+	walCount := 0
+	var walPath string
+	for path := range objStore.objects {
+		if len(path) > 0 {
+			walCount++
+			walPath = path
+		}
+	}
+	objStore.mu.Unlock()
+
+	if walCount != 1 {
+		t.Errorf("expected 1 WAL object in storage, got %d", walCount)
+	}
+	if walPath == "" {
+		t.Error("WAL object path should not be empty")
+	}
+
+	// Step 4 & 9: Verify offset allocation and returned offsets
+	req1 := requests[0]
+	req2 := requests[1]
+
+	if req1.Result == nil {
+		t.Fatal("request 1: Result should not be nil")
+	}
+	if req2.Result == nil {
+		t.Fatal("request 2: Result should not be nil")
+	}
+
+	// Stream 1: should have offsets 0-10
+	if req1.Result.StartOffset != 0 {
+		t.Errorf("stream1: expected StartOffset 0, got %d", req1.Result.StartOffset)
+	}
+	if req1.Result.EndOffset != 10 {
+		t.Errorf("stream1: expected EndOffset 10, got %d", req1.Result.EndOffset)
+	}
+
+	// Stream 2: should have offsets 0-5
+	if req2.Result.StartOffset != 0 {
+		t.Errorf("stream2: expected StartOffset 0, got %d", req2.Result.StartOffset)
+	}
+	if req2.Result.EndOffset != 5 {
+		t.Errorf("stream2: expected EndOffset 5, got %d", req2.Result.EndOffset)
+	}
+
+	// Step 6: Verify HWM was updated for each stream
+	hwm1After, _, err := streamMgr.GetHWM(ctx, stream1ID)
+	if err != nil {
+		t.Fatalf("failed to get HWM for stream1: %v", err)
+	}
+	if hwm1After != 10 {
+		t.Errorf("stream1: expected HWM 10, got %d", hwm1After)
+	}
+
+	hwm2After, _, err := streamMgr.GetHWM(ctx, stream2ID)
+	if err != nil {
+		t.Fatalf("failed to get HWM for stream2: %v", err)
+	}
+	if hwm2After != 5 {
+		t.Errorf("stream2: expected HWM 5, got %d", hwm2After)
+	}
+
+	// Step 5: Verify offset index entries were created
+	entries1, err := streamMgr.ListIndexEntries(ctx, stream1ID, 10)
+	if err != nil {
+		t.Fatalf("failed to list index entries for stream1: %v", err)
+	}
+	if len(entries1) != 1 {
+		t.Errorf("stream1: expected 1 index entry, got %d", len(entries1))
+	}
+	if len(entries1) > 0 {
+		entry := entries1[0]
+		if entry.StartOffset != 0 {
+			t.Errorf("stream1 entry: expected StartOffset 0, got %d", entry.StartOffset)
+		}
+		if entry.EndOffset != 10 {
+			t.Errorf("stream1 entry: expected EndOffset 10, got %d", entry.EndOffset)
+		}
+		if entry.RecordCount != 10 {
+			t.Errorf("stream1 entry: expected RecordCount 10, got %d", entry.RecordCount)
+		}
+		if entry.FileType != index.FileTypeWAL {
+			t.Errorf("stream1 entry: expected FileType WAL, got %s", entry.FileType)
+		}
+		if entry.WalPath == "" {
+			t.Error("stream1 entry: WalPath should not be empty")
+		}
+	}
+
+	entries2, err := streamMgr.ListIndexEntries(ctx, stream2ID, 10)
+	if err != nil {
+		t.Fatalf("failed to list index entries for stream2: %v", err)
+	}
+	if len(entries2) != 1 {
+		t.Errorf("stream2: expected 1 index entry, got %d", len(entries2))
+	}
+
+	// Step 7: Verify WAL object record was created with correct refCount
+	// The WAL object record should be at /wal/objects/<domain>/<walId>
+	// We need to find it by scanning the keys
+	var walObjectRecord *WALObjectRecord
+	allKeys := metaStore.GetAllKeys()
+	for _, key := range allKeys {
+		if len(key) > 12 && key[:12] == "/wal/objects" {
+			result, err := metaStore.Get(ctx, key)
+			if err != nil || !result.Exists {
+				continue
+			}
+			var record WALObjectRecord
+			if err := json.Unmarshal(result.Value, &record); err == nil {
+				walObjectRecord = &record
+				break
+			}
+		}
+	}
+
+	if walObjectRecord == nil {
+		t.Error("WAL object record should exist")
+	} else {
+		// RefCount should equal number of stream chunks
+		if walObjectRecord.RefCount != 2 {
+			t.Errorf("WAL object record: expected RefCount 2, got %d", walObjectRecord.RefCount)
+		}
+		if walObjectRecord.Path == "" {
+			t.Error("WAL object record: Path should not be empty")
+		}
+		if walObjectRecord.SizeBytes <= 0 {
+			t.Error("WAL object record: SizeBytes should be positive")
+		}
+	}
+
+	// Step 2 & 8: Verify staging marker was deleted
+	// Staging markers are at /wal/staging/<domain>/<walId>
+	foundStaging := false
+	for _, key := range allKeys {
+		if len(key) > 12 && key[:12] == "/wal/staging" {
+			foundStaging = true
+			break
+		}
+	}
+	if foundStaging {
+		t.Error("staging marker should have been deleted after commit")
+	}
+}
+
+// TestCommitter_MultiStreamOffsetAllocation tests that offsets are allocated
+// correctly when multiple requests for the same stream are committed together.
+func TestCommitter_MultiStreamOffsetAllocation(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore)
+	streamID := "test-stream-offset-alloc"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Create multiple requests for the same stream
+	streamHash := parseStreamID(streamID)
+
+	requests := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    5,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           50,
+			Done:           make(chan struct{}),
+		},
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch2")}},
+			RecordCount:    3,
+			MinTimestampMs: 2000,
+			MaxTimestampMs: 3000,
+			Size:           30,
+			Done:           make(chan struct{}),
+		},
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch3")}},
+			RecordCount:    7,
+			MinTimestampMs: 3000,
+			MaxTimestampMs: 4000,
+			Size:           70,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit
+	err = committer.Commit(ctx, 0, requests)
+	if err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	// Verify all requests in the same chunk get contiguous offsets
+	// Total record count is 5+3+7 = 15
+	// First request: 0-5, Second: 5-8, Third: 8-15
+	if requests[0].Result.StartOffset != 0 || requests[0].Result.EndOffset != 5 {
+		t.Errorf("request 0: expected offsets [0,5), got [%d,%d)",
+			requests[0].Result.StartOffset, requests[0].Result.EndOffset)
+	}
+	if requests[1].Result.StartOffset != 5 || requests[1].Result.EndOffset != 8 {
+		t.Errorf("request 1: expected offsets [5,8), got [%d,%d)",
+			requests[1].Result.StartOffset, requests[1].Result.EndOffset)
+	}
+	if requests[2].Result.StartOffset != 8 || requests[2].Result.EndOffset != 15 {
+		t.Errorf("request 2: expected offsets [8,15), got [%d,%d)",
+			requests[2].Result.StartOffset, requests[2].Result.EndOffset)
+	}
+
+	// Verify HWM reflects total record count
+	hwm, _, err := streamMgr.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("failed to get HWM: %v", err)
+	}
+	if hwm != 15 {
+		t.Errorf("expected HWM 15, got %d", hwm)
+	}
+
+	// Verify index entry covers full range
+	entries, err := streamMgr.ListIndexEntries(ctx, streamID, 10)
+	if err != nil {
+		t.Fatalf("failed to list index entries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("expected 1 index entry, got %d", len(entries))
+	}
+	if len(entries) > 0 {
+		entry := entries[0]
+		if entry.StartOffset != 0 || entry.EndOffset != 15 {
+			t.Errorf("entry: expected offsets [0,15), got [%d,%d)",
+				entry.StartOffset, entry.EndOffset)
+		}
+		if entry.RecordCount != 15 {
+			t.Errorf("entry: expected RecordCount 15, got %d", entry.RecordCount)
+		}
+	}
+}
+
+// TestCommitter_SecondCommitContinuesOffsets verifies that a second commit
+// continues offset allocation from where the first left off.
+func TestCommitter_SecondCommitContinuesOffsets(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore)
+	streamID := "test-stream-sequential"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	streamHash := parseStreamID(streamID)
+
+	// First commit
+	requests1 := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("commit1-batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	err = committer.Commit(ctx, 0, requests1)
+	if err != nil {
+		t.Fatalf("first commit failed: %v", err)
+	}
+
+	// Verify first commit offsets
+	if requests1[0].Result.StartOffset != 0 || requests1[0].Result.EndOffset != 10 {
+		t.Errorf("first commit: expected offsets [0,10), got [%d,%d)",
+			requests1[0].Result.StartOffset, requests1[0].Result.EndOffset)
+	}
+
+	// Second commit
+	requests2 := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("commit2-batch1")}},
+			RecordCount:    5,
+			MinTimestampMs: 2000,
+			MaxTimestampMs: 3000,
+			Size:           50,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	err = committer.Commit(ctx, 0, requests2)
+	if err != nil {
+		t.Fatalf("second commit failed: %v", err)
+	}
+
+	// Verify second commit continues from HWM
+	if requests2[0].Result.StartOffset != 10 || requests2[0].Result.EndOffset != 15 {
+		t.Errorf("second commit: expected offsets [10,15), got [%d,%d)",
+			requests2[0].Result.StartOffset, requests2[0].Result.EndOffset)
+	}
+
+	// Verify final HWM
+	hwm, _, err := streamMgr.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("failed to get HWM: %v", err)
+	}
+	if hwm != 15 {
+		t.Errorf("expected HWM 15, got %d", hwm)
+	}
+
+	// Verify two index entries exist
+	entries, err := streamMgr.ListIndexEntries(ctx, streamID, 10)
+	if err != nil {
+		t.Fatalf("failed to list index entries: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("expected 2 index entries, got %d", len(entries))
+	}
+}
