@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -855,5 +857,517 @@ func TestCommitter_SecondCommitContinuesOffsets(t *testing.T) {
 	}
 	if len(entries) != 2 {
 		t.Errorf("expected 2 index entries, got %d", len(entries))
+	}
+}
+
+// --- WAL Write Failure Tests (produce-failure-wal-write task) ---
+
+// failingObjectStore is a mock that fails on Put to simulate WAL write failures.
+type failingObjectStore struct {
+	*mockObjectStore
+	failPut bool
+	putErr  error
+}
+
+func newFailingObjectStore(failPut bool) *failingObjectStore {
+	return &failingObjectStore{
+		mockObjectStore: newMockObjectStore(),
+		failPut:         failPut,
+		putErr:          errors.New("simulated S3 put failure"),
+	}
+}
+
+func (s *failingObjectStore) Put(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
+	if s.failPut {
+		return s.putErr
+	}
+	return s.mockObjectStore.Put(ctx, key, reader, size, contentType)
+}
+
+func (s *failingObjectStore) PutWithOptions(ctx context.Context, key string, reader io.Reader, size int64, contentType string, opts objectstore.PutOptions) error {
+	if s.failPut {
+		return s.putErr
+	}
+	return s.mockObjectStore.PutWithOptions(ctx, key, reader, size, contentType, opts)
+}
+
+var _ objectstore.Store = (*failingObjectStore)(nil)
+
+// TestCommitter_WALWriteFailure_NoMetadataCommit verifies that when WAL write fails,
+// no metadata commit occurs (no HWM update, no index entries, no WAL object record).
+func TestCommitter_WALWriteFailure_NoMetadataCommit(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newFailingObjectStore(true)
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore)
+	streamID := "test-stream-wal-fail"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Record initial state
+	hwmBefore, _, err := streamMgr.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("failed to get initial HWM: %v", err)
+	}
+
+	entriesBefore, err := streamMgr.ListIndexEntries(ctx, streamID, 10)
+	if err != nil {
+		t.Fatalf("failed to list initial index entries: %v", err)
+	}
+
+	// Count initial WAL object records
+	allKeysBefore := metaStore.GetAllKeys()
+	walRecordCountBefore := 0
+	for _, key := range allKeysBefore {
+		if len(key) > 12 && key[:12] == "/wal/objects" {
+			walRecordCountBefore++
+		}
+	}
+
+	// Create pending requests
+	streamHash := parseStreamID(streamID)
+	requests := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit - should fail due to WAL write failure
+	err = committer.Commit(ctx, 0, requests)
+	if err == nil {
+		t.Fatal("expected commit to fail due to WAL write failure")
+	}
+
+	// Verify error message indicates WAL failure
+	if !strings.Contains(err.Error(), "write to object store failed") &&
+		!strings.Contains(err.Error(), "flush WAL") {
+		t.Errorf("expected error to mention WAL/object store failure, got: %v", err)
+	}
+
+	// Verify no metadata changes occurred:
+
+	// 1. HWM should not have changed
+	hwmAfter, _, err := streamMgr.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("failed to get HWM after failure: %v", err)
+	}
+	if hwmAfter != hwmBefore {
+		t.Errorf("HWM should not have changed on WAL failure: was %d, now %d", hwmBefore, hwmAfter)
+	}
+
+	// 2. No new index entries should have been created
+	entriesAfter, err := streamMgr.ListIndexEntries(ctx, streamID, 10)
+	if err != nil {
+		t.Fatalf("failed to list index entries after failure: %v", err)
+	}
+	if len(entriesAfter) != len(entriesBefore) {
+		t.Errorf("index entries should not have changed on WAL failure: was %d, now %d",
+			len(entriesBefore), len(entriesAfter))
+	}
+
+	// 3. No new WAL object record should have been created
+	allKeysAfter := metaStore.GetAllKeys()
+	walRecordCountAfter := 0
+	for _, key := range allKeysAfter {
+		if len(key) > 12 && key[:12] == "/wal/objects" {
+			walRecordCountAfter++
+		}
+	}
+	if walRecordCountAfter != walRecordCountBefore {
+		t.Errorf("WAL object records should not have changed on WAL failure: was %d, now %d",
+			walRecordCountBefore, walRecordCountAfter)
+	}
+
+	// 4. Verify result was not populated
+	if requests[0].Result != nil {
+		t.Error("request Result should be nil when WAL write fails")
+	}
+}
+
+// TestCommitter_WALWriteFailure_StagingMarkerRemains verifies that when WAL write fails,
+// the staging marker remains for orphan GC to clean up.
+func TestCommitter_WALWriteFailure_StagingMarkerRemains(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newFailingObjectStore(true)
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore)
+	streamID := "test-stream-staging-remains"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Create pending requests
+	streamHash := parseStreamID(streamID)
+	requests := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit - should fail due to WAL write failure
+	err = committer.Commit(ctx, 0, requests)
+	if err == nil {
+		t.Fatal("expected commit to fail due to WAL write failure")
+	}
+
+	// Verify staging marker exists (it was written before the WAL object write failed)
+	allKeys := metaStore.GetAllKeys()
+	foundStaging := false
+	for _, key := range allKeys {
+		if len(key) > 12 && key[:12] == "/wal/staging" {
+			foundStaging = true
+			break
+		}
+	}
+
+	if !foundStaging {
+		t.Error("staging marker should remain after WAL write failure (for orphan GC)")
+	}
+}
+
+// TestCommitter_WALWriteFailure_ErrorReturned verifies that WAL write failure
+// returns an appropriate error to the caller.
+func TestCommitter_WALWriteFailure_ErrorReturned(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newFailingObjectStore(true)
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore)
+	streamID := "test-stream-error-return"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Create pending requests
+	streamHash := parseStreamID(streamID)
+	requests := []*PendingRequest{
+		{
+			StreamID:       streamHash,
+			StreamIDStr:    streamID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit
+	err = committer.Commit(ctx, 0, requests)
+
+	// Must return an error
+	if err == nil {
+		t.Fatal("expected error to be returned when WAL write fails")
+	}
+
+	// The error should be wrapped appropriately
+	// It should mention the produce/WAL context
+	errStr := err.Error()
+	if !strings.Contains(errStr, "WAL") && !strings.Contains(errStr, "flush") && !strings.Contains(errStr, "produce") {
+		t.Errorf("error should indicate WAL/produce failure context, got: %v", err)
+	}
+}
+
+// TestBuffer_WALWriteFailure_PropagatesError verifies that when WAL write fails,
+// the buffer correctly propagates the error to all pending requests.
+func TestBuffer_WALWriteFailure_PropagatesError(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newFailingObjectStore(true)
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore)
+	streamID := "test-stream-buffer-error"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Create buffer with the failing committer
+	buffer := NewBuffer(BufferConfig{
+		MaxBufferBytes: 10000,
+		FlushSizeBytes: 50, // Low threshold to trigger immediate flush
+		LingerMs:       0,
+		NumDomains:     4,
+		OnFlush:        committer.CreateFlushHandler(),
+	})
+	defer buffer.Close()
+
+	// Add a request (should trigger flush due to low threshold)
+	req, err := buffer.Add(ctx, streamID, []wal.BatchEntry{{Data: make([]byte, 100)}}, 10, 1000, 2000)
+	if err != nil {
+		t.Fatalf("failed to add to buffer: %v", err)
+	}
+
+	// Wait for the request to complete (with timeout)
+	select {
+	case <-req.Done:
+		// Request completed
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for request completion")
+	}
+
+	// Verify error was propagated to the request
+	if req.Err == nil {
+		t.Error("expected error to be propagated to request when WAL write fails")
+	}
+
+	// Verify result was not set
+	if req.Result != nil {
+		t.Error("expected Result to be nil when WAL write fails")
+	}
+}
+
+// TestBuffer_WALWriteFailure_DiscardsRequests verifies that the buffer discards
+// requests after a flush failure (does not retry automatically).
+func TestBuffer_WALWriteFailure_DiscardsRequests(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newFailingObjectStore(true)
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore)
+	streamID := "test-stream-buffer-discard"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Create buffer with the failing committer
+	buffer := NewBuffer(BufferConfig{
+		MaxBufferBytes: 10000,
+		FlushSizeBytes: 50, // Low threshold to trigger immediate flush
+		LingerMs:       0,
+		NumDomains:     4,
+		OnFlush:        committer.CreateFlushHandler(),
+	})
+	defer buffer.Close()
+
+	// Add a request (should trigger flush due to low threshold)
+	req, err := buffer.Add(ctx, streamID, []wal.BatchEntry{{Data: make([]byte, 100)}}, 10, 1000, 2000)
+	if err != nil {
+		t.Fatalf("failed to add to buffer: %v", err)
+	}
+
+	// Wait for the request to complete
+	select {
+	case <-req.Done:
+		// Request completed
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for request completion")
+	}
+
+	// Verify error was propagated
+	if req.Err == nil {
+		t.Fatal("expected error to be propagated")
+	}
+
+	// Allow a brief moment for buffer cleanup
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify the buffer is now empty (requests were discarded, not retained for retry)
+	stats := buffer.Stats()
+	if stats.PendingCount != 0 {
+		t.Errorf("expected 0 pending requests after failed flush, got %d", stats.PendingCount)
+	}
+	if stats.TotalBytes != 0 {
+		t.Errorf("expected 0 total bytes after failed flush, got %d", stats.TotalBytes)
+	}
+}
+
+// TestBuffer_WALWriteFailure_SubsequentRequestsSucceed verifies that after a
+// WAL write failure, subsequent requests can succeed if the failure is transient.
+func TestBuffer_WALWriteFailure_SubsequentRequestsSucceed(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newFailingObjectStore(true)
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create a stream
+	streamMgr := index.NewStreamManager(metaStore)
+	streamID := "test-stream-subsequent-success"
+
+	err := streamMgr.CreateStreamWithID(ctx, streamID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	// Create buffer
+	buffer := NewBuffer(BufferConfig{
+		MaxBufferBytes: 10000,
+		FlushSizeBytes: 50,
+		LingerMs:       0,
+		NumDomains:     4,
+		OnFlush:        committer.CreateFlushHandler(),
+	})
+	defer buffer.Close()
+
+	// First request - should fail
+	req1, err := buffer.Add(ctx, streamID, []wal.BatchEntry{{Data: make([]byte, 100)}}, 10, 1000, 2000)
+	if err != nil {
+		t.Fatalf("failed to add first request: %v", err)
+	}
+
+	select {
+	case <-req1.Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for first request")
+	}
+
+	if req1.Err == nil {
+		t.Fatal("expected first request to fail")
+	}
+
+	// Now fix the object store (simulate transient failure resolved)
+	objStore.failPut = false
+
+	// Second request - should succeed
+	req2, err := buffer.Add(ctx, streamID, []wal.BatchEntry{{Data: make([]byte, 100)}}, 5, 2000, 3000)
+	if err != nil {
+		t.Fatalf("failed to add second request: %v", err)
+	}
+
+	select {
+	case <-req2.Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for second request")
+	}
+
+	if req2.Err != nil {
+		t.Fatalf("expected second request to succeed, got error: %v", req2.Err)
+	}
+
+	if req2.Result == nil {
+		t.Error("expected second request to have Result set")
+	}
+
+	// Verify HWM was updated only for the successful request
+	hwm, _, err := streamMgr.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("failed to get HWM: %v", err)
+	}
+	// Only the second request's 5 records should be committed
+	if hwm != 5 {
+		t.Errorf("expected HWM 5 (only second request committed), got %d", hwm)
+	}
+}
+
+// TestCommitter_WALWriteFailure_MultipleStreams verifies that when WAL write
+// fails, no metadata is committed for any stream in the batch.
+func TestCommitter_WALWriteFailure_MultipleStreams(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newFailingObjectStore(true)
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	// Create two streams
+	streamMgr := index.NewStreamManager(metaStore)
+	stream1ID := "test-stream-multi-1"
+	stream2ID := "test-stream-multi-2"
+
+	err := streamMgr.CreateStreamWithID(ctx, stream1ID, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("failed to create stream1: %v", err)
+	}
+	err = streamMgr.CreateStreamWithID(ctx, stream2ID, "test-topic", 1)
+	if err != nil {
+		t.Fatalf("failed to create stream2: %v", err)
+	}
+
+	// Record initial state
+	hwm1Before, _, _ := streamMgr.GetHWM(ctx, stream1ID)
+	hwm2Before, _, _ := streamMgr.GetHWM(ctx, stream2ID)
+
+	// Create pending requests for both streams
+	stream1Hash := parseStreamID(stream1ID)
+	stream2Hash := parseStreamID(stream2ID)
+
+	requests := []*PendingRequest{
+		{
+			StreamID:       stream1Hash,
+			StreamIDStr:    stream1ID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+		{
+			StreamID:       stream2Hash,
+			StreamIDStr:    stream2ID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch2")}},
+			RecordCount:    5,
+			MinTimestampMs: 1500,
+			MaxTimestampMs: 2500,
+			Size:           80,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	// Execute commit - should fail
+	err = committer.Commit(ctx, 0, requests)
+	if err == nil {
+		t.Fatal("expected commit to fail")
+	}
+
+	// Verify no HWM changes for either stream
+	hwm1After, _, _ := streamMgr.GetHWM(ctx, stream1ID)
+	hwm2After, _, _ := streamMgr.GetHWM(ctx, stream2ID)
+
+	if hwm1After != hwm1Before {
+		t.Errorf("stream1 HWM should not change on WAL failure: was %d, now %d", hwm1Before, hwm1After)
+	}
+	if hwm2After != hwm2Before {
+		t.Errorf("stream2 HWM should not change on WAL failure: was %d, now %d", hwm2Before, hwm2After)
+	}
+
+	// Verify no results set for either request
+	if requests[0].Result != nil {
+		t.Error("request 0 Result should be nil on WAL failure")
+	}
+	if requests[1].Result != nil {
+		t.Error("request 1 Result should be nil on WAL failure")
 	}
 }

@@ -746,7 +746,7 @@
     "scope": [
       "internal/produce/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "produce-failure-metadata-commit",

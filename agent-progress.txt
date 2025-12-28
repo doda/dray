@@ -176,3 +176,9 @@ Start with project-setup, then follow spec phases:
 - Verified extractProducerId parsing handles short/truncated batches safely
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T03:07:10Z] Reviewed produce-failure-wal-write
+- Scope: internal/produce/commit_test.go, internal/produce/commit.go, internal/produce/buffer.go, task_list.json
+- Verified WAL flush failure returns error before metadata commit and leaves staging marker for GC
+- Verified tests cover no HWM/index updates, error propagation through buffer, and transient failure recovery
+- Issues found: none
+- Tests: not run (already run by working agent)
