@@ -1431,7 +1431,7 @@
     "scope": [
       "internal/groups/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "classic-group-rebalance-test",

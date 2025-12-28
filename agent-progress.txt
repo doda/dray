@@ -451,3 +451,10 @@ Start with project-setup, then follow spec phases:
 - Issues found: partition key formatting in no-overlap tests used rune math; unused assigned flag in assignor
 - Resolution: use strconv.FormatInt for topic/partition keys; removed unused assigned flag
 - Tests: not run (already run by working agent)
+[2025-12-28T10:35:12Z] Reviewed session-timeout-sweep
+- Scope: internal/groups/session_sweep.go, internal/groups/session_sweep_test.go, task_list.json
+- Verified sweep runs only for lease-holder, checks last heartbeat, and removes expired members
+- Verified sweep skips Dead/Empty groups and triggers PreparingRebalance or Empty on removals
+- Verified start/stop loop behavior and zero-timeout handling via tests
+- Issues found: none
+- Tests: not run (already run by working agent)
