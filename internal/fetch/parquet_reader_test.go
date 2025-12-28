@@ -342,6 +342,28 @@ func TestBuildKafkaRecordBatch_ValidStructure(t *testing.T) {
 	}
 }
 
+func TestBuildKafkaRecordBatch_ClearsCompressionBits(t *testing.T) {
+	rec := ParquetRecordWithHeaders{
+		Partition:  0,
+		Offset:     100,
+		Timestamp:  1000,
+		Key:        []byte("key"),
+		Value:      []byte("value"),
+		Attributes: int32(CompressionSnappy | 0x08),
+	}
+
+	batch := buildKafkaRecordBatch(rec)
+
+	if GetCompressionType(batch) != CompressionNone {
+		t.Errorf("expected compression type none, got %d", GetCompressionType(batch))
+	}
+
+	expectedAttrs := int16(rec.Attributes) &^ 0x07
+	if GetAttributes(batch) != expectedAttrs {
+		t.Errorf("expected attributes 0x%x, got 0x%x", expectedAttrs, GetAttributes(batch))
+	}
+}
+
 func TestAppendVarint(t *testing.T) {
 	tests := []struct {
 		value    int64

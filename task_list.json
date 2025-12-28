@@ -1711,7 +1711,7 @@
     "scope": [
       "internal/fetch/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "wal-to-parquet-converter",

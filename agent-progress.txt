@@ -565,3 +565,11 @@ Start with project-setup, then follow spec phases:
 - Fix applied: cast NumRows to int with overflow guard in reader and update test allocation
 - Issues found: none after fix
 - Tests: not run (per instructions; prior agent already ran)
+[review] parquet-reader
+- Scope: internal/fetch/parquet_reader.go, internal/fetch/parquet_reader_test.go, internal/fetch/fetcher.go, task_list.json
+- Verified Parquet reader loads records via parquet-go and filters offsets within entry range
+- Verified fetcher routes Parquet entries through ParquetReader and patches batch offsets
+- Fix applied: clear compression bits in reconstructed batch attributes for uncompressed output
+- Added coverage for attribute compression clearing in parquet reader tests
+- Issues found: none after fix
+- Tests: not run (already run by working agent)

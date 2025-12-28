@@ -212,8 +212,9 @@ func buildKafkaRecordBatch(rec ParquetRecordWithHeaders) []byte {
 	// Start of CRC region
 	crcStart := offset
 
-	// attributes (0 = no compression, no timestamp type, etc.)
-	binary.BigEndian.PutUint16(batch[offset:], uint16(int16(rec.Attributes)))
+	// attributes: clear compression bits since we emit uncompressed batches.
+	attributes := int16(rec.Attributes) &^ 0x07
+	binary.BigEndian.PutUint16(batch[offset:], uint16(attributes))
 	offset += 2
 
 	// lastOffsetDelta (0 for single record)
