@@ -40,6 +40,8 @@ func main() {
 		runBroker(os.Args[2:])
 	case "compactor":
 		runCompactor(os.Args[2:])
+	case "admin":
+		runAdmin(os.Args[2:])
 	case "version":
 		fmt.Printf("drayd version %s (built %s, commit %s)\n", version, buildTime, gitCommit)
 	case "help", "-h", "--help":
@@ -57,6 +59,7 @@ func printUsage() {
 Commands:
   broker      Start the Kafka protocol server (broker mode)
   compactor   Start the compaction worker
+  admin       Administrative commands (topics, groups, configs, status)
   version     Print version information
 
 Run 'drayd <command> --help' for more information on a command.`)

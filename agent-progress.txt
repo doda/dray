@@ -824,3 +824,11 @@ Start with project-setup, then follow spec phases:
 - Fixed: close object store during shutdown
 - Issues found: none after fix
 - Tests: not run (trusted prior run by working agent)
+[review] drayd-admin-cli
+- Scope: cmd/drayd/admin.go, cmd/drayd/admin_test.go, cmd/drayd/main.go, internal/config/config.go, task_list.json
+- Verified admin subcommand routing is wired in main and usage text includes admin command
+- Verified topic/group/config/status subcommands load config without validation and operate via metadata store
+- Verified config load fallback handles missing config file and preserves env overrides
+- Verified admin tests cover topic/group/config operations, status, and initAdminOpts behavior
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)

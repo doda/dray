@@ -188,6 +188,36 @@ func LoadFromBytes(data []byte) (*Config, error) {
 	return cfg, nil
 }
 
+// LoadNoValidate loads configuration from the default path without validation.
+// This is useful for admin CLI commands that may not need full configuration.
+func LoadNoValidate() (*Config, error) {
+	return LoadFromPathNoValidate(DefaultConfigPath)
+}
+
+// LoadFromPathNoValidate loads configuration from a file path without validation.
+// This is useful for admin CLI commands that may not need full configuration.
+func LoadFromPathNoValidate(path string) (*Config, error) {
+	cfg := Default()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// File doesn't exist - use defaults with env overrides
+			applyEnvOverrides(cfg)
+			return cfg, nil
+		}
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	applyEnvOverrides(cfg)
+
+	return cfg, nil
+}
+
 // Validate validates the configuration and returns an error if invalid.
 func (c *Config) Validate() error {
 	var errs []error

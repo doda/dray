@@ -2386,7 +2386,7 @@
     "scope": [
       "cmd/drayd/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "invariant-i1-test",
