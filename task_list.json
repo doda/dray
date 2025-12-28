@@ -1343,7 +1343,7 @@
     "scope": [
       "internal/protocol/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "list-groups-handler",
