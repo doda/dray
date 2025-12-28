@@ -11,6 +11,7 @@ import (
 // Fetcher handles fetching record batches from WAL or Parquet storage.
 type Fetcher struct {
 	walReader     *WALReader
+	parquetReader *ParquetReader
 	streamManager *index.StreamManager
 }
 
@@ -18,6 +19,7 @@ type Fetcher struct {
 func NewFetcher(store objectstore.Store, streamManager *index.StreamManager) *Fetcher {
 	return &Fetcher{
 		walReader:     NewWALReader(store),
+		parquetReader: NewParquetReader(store),
 		streamManager: streamManager,
 	}
 }
@@ -91,8 +93,10 @@ func (f *Fetcher) Fetch(ctx context.Context, req *FetchRequest) (*FetchResponse,
 		}
 
 	case index.FileTypeParquet:
-		// Parquet reading is not yet implemented
-		return nil, errors.New("fetch: parquet reading not yet implemented")
+		fetchResult, err = f.parquetReader.ReadBatches(ctx, entry, req.FetchOffset, req.MaxBytes)
+		if err != nil {
+			return nil, err
+		}
 
 	default:
 		return nil, errors.New("fetch: unknown file type")
@@ -100,7 +104,7 @@ func (f *Fetcher) Fetch(ctx context.Context, req *FetchRequest) (*FetchResponse,
 
 	// Patch batch offsets
 	// The batches from WAL have baseOffset=0, we need to set them to the assigned offsets
-	_, err = PatchBatches(fetchResult.Batches, entry.StartOffset)
+	_, err = PatchBatches(fetchResult.Batches, fetchResult.StartOffset)
 	if err != nil {
 		return nil, err
 	}

@@ -212,3 +212,12 @@ Start with project-setup, then follow spec phases:
 - Verified error handling for missing objects, invalid file types, truncated chunks, and offset-out-of-range
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T05:07:39Z] Reviewed fetch-parquet-reader
+- Scope: internal/fetch/parquet_reader.go, internal/fetch/parquet_reader_test.go, internal/fetch/fetcher.go, task_list.json
+- Verified Parquet reader loads records, filters by offset range, reconstructs uncompressed Kafka record batches, and preserves header order
+- Verified batches are patchable by existing offset patching helpers
+- Issue found: baseOffset patching used entry.StartOffset even when fetchOffset skips earlier batches
+- Fix: patch batches starting from fetchResult.StartOffset so base offsets match returned records
+- Issue found: Parquet batch attributes/producer fields were ignored; ReaderAt returned nil on short read
+- Fix: read attributes/producer fields into batch headers and return io.EOF on short ReadAt
+- Tests: not run (already run by working agent)

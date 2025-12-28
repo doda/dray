@@ -847,7 +847,7 @@
     "scope": [
       "internal/fetch/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "record-batch-patching",
