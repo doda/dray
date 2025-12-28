@@ -9,6 +9,7 @@ import (
 
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
+	"github.com/dray-io/dray/internal/metrics"
 	"github.com/dray-io/dray/internal/objectstore"
 	"github.com/google/uuid"
 )
@@ -54,6 +55,9 @@ type StagingWriteResult struct {
 type StagingWriterConfig struct {
 	// PathFormatter generates object storage paths. If nil, DefaultPathFormatter is used.
 	PathFormatter PathFormatter
+
+	// Metrics is an optional WAL metrics recorder. If nil, no metrics are recorded.
+	Metrics *metrics.WALMetrics
 }
 
 // StagingWriter wraps Writer with staging marker support for orphan detection.
@@ -67,20 +71,26 @@ type StagingWriter struct {
 	metaDomain    *uint32
 	chunks        []Chunk
 	closed        bool
+	metrics       *metrics.WALMetrics
 }
 
 // NewStagingWriter creates a new staging-aware WAL writer.
 // The metaStore is used to write staging markers for orphan detection.
 func NewStagingWriter(store objectstore.Store, metaStore metadata.MetadataStore, cfg *StagingWriterConfig) *StagingWriter {
 	var pf PathFormatter = &DefaultPathFormatter{}
-	if cfg != nil && cfg.PathFormatter != nil {
-		pf = cfg.PathFormatter
+	var walMetrics *metrics.WALMetrics
+	if cfg != nil {
+		if cfg.PathFormatter != nil {
+			pf = cfg.PathFormatter
+		}
+		walMetrics = cfg.Metrics
 	}
 	return &StagingWriter{
 		store:         store,
 		metaStore:     metaStore,
 		pathFormatter: pf,
 		chunks:        make([]Chunk, 0),
+		metrics:       walMetrics,
 	}
 }
 
@@ -130,6 +140,7 @@ func (w *StagingWriter) Flush(ctx context.Context) (*StagingWriteResult, error) 
 		return nil, ErrEmptyWAL
 	}
 
+	flushStart := time.Now()
 	walID := uuid.New()
 	createdAt := time.Now().UnixMilli()
 	metaDomain := *w.metaDomain
@@ -196,6 +207,12 @@ func (w *StagingWriter) Flush(ctx context.Context) (*StagingWriteResult, error) 
 			ByteOffset:     layout.ByteOffset,
 			ByteLength:     layout.ByteLength,
 		}
+	}
+
+	// Record WAL metrics if configured
+	if w.metrics != nil {
+		flushDuration := time.Since(flushStart).Seconds()
+		w.metrics.RecordFlush(size, flushDuration)
 	}
 
 	w.Reset()

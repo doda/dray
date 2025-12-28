@@ -10,6 +10,9 @@ import (
 
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
+	"github.com/dray-io/dray/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // mockMetadataStore implements metadata.MetadataStore for testing.
@@ -627,5 +630,145 @@ func TestStagingWriterChunkOffsets(t *testing.T) {
 	// Second chunk (StreamID=300) has 2 batches: (4+1) + (4+1) = 10 bytes
 	if result.ChunkOffsets[1].ByteLength != 10 {
 		t.Errorf("ChunkOffsets[1].ByteLength = %d, want 10", result.ChunkOffsets[1].ByteLength)
+	}
+}
+
+func TestStagingWriterWithMetrics(t *testing.T) {
+	objStore := newMockStore()
+	metaStore := newMockMetadataStore()
+
+	// Create metrics with a custom registry
+	reg := prometheus.NewRegistry()
+	walMetrics := metrics.NewWALMetricsWithRegistry(reg)
+
+	w := NewStagingWriter(objStore, metaStore, &StagingWriterConfig{
+		Metrics: walMetrics,
+	})
+	defer w.Close()
+
+	// Perform first flush
+	chunk1 := Chunk{
+		StreamID:    1,
+		RecordCount: 10,
+		Batches:     []BatchEntry{{Data: []byte("batch-data-1")}},
+	}
+	w.AddChunk(chunk1, 0)
+
+	result1, err := w.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("First Flush failed: %v", err)
+	}
+
+	// Perform second flush
+	chunk2 := Chunk{
+		StreamID:    2,
+		RecordCount: 5,
+		Batches:     []BatchEntry{{Data: []byte("batch-data-2")}},
+	}
+	w.AddChunk(chunk2, 0)
+
+	result2, err := w.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("Second Flush failed: %v", err)
+	}
+
+	// Verify objects created counter
+	counterMetric := &dto.Metric{}
+	if err := walMetrics.ObjectsCreatedTotal.Write(counterMetric); err != nil {
+		t.Fatalf("failed to write counter: %v", err)
+	}
+	if got := counterMetric.Counter.GetValue(); got != 2 {
+		t.Errorf("objects created = %f, want 2", got)
+	}
+
+	// Verify size histogram has 2 samples
+	sizeMetric := &dto.Metric{}
+	if err := walMetrics.SizeHistogram.Write(sizeMetric); err != nil {
+		t.Fatalf("failed to write size metric: %v", err)
+	}
+	if got := sizeMetric.Histogram.GetSampleCount(); got != 2 {
+		t.Errorf("size sample count = %d, want 2", got)
+	}
+	// The sum should match the total bytes of both WAL objects
+	expectedSum := float64(result1.Size + result2.Size)
+	if got := sizeMetric.Histogram.GetSampleSum(); got != expectedSum {
+		t.Errorf("size sum = %f, want %f", got, expectedSum)
+	}
+
+	// Verify latency histogram has 2 samples
+	latencyMetric := &dto.Metric{}
+	if err := walMetrics.FlushLatencyHistogram.Write(latencyMetric); err != nil {
+		t.Fatalf("failed to write latency metric: %v", err)
+	}
+	if got := latencyMetric.Histogram.GetSampleCount(); got != 2 {
+		t.Errorf("latency sample count = %d, want 2", got)
+	}
+	// Latencies should be positive (non-zero)
+	if latencyMetric.Histogram.GetSampleSum() <= 0 {
+		t.Error("expected positive latency sum")
+	}
+}
+
+func TestStagingWriterWithMetricsNil(t *testing.T) {
+	// Verify that flush works correctly when metrics is nil
+	objStore := newMockStore()
+	metaStore := newMockMetadataStore()
+
+	w := NewStagingWriter(objStore, metaStore, nil)
+	defer w.Close()
+
+	chunk := Chunk{
+		StreamID:    1,
+		RecordCount: 10,
+		Batches:     []BatchEntry{{Data: []byte("batch-data")}},
+	}
+	w.AddChunk(chunk, 0)
+
+	_, err := w.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+}
+
+func TestStagingWriterMetricsNotRecordedOnError(t *testing.T) {
+	objStore := newMockStore()
+	objStore.putErr = errors.New("storage unavailable")
+	metaStore := newMockMetadataStore()
+
+	reg := prometheus.NewRegistry()
+	walMetrics := metrics.NewWALMetricsWithRegistry(reg)
+
+	w := NewStagingWriter(objStore, metaStore, &StagingWriterConfig{
+		Metrics: walMetrics,
+	})
+	defer w.Close()
+
+	chunk := Chunk{
+		StreamID:    1,
+		RecordCount: 10,
+		Batches:     []BatchEntry{{Data: []byte("batch-data")}},
+	}
+	w.AddChunk(chunk, 0)
+
+	_, err := w.Flush(context.Background())
+	if err == nil {
+		t.Fatal("expected error from Flush")
+	}
+
+	// Verify no metrics were recorded (because flush failed)
+	counterMetric := &dto.Metric{}
+	if err := walMetrics.ObjectsCreatedTotal.Write(counterMetric); err != nil {
+		t.Fatalf("failed to write counter: %v", err)
+	}
+	if got := counterMetric.Counter.GetValue(); got != 0 {
+		t.Errorf("objects created = %f, want 0 (no metrics on failure)", got)
+	}
+
+	sizeMetric := &dto.Metric{}
+	if err := walMetrics.SizeHistogram.Write(sizeMetric); err != nil {
+		t.Fatalf("failed to write size metric: %v", err)
+	}
+	if got := sizeMetric.Histogram.GetSampleCount(); got != 0 {
+		t.Errorf("size sample count = %d, want 0 (no metrics on failure)", got)
 	}
 }

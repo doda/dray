@@ -766,3 +766,11 @@ Start with project-setup, then follow spec phases:
 - Verified Prometheus /metrics server exposes fetch metrics and supports custom registry
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[review] wal-metrics
+- Scope: internal/metrics/doc.go, internal/metrics/wal.go, internal/metrics/wal_test.go, internal/wal/staging.go, internal/wal/staging_test.go, task_list.json
+- Verified WAL metrics types, buckets, and helper methods; metrics registered with default/custom registries
+- Verified staging writer records flush size/latency and increments object count only on success
+- Verified tests cover histogram/counter increments and metrics omission on failure
+- Issues found: minor comment mismatch in WAL size bucket description
+- Fix applied: aligned bucket description with 128MB upper bucket in internal/metrics/wal.go
+- Tests: not run (trusted prior run by working agent)
