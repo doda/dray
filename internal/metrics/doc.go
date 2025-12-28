@@ -8,6 +8,11 @@
 //   - WAL flush size histogram (bytes per WAL object)
 //   - WAL flush latency histogram (seconds per flush operation)
 //   - WAL objects created counter (for computing objects/second via rate())
+//   - Object store operation metrics:
+//   - Put latency histogram (seconds per Put operation)
+//   - Get/GetRange latency histograms (seconds per read operation)
+//   - Operation counts by type (put, get, get_range, head, delete, list) and status
+//   - Bytes transferred counters by direction (read, write)
 //   - Compaction backlog metrics:
 //   - Total WAL bytes pending compaction
 //   - Total WAL files pending compaction
@@ -35,6 +40,7 @@
 //	compactionMetrics := metrics.NewCompactionMetrics()
 //	gcMetrics := metrics.NewGCMetrics()
 //	oxiaMetrics := metrics.NewOxiaMetrics()
+//	objectStoreMetrics := metrics.NewObjectStoreMetrics()
 //
 //	// Wire into handlers
 //	produceHandler := protocol.NewProduceHandler(...).WithMetrics(produceMetrics)
@@ -44,6 +50,10 @@
 //	// Wrap Oxia store with instrumentation
 //	rawStore, _ := oxia.New(ctx, oxia.Config{...})
 //	instrumentedStore := metadata.NewInstrumentedStore(rawStore, oxiaMetrics)
+//
+//	// Wrap object store with instrumentation
+//	rawObjStore, _ := s3.New(ctx, s3.Config{...})
+//	instrumentedObjStore := objectstore.NewInstrumentedStore(rawObjStore, objectStoreMetrics)
 //
 //	// Configure compaction backlog alerting thresholds
 //	compactionMetrics.SetThresholds(1024*1024*1024, 1000) // 1GB or 1000 files
