@@ -2478,7 +2478,7 @@
     "scope": [
       "tests/integration/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "compatibility-harness",
