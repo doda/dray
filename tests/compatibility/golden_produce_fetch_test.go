@@ -548,7 +548,7 @@ func TestGolden_ProduceResponse_WithHeaders(t *testing.T) {
 
 	headers := []kgo.RecordHeader{
 		{Key: "content-type", Value: []byte("application/json")},
-		{Key: "correlation-id", Value: []byte(uuid.New().String())},
+		{Key: "correlation-id", Value: []byte(fmt.Sprintf("corr-%d", time.Now().UnixNano()))},
 		{Key: "empty-header", Value: []byte{}},
 	}
 

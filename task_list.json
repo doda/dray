@@ -2533,7 +2533,7 @@
     "scope": [
       "tests/compatibility/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "property-test-offset-index",
