@@ -108,3 +108,11 @@ Start with project-setup, then follow spec phases:
 - Verified notification key parsing for /streams/<id>/hwm
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T01:16:08Z] Reviewed offset-index-append
+- Scope: internal/index/entry.go, internal/index/entry_test.go
+- Verified AppendIndexEntry reads hwm with version, allocates offset range, builds offset-index key, and writes entry
+- Verified transaction updates hwm and index entry atomically in a single Txn
+- Verified cumulative size is derived from last index entry and tests cover multi-append sizing
+- Verified batchIndex serialization and retrieval in index entries
+- Issues found: none
+- Tests: not run (already run by working agent)
