@@ -1790,7 +1790,7 @@
     "scope": [
       "tests/integration/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "compaction-crash-recovery-test",

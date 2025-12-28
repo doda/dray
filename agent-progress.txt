@@ -596,3 +596,10 @@ Start with project-setup, then follow spec phases:
 - Fix applied: use parquetRecordCount for Parquet entry counts and validate positive record count
 - Issues found: none after fixes
 - Tests: not run (already run by working agent)
+[review] compaction-fetch-consistency-test
+- Scope: tests/integration/compaction_fetch_consistency_test.go, task_list.json
+- Verified new integration tests compare WAL vs Parquet fetch results before/after compaction
+- Checked helper parsing/building of record batches and record-level comparisons (offsets, timestamps, keys, values, headers)
+- Confirmed compaction path swaps WAL index for Parquet and fetches re-read from compacted storage
+- Issues found: none
+- Tests: not run (working agent already ran)
