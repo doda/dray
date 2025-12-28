@@ -2203,7 +2203,7 @@
     "scope": [
       "internal/metrics/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "fetch-latency-metrics",

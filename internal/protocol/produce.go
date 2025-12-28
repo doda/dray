@@ -7,6 +7,7 @@ import (
 
 	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/logging"
+	"github.com/dray-io/dray/internal/metrics"
 	"github.com/dray-io/dray/internal/produce"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/dray-io/dray/internal/wal"
@@ -43,6 +44,7 @@ type ProduceHandler struct {
 	topicStore *topics.Store
 	buffer     *produce.Buffer
 	enforcer   *auth.Enforcer
+	metrics    *metrics.ProduceMetrics
 }
 
 // NewProduceHandler creates a new Produce handler.
@@ -60,6 +62,12 @@ func (h *ProduceHandler) WithEnforcer(enforcer *auth.Enforcer) *ProduceHandler {
 	return h
 }
 
+// WithMetrics sets the produce metrics collector for this handler.
+func (h *ProduceHandler) WithMetrics(m *metrics.ProduceMetrics) *ProduceHandler {
+	h.metrics = m
+	return h
+}
+
 // Handle processes a Produce request.
 // Per spec section 9.3, it:
 // 1. Validates topic and partition existence
@@ -67,9 +75,20 @@ func (h *ProduceHandler) WithEnforcer(enforcer *auth.Enforcer) *ProduceHandler {
 // 3. Buffers incoming record batches by MetaDomain
 // 4. Waits for flush completion
 // 5. Returns offsets only after WAL + metadata commit
-func (h *ProduceHandler) Handle(ctx context.Context, version int16, req *kmsg.ProduceRequest) *kmsg.ProduceResponse {
-	resp := kmsg.NewPtrProduceResponse()
+func (h *ProduceHandler) Handle(ctx context.Context, version int16, req *kmsg.ProduceRequest) (resp *kmsg.ProduceResponse) {
+	startTime := time.Now()
+
+	resp = kmsg.NewPtrProduceResponse()
 	resp.SetVersion(version)
+
+	// Record metrics on exit
+	defer func() {
+		if h.metrics != nil {
+			duration := time.Since(startTime).Seconds()
+			hasError := h.responseHasError(resp)
+			h.metrics.RecordLatency(duration, !hasError)
+		}
+	}()
 
 	// Validate acks - Dray only supports acks=-1 (all)
 	// Per Kafka protocol, acks can be 0, 1, or -1
@@ -77,7 +96,8 @@ func (h *ProduceHandler) Handle(ctx context.Context, version int16, req *kmsg.Pr
 	// For acks=1 or -1, we need to wait for commit
 	if req.Acks != 0 && req.Acks != 1 && req.Acks != -1 {
 		// Invalid acks value
-		return h.buildErrorResponse(version, req, errInvalidRequiredAcks)
+		resp = h.buildErrorResponse(version, req, errInvalidRequiredAcks)
+		return resp
 	}
 
 	// Reject transactional requests per spec 14.3
@@ -86,7 +106,8 @@ func (h *ProduceHandler) Handle(ctx context.Context, version int16, req *kmsg.Pr
 		logging.FromCtx(ctx).Warnf("rejecting transactional produce request: transactions are explicitly deferred per spec 2.2/14.3", map[string]any{
 			"transactionId": *req.TransactionID,
 		})
-		return h.buildErrorResponse(version, req, errUnsupportedForMessageFormat)
+		resp = h.buildErrorResponse(version, req, errUnsupportedForMessageFormat)
+		return resp
 	}
 
 	// Process each topic
@@ -265,6 +286,18 @@ func (h *ProduceHandler) buildPartitionError(version int16, partition int32, err
 	resp.ErrorCode = errorCode
 	resp.BaseOffset = -1
 	return resp
+}
+
+// responseHasError checks if any partition in the response has an error code.
+func (h *ProduceHandler) responseHasError(resp *kmsg.ProduceResponse) bool {
+	for _, topic := range resp.Topics {
+		for _, partition := range topic.Partitions {
+			if partition.ErrorCode != errNoError {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // errInvalidRecordBatch indicates the record batch format is invalid.

@@ -8,8 +8,11 @@ import (
 	"time"
 
 	"github.com/dray-io/dray/internal/metadata"
+	"github.com/dray-io/dray/internal/metrics"
 	"github.com/dray-io/dray/internal/produce"
 	"github.com/dray-io/dray/internal/topics"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
@@ -1091,4 +1094,169 @@ func buildRecordBatchWithMagic(recordCount int, magic byte) []byte {
 	binary.BigEndian.PutUint32(batch[17:21], crcValue)
 
 	return batch
+}
+
+// TestProduceHandler_MetricsRecording verifies that produce latency metrics are recorded correctly.
+func TestProduceHandler_MetricsRecording(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx := context.Background()
+
+	// Create a test topic with 3 partitions
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 3,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	// Create buffer with immediate flush for tests
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{
+					StartOffset: 0,
+					EndOffset:   int64(req.RecordCount),
+				}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	// Create metrics with custom registry
+	reg := prometheus.NewRegistry()
+	m := metrics.NewProduceMetricsWithRegistry(reg)
+
+	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer).WithMetrics(m)
+
+	t.Run("successful produce records success metric", func(t *testing.T) {
+		req := kmsg.NewPtrProduceRequest()
+		req.Acks = -1
+		req.SetVersion(9)
+
+		topicReq := kmsg.NewProduceRequestTopic()
+		topicReq.Topic = "test-topic"
+
+		partReq := kmsg.NewProduceRequestTopicPartition()
+		partReq.Partition = 0
+		partReq.Records = buildRecordBatchWithMagic(1, 2)
+
+		topicReq.Partitions = append(topicReq.Partitions, partReq)
+		req.Topics = append(req.Topics, topicReq)
+
+		resp := handler.Handle(ctx, 9, req)
+
+		if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+			t.Fatalf("unexpected response structure")
+		}
+		if resp.Topics[0].Partitions[0].ErrorCode != 0 {
+			t.Fatalf("expected success, got error code %d", resp.Topics[0].Partitions[0].ErrorCode)
+		}
+
+		// Verify success metric was recorded
+		successCounter := m.RequestsTotal.WithLabelValues(metrics.StatusSuccess)
+		successMetric := &dto.Metric{}
+		if err := successCounter.Write(successMetric); err != nil {
+			t.Fatalf("failed to read success counter: %v", err)
+		}
+		if successMetric.Counter.GetValue() < 1 {
+			t.Error("expected at least 1 success counter increment")
+		}
+
+		// Verify histogram was populated
+		successHist := m.LatencyHistogram.WithLabelValues(metrics.StatusSuccess)
+		histMetric := &dto.Metric{}
+		if err := successHist.(prometheus.Metric).Write(histMetric); err != nil {
+			t.Fatalf("failed to read histogram: %v", err)
+		}
+		if histMetric.Histogram.GetSampleCount() < 1 {
+			t.Error("expected at least 1 histogram sample")
+		}
+	})
+
+	t.Run("failed produce records failure metric", func(t *testing.T) {
+		req := kmsg.NewPtrProduceRequest()
+		req.Acks = -1
+		req.SetVersion(9)
+
+		topicReq := kmsg.NewProduceRequestTopic()
+		topicReq.Topic = "nonexistent-topic"
+
+		partReq := kmsg.NewProduceRequestTopicPartition()
+		partReq.Partition = 0
+		partReq.Records = buildRecordBatchWithMagic(1, 2)
+
+		topicReq.Partitions = append(topicReq.Partitions, partReq)
+		req.Topics = append(req.Topics, topicReq)
+
+		resp := handler.Handle(ctx, 9, req)
+
+		if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+			t.Fatalf("unexpected response structure")
+		}
+		if resp.Topics[0].Partitions[0].ErrorCode == 0 {
+			t.Fatal("expected error, got success")
+		}
+
+		// Verify failure metric was recorded
+		failureCounter := m.RequestsTotal.WithLabelValues(metrics.StatusFailure)
+		failureMetric := &dto.Metric{}
+		if err := failureCounter.Write(failureMetric); err != nil {
+			t.Fatalf("failed to read failure counter: %v", err)
+		}
+		if failureMetric.Counter.GetValue() < 1 {
+			t.Error("expected at least 1 failure counter increment")
+		}
+
+		// Verify histogram was populated for failure
+		failureHist := m.LatencyHistogram.WithLabelValues(metrics.StatusFailure)
+		histMetric := &dto.Metric{}
+		if err := failureHist.(prometheus.Metric).Write(histMetric); err != nil {
+			t.Fatalf("failed to read histogram: %v", err)
+		}
+		if histMetric.Histogram.GetSampleCount() < 1 {
+			t.Error("expected at least 1 histogram sample for failure")
+		}
+	})
+
+	t.Run("transactional rejection records failure", func(t *testing.T) {
+		// Create new registry for isolation
+		reg2 := prometheus.NewRegistry()
+		m2 := metrics.NewProduceMetricsWithRegistry(reg2)
+		handler2 := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer).WithMetrics(m2)
+
+		req := kmsg.NewPtrProduceRequest()
+		req.Acks = -1
+		req.SetVersion(9)
+		txnId := "my-txn"
+		req.TransactionID = &txnId
+
+		topicReq := kmsg.NewProduceRequestTopic()
+		topicReq.Topic = "test-topic"
+
+		partReq := kmsg.NewProduceRequestTopicPartition()
+		partReq.Partition = 0
+		partReq.Records = buildRecordBatchWithMagic(1, 2)
+
+		topicReq.Partitions = append(topicReq.Partitions, partReq)
+		req.Topics = append(req.Topics, topicReq)
+
+		_ = handler2.Handle(ctx, 9, req)
+
+		// Verify failure metric was recorded for transactional rejection
+		failureCounter := m2.RequestsTotal.WithLabelValues(metrics.StatusFailure)
+		failureMetric := &dto.Metric{}
+		if err := failureCounter.Write(failureMetric); err != nil {
+			t.Fatalf("failed to read failure counter: %v", err)
+		}
+		if failureMetric.Counter.GetValue() != 1 {
+			t.Errorf("expected exactly 1 failure counter, got %f", failureMetric.Counter.GetValue())
+		}
+	})
 }

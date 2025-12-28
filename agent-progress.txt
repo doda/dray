@@ -750,3 +750,11 @@ Start with project-setup, then follow spec phases:
 - Verified readiness tests cover OK/unhealthy/timeout/head/method cases
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[review] produce-latency-metrics
+- Scope: internal/metrics/doc.go, internal/metrics/produce.go, internal/metrics/produce_test.go, internal/metrics/server.go, internal/metrics/server_test.go, internal/protocol/produce.go, internal/protocol/produce_test.go, go.mod, task_list.json
+- Verified produce latency histogram and request counters recorded with success/failure labels
+- Verified handler records latency on all exit paths and treats any partition error as failure
+- Verified Prometheus /metrics server exposes produce metrics and supports custom registry
+- Verified tests cover histogram buckets and handler metric increments
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)
