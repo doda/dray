@@ -1731,7 +1731,7 @@
     "scope": [
       "internal/compaction/worker/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "compaction-saga-state",
