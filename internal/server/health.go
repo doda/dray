@@ -13,16 +13,30 @@ import (
 	"github.com/dray-io/dray/internal/logging"
 )
 
+// ReadinessChecker is an interface for components that can report their readiness.
+// Each component (metadata store, object store, compactor) implements this to
+// participate in readiness checks.
+type ReadinessChecker interface {
+	// Name returns the name of the component for display in health status.
+	Name() string
+
+	// CheckReady performs a health check and returns nil if the component is ready,
+	// or an error describing why it's not ready.
+	CheckReady(ctx context.Context) error
+}
+
 // HealthServer provides HTTP endpoints for health checks.
-// It serves /healthz for liveness probes and can be extended for /readyz.
+// It serves /healthz for liveness probes and /readyz for readiness probes.
 type HealthServer struct {
-	mu         sync.RWMutex
-	addr       string
-	boundAddr  string
-	server     *http.Server
-	logger     *logging.Logger
-	shutDown   atomic.Bool
-	goroutines map[string]*goroutineStatus
+	mu               sync.RWMutex
+	addr             string
+	boundAddr        string
+	server           *http.Server
+	logger           *logging.Logger
+	shutDown         atomic.Bool
+	goroutines       map[string]*goroutineStatus
+	readinessChecks  []ReadinessChecker
+	readinessTimeout time.Duration
 }
 
 // goroutineStatus tracks whether a critical goroutine is running.
@@ -44,16 +58,36 @@ type CheckResult struct {
 	Message string `json:"message,omitempty"`
 }
 
+// DefaultReadinessTimeout is the default timeout for readiness checks.
+const DefaultReadinessTimeout = 5 * time.Second
+
 // NewHealthServer creates a new HealthServer.
 func NewHealthServer(addr string, logger *logging.Logger) *HealthServer {
 	if logger == nil {
 		logger = logging.DefaultLogger()
 	}
 	return &HealthServer{
-		addr:       addr,
-		logger:     logger,
-		goroutines: make(map[string]*goroutineStatus),
+		addr:             addr,
+		logger:           logger,
+		goroutines:       make(map[string]*goroutineStatus),
+		readinessChecks:  make([]ReadinessChecker, 0),
+		readinessTimeout: DefaultReadinessTimeout,
 	}
+}
+
+// RegisterReadinessCheck registers a component for readiness checking.
+// The component will be checked on each /readyz request.
+func (h *HealthServer) RegisterReadinessCheck(checker ReadinessChecker) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.readinessChecks = append(h.readinessChecks, checker)
+}
+
+// SetReadinessTimeout sets the timeout for individual readiness checks.
+func (h *HealthServer) SetReadinessTimeout(d time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.readinessTimeout = d
 }
 
 // RegisterGoroutine registers a critical goroutine for health checking.
@@ -102,12 +136,13 @@ func (h *HealthServer) IsShuttingDown() bool {
 func (h *HealthServer) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.handleHealthz)
+	mux.HandleFunc("/readyz", h.handleReadyz)
 
 	h.server = &http.Server{
 		Addr:         h.addr,
 		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
+		WriteTimeout: 10 * time.Second, // Longer to accommodate readiness checks
 	}
 
 	ln, err := net.Listen("tcp", h.addr)
@@ -231,4 +266,86 @@ func (h *HealthServer) checkLiveness() HealthStatus {
 // Useful for internal health checks.
 func (h *HealthServer) CheckHealth() HealthStatus {
 	return h.checkLiveness()
+}
+
+// handleReadyz handles the /readyz readiness endpoint.
+// Returns 200 OK if all dependencies are healthy.
+// Returns 503 if the server is shutting down or any dependency check fails.
+func (h *HealthServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ctx := r.Context()
+	status := h.checkReadiness(ctx)
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if status.Status != "ok" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+
+	if r.Method != http.MethodHead {
+		json.NewEncoder(w).Encode(status)
+	}
+}
+
+// checkReadiness performs all readiness checks.
+func (h *HealthServer) checkReadiness(ctx context.Context) HealthStatus {
+	status := HealthStatus{
+		Status: "ok",
+		Checks: make(map[string]CheckResult),
+	}
+
+	// Check if server is shutting down
+	if h.shutDown.Load() {
+		status.Status = "shutting_down"
+		status.Checks["shutdown"] = CheckResult{
+			Healthy: false,
+			Message: "broker is shutting down",
+		}
+		return status
+	}
+
+	status.Checks["shutdown"] = CheckResult{
+		Healthy: true,
+		Message: "broker is running",
+	}
+
+	// Run all registered readiness checks
+	h.mu.RLock()
+	checks := make([]ReadinessChecker, len(h.readinessChecks))
+	copy(checks, h.readinessChecks)
+	timeout := h.readinessTimeout
+	h.mu.RUnlock()
+
+	for _, checker := range checks {
+		checkCtx, cancel := context.WithTimeout(ctx, timeout)
+		err := checker.CheckReady(checkCtx)
+		cancel()
+
+		if err != nil {
+			status.Status = "not_ready"
+			status.Checks[checker.Name()] = CheckResult{
+				Healthy: false,
+				Message: err.Error(),
+			}
+		} else {
+			status.Checks[checker.Name()] = CheckResult{
+				Healthy: true,
+				Message: "healthy",
+			}
+		}
+	}
+
+	return status
+}
+
+// CheckReadiness returns the current readiness status without making an HTTP request.
+// Useful for internal readiness checks.
+func (h *HealthServer) CheckReadiness(ctx context.Context) HealthStatus {
+	return h.checkReadiness(ctx)
 }

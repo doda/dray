@@ -2185,7 +2185,7 @@
     "scope": [
       "internal/server/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "produce-latency-metrics",

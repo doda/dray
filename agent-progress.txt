@@ -742,3 +742,11 @@ Start with project-setup, then follow spec phases:
 - Verified health server Start/Close binds and serves /healthz
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[review] health-readiness-endpoint
+- Scope: internal/server/health.go, internal/server/readiness.go, internal/server/readiness_test.go, task_list.json
+- Verified /readyz handler returns 200/503 based on shutdown and readiness checks
+- Verified readiness checker interface, timeout handling, and health status payloads
+- Verified dependency checkers for metadata store, object store, and compactor are implemented
+- Verified readiness tests cover OK/unhealthy/timeout/head/method cases
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)
