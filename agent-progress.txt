@@ -64,3 +64,10 @@ Start with project-setup, then follow spec phases:
 - Verified mock Txn applies version checks before commit to ensure atomicity in tests
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T00:11:06Z] Reviewed oxia-notifications
+- Scope: internal/metadata/oxia/notifications_test.go, internal/metadata/oxia/notifications.go, internal/metadata/oxia/store.go
+- Verified notification stream uses Oxia notifications channel and handles ctx cancel/stream cancel/closed channel
+- Verified convertNotification maps create/modify/delete/range-delete to metadata.Notification
+- Verified tests cover delivery after Put/delete, restart behavior, and subscription ordering
+- Issues found: none
+- Tests: not run (already run by working agent)
