@@ -1325,7 +1325,7 @@
     "scope": [
       "internal/protocol/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "describe-groups-handler",
