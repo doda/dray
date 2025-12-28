@@ -458,3 +458,11 @@ Start with project-setup, then follow spec phases:
 - Verified start/stop loop behavior and zero-timeout handling via tests
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T10:47:15Z] Reviewed classic-group-rebalance-test
+- Scope: tests/integration/classic_group_rebalance_test.go, task_list.json
+- Verified JoinGroup/SyncGroup flows for 2 consumers include leader selection and non-empty assignments
+- Verified add-third-consumer rebalance increments generation and assigns all 3 members
+- Verified remove-consumer flow uses LeaveGroup then rejoin and reassigns remaining members
+- Verified helper assigns partitions via range strategy and stores assignments via SyncGroup
+- Issues found: none
+- Tests: not run (already run by working agent)

@@ -1453,7 +1453,7 @@
     "scope": [
       "tests/integration/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "kip848-heartbeat-handler",
