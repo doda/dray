@@ -508,7 +508,7 @@
     "scope": [
       "internal/index/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "index-cache",

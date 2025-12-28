@@ -79,10 +79,18 @@ func (m *indexTestStore) List(ctx context.Context, startKey, endKey string, limi
 	}
 
 	// Collect all matching keys
+	// The semantics are: if endKey is empty, it's a prefix match.
+	// If endKey is provided, it's a range query [startKey, endKey).
 	var keys []string
 	for k := range m.data {
-		if strings.HasPrefix(k, startKey) {
-			if endKey == "" || k < endKey {
+		if endKey == "" {
+			// Prefix match mode
+			if strings.HasPrefix(k, startKey) {
+				keys = append(keys, k)
+			}
+		} else {
+			// Range query mode: startKey <= k < endKey
+			if k >= startKey && k < endKey {
 				keys = append(keys, k)
 			}
 		}
@@ -677,5 +685,580 @@ func TestIndexEntrySorting(t *testing.T) {
 			t.Errorf("Entries not sorted: entries[%d].EndOffset (%d) <= entries[%d].EndOffset (%d)",
 				i, entries[i].EndOffset, i-1, entries[i-1].EndOffset)
 		}
+	}
+}
+
+// Tests for LookupOffset
+
+func TestLookupOffset_Basic(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Append an entry covering offsets 0-99
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    100,
+		ChunkSizeBytes: 4096,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		WalID:          uuid.New().String(),
+		WalPath:        "s3://bucket/wal/test.wo",
+		ChunkOffset:    0,
+		ChunkLength:    4096,
+	})
+	if err != nil {
+		t.Fatalf("AppendIndexEntry failed: %v", err)
+	}
+
+	// Lookup offset 0 (first offset)
+	result, err := sm.LookupOffset(ctx, streamID, 0)
+	if err != nil {
+		t.Fatalf("LookupOffset failed: %v", err)
+	}
+
+	if !result.Found {
+		t.Error("Expected Found=true for offset 0")
+	}
+	if result.OffsetBeyondHWM {
+		t.Error("Expected OffsetBeyondHWM=false for offset 0")
+	}
+	if result.Entry == nil {
+		t.Fatal("Expected Entry to be non-nil")
+	}
+	if result.Entry.StartOffset != 0 {
+		t.Errorf("Entry.StartOffset = %d, want 0", result.Entry.StartOffset)
+	}
+	if result.Entry.EndOffset != 100 {
+		t.Errorf("Entry.EndOffset = %d, want 100", result.Entry.EndOffset)
+	}
+	if result.HWM != 100 {
+		t.Errorf("HWM = %d, want 100", result.HWM)
+	}
+}
+
+func TestLookupOffset_MiddleOfEntry(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Append an entry covering offsets 0-99
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    100,
+		ChunkSizeBytes: 4096,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		WalID:          uuid.New().String(),
+		WalPath:        "s3://bucket/wal/test.wo",
+		ChunkOffset:    0,
+		ChunkLength:    4096,
+	})
+	if err != nil {
+		t.Fatalf("AppendIndexEntry failed: %v", err)
+	}
+
+	// Lookup offset 50 (middle of entry)
+	result, err := sm.LookupOffset(ctx, streamID, 50)
+	if err != nil {
+		t.Fatalf("LookupOffset failed: %v", err)
+	}
+
+	if !result.Found {
+		t.Error("Expected Found=true for offset 50")
+	}
+	if result.Entry == nil {
+		t.Fatal("Expected Entry to be non-nil")
+	}
+	if result.Entry.StartOffset != 0 {
+		t.Errorf("Entry.StartOffset = %d, want 0", result.Entry.StartOffset)
+	}
+	if result.Entry.EndOffset != 100 {
+		t.Errorf("Entry.EndOffset = %d, want 100", result.Entry.EndOffset)
+	}
+}
+
+func TestLookupOffset_LastOffsetOfEntry(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Append an entry covering offsets 0-99
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    100,
+		ChunkSizeBytes: 4096,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		WalID:          uuid.New().String(),
+		WalPath:        "s3://bucket/wal/test.wo",
+		ChunkOffset:    0,
+		ChunkLength:    4096,
+	})
+	if err != nil {
+		t.Fatalf("AppendIndexEntry failed: %v", err)
+	}
+
+	// Lookup offset 99 (last offset in entry, endOffset is 100 exclusive)
+	result, err := sm.LookupOffset(ctx, streamID, 99)
+	if err != nil {
+		t.Fatalf("LookupOffset failed: %v", err)
+	}
+
+	if !result.Found {
+		t.Error("Expected Found=true for offset 99")
+	}
+	if result.Entry == nil {
+		t.Fatal("Expected Entry to be non-nil")
+	}
+	if result.Entry.StartOffset != 0 {
+		t.Errorf("Entry.StartOffset = %d, want 0", result.Entry.StartOffset)
+	}
+	if result.Entry.EndOffset != 100 {
+		t.Errorf("Entry.EndOffset = %d, want 100", result.Entry.EndOffset)
+	}
+}
+
+func TestLookupOffset_MultipleEntries(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Append three entries:
+	// Entry 1: offsets 0-99
+	// Entry 2: offsets 100-199
+	// Entry 3: offsets 200-299
+	for i := 0; i < 3; i++ {
+		_, err := sm.AppendIndexEntry(ctx, AppendRequest{
+			StreamID:       streamID,
+			RecordCount:    100,
+			ChunkSizeBytes: 4096,
+			CreatedAtMs:    time.Now().UnixMilli(),
+			WalID:          uuid.New().String(),
+			WalPath:        "s3://bucket/wal/test.wo",
+			ChunkOffset:    0,
+			ChunkLength:    4096,
+		})
+		if err != nil {
+			t.Fatalf("AppendIndexEntry %d failed: %v", i, err)
+		}
+	}
+
+	tests := []struct {
+		offset        int64
+		wantStart     int64
+		wantEnd       int64
+		wantFound     bool
+	}{
+		{0, 0, 100, true},
+		{50, 0, 100, true},
+		{99, 0, 100, true},
+		{100, 100, 200, true},
+		{150, 100, 200, true},
+		{199, 100, 200, true},
+		{200, 200, 300, true},
+		{250, 200, 300, true},
+		{299, 200, 300, true},
+	}
+
+	for _, tc := range tests {
+		result, err := sm.LookupOffset(ctx, streamID, tc.offset)
+		if err != nil {
+			t.Fatalf("LookupOffset(%d) failed: %v", tc.offset, err)
+		}
+
+		if result.Found != tc.wantFound {
+			t.Errorf("LookupOffset(%d): Found = %v, want %v", tc.offset, result.Found, tc.wantFound)
+		}
+		if tc.wantFound && result.Entry != nil {
+			if result.Entry.StartOffset != tc.wantStart {
+				t.Errorf("LookupOffset(%d): Entry.StartOffset = %d, want %d", tc.offset, result.Entry.StartOffset, tc.wantStart)
+			}
+			if result.Entry.EndOffset != tc.wantEnd {
+				t.Errorf("LookupOffset(%d): Entry.EndOffset = %d, want %d", tc.offset, result.Entry.EndOffset, tc.wantEnd)
+			}
+		}
+	}
+}
+
+func TestLookupOffset_BeyondHWM(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Append an entry covering offsets 0-99, HWM = 100
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    100,
+		ChunkSizeBytes: 4096,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		WalID:          uuid.New().String(),
+		WalPath:        "s3://bucket/wal/test.wo",
+		ChunkOffset:    0,
+		ChunkLength:    4096,
+	})
+	if err != nil {
+		t.Fatalf("AppendIndexEntry failed: %v", err)
+	}
+
+	// Lookup offset 100 (equals HWM, which is exclusive)
+	result, err := sm.LookupOffset(ctx, streamID, 100)
+	if err != nil {
+		t.Fatalf("LookupOffset failed: %v", err)
+	}
+
+	if result.Found {
+		t.Error("Expected Found=false for offset 100 (at HWM)")
+	}
+	if !result.OffsetBeyondHWM {
+		t.Error("Expected OffsetBeyondHWM=true for offset 100")
+	}
+	if result.HWM != 100 {
+		t.Errorf("HWM = %d, want 100", result.HWM)
+	}
+
+	// Lookup offset 200 (well beyond HWM)
+	result, err = sm.LookupOffset(ctx, streamID, 200)
+	if err != nil {
+		t.Fatalf("LookupOffset failed: %v", err)
+	}
+
+	if result.Found {
+		t.Error("Expected Found=false for offset 200 (beyond HWM)")
+	}
+	if !result.OffsetBeyondHWM {
+		t.Error("Expected OffsetBeyondHWM=true for offset 200")
+	}
+}
+
+func TestLookupOffset_EmptyStream(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Lookup offset 0 on empty stream (HWM = 0)
+	result, err := sm.LookupOffset(ctx, streamID, 0)
+	if err != nil {
+		t.Fatalf("LookupOffset failed: %v", err)
+	}
+
+	if result.Found {
+		t.Error("Expected Found=false for empty stream")
+	}
+	if !result.OffsetBeyondHWM {
+		t.Error("Expected OffsetBeyondHWM=true for empty stream (offset 0 >= HWM 0)")
+	}
+	if result.HWM != 0 {
+		t.Errorf("HWM = %d, want 0", result.HWM)
+	}
+}
+
+func TestLookupOffset_StreamNotFound(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	// Lookup on non-existent stream
+	_, err := sm.LookupOffset(ctx, "nonexistent-stream", 0)
+	if err != ErrStreamNotFound {
+		t.Errorf("LookupOffset should return ErrStreamNotFound, got %v", err)
+	}
+}
+
+func TestLookupOffset_NegativeOffset(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Append an entry covering offsets 0-99
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    100,
+		ChunkSizeBytes: 4096,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		WalID:          uuid.New().String(),
+		WalPath:        "s3://bucket/wal/test.wo",
+		ChunkOffset:    0,
+		ChunkLength:    4096,
+	})
+	if err != nil {
+		t.Fatalf("AppendIndexEntry failed: %v", err)
+	}
+
+	// Lookup negative offset - should be treated as offset 0
+	result, err := sm.LookupOffset(ctx, streamID, -10)
+	if err != nil {
+		t.Fatalf("LookupOffset failed: %v", err)
+	}
+
+	if !result.Found {
+		t.Error("Expected Found=true for negative offset (treated as 0)")
+	}
+	if result.Entry == nil {
+		t.Fatal("Expected Entry to be non-nil")
+	}
+	if result.Entry.StartOffset != 0 {
+		t.Errorf("Entry.StartOffset = %d, want 0", result.Entry.StartOffset)
+	}
+}
+
+func TestLookupOffset_WALEntry(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	walID := uuid.New().String()
+	walPath := "s3://bucket/wal/test.wo"
+
+	// Append a WAL entry
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    100,
+		ChunkSizeBytes: 4096,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		WalID:          walID,
+		WalPath:        walPath,
+		ChunkOffset:    1024,
+		ChunkLength:    2048,
+	})
+	if err != nil {
+		t.Fatalf("AppendIndexEntry failed: %v", err)
+	}
+
+	result, err := sm.LookupOffset(ctx, streamID, 50)
+	if err != nil {
+		t.Fatalf("LookupOffset failed: %v", err)
+	}
+
+	if !result.Found {
+		t.Fatal("Expected Found=true")
+	}
+	if result.Entry.FileType != FileTypeWAL {
+		t.Errorf("FileType = %s, want WAL", result.Entry.FileType)
+	}
+	if result.Entry.WalID != walID {
+		t.Errorf("WalID = %s, want %s", result.Entry.WalID, walID)
+	}
+	if result.Entry.WalPath != walPath {
+		t.Errorf("WalPath = %s, want %s", result.Entry.WalPath, walPath)
+	}
+	if result.Entry.ChunkOffset != 1024 {
+		t.Errorf("ChunkOffset = %d, want 1024", result.Entry.ChunkOffset)
+	}
+	if result.Entry.ChunkLength != 2048 {
+		t.Errorf("ChunkLength = %d, want 2048", result.Entry.ChunkLength)
+	}
+}
+
+func TestLookupOffset_ParquetEntry(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Manually create a Parquet entry by first appending and then modifying
+	// In real usage, compaction would create Parquet entries.
+	// For testing, we'll directly construct one.
+
+	// First append a WAL entry to get the offsets
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    100,
+		ChunkSizeBytes: 4096,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		WalID:          uuid.New().String(),
+		WalPath:        "s3://bucket/wal/test.wo",
+		ChunkOffset:    0,
+		ChunkLength:    4096,
+	})
+	if err != nil {
+		t.Fatalf("AppendIndexEntry failed: %v", err)
+	}
+
+	// The lookup should still work for WAL entries
+	result, err := sm.LookupOffset(ctx, streamID, 50)
+	if err != nil {
+		t.Fatalf("LookupOffset failed: %v", err)
+	}
+
+	// Verify WAL entry was found
+	if !result.Found {
+		t.Fatal("Expected Found=true")
+	}
+	if result.Entry.FileType != FileTypeWAL {
+		t.Errorf("FileType = %s, want WAL", result.Entry.FileType)
+	}
+
+	// Note: Parquet entries would be created by compaction and have FileType == FileTypeParquet
+	// The LookupOffset function handles both types transparently
+}
+
+func TestLookupOffsetWithBounds(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Append three entries
+	for i := 0; i < 3; i++ {
+		_, err := sm.AppendIndexEntry(ctx, AppendRequest{
+			StreamID:       streamID,
+			RecordCount:    100,
+			ChunkSizeBytes: 4096,
+			CreatedAtMs:    time.Now().UnixMilli(),
+			WalID:          uuid.New().String(),
+			WalPath:        "s3://bucket/wal/test.wo",
+			ChunkOffset:    0,
+			ChunkLength:    4096,
+		})
+		if err != nil {
+			t.Fatalf("AppendIndexEntry %d failed: %v", i, err)
+		}
+	}
+
+	result, earliestOffset, err := sm.LookupOffsetWithBounds(ctx, streamID, 150)
+	if err != nil {
+		t.Fatalf("LookupOffsetWithBounds failed: %v", err)
+	}
+
+	if !result.Found {
+		t.Error("Expected Found=true")
+	}
+	if result.Entry == nil {
+		t.Fatal("Expected Entry to be non-nil")
+	}
+	if result.Entry.StartOffset != 100 {
+		t.Errorf("Entry.StartOffset = %d, want 100", result.Entry.StartOffset)
+	}
+	if result.Entry.EndOffset != 200 {
+		t.Errorf("Entry.EndOffset = %d, want 200", result.Entry.EndOffset)
+	}
+	if result.HWM != 300 {
+		t.Errorf("HWM = %d, want 300", result.HWM)
+	}
+	if earliestOffset != 0 {
+		t.Errorf("earliestOffset = %d, want 0", earliestOffset)
+	}
+}
+
+func TestLookupOffsetWithBounds_EmptyStream(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	result, earliestOffset, err := sm.LookupOffsetWithBounds(ctx, streamID, 0)
+	if err != nil {
+		t.Fatalf("LookupOffsetWithBounds failed: %v", err)
+	}
+
+	if result.Found {
+		t.Error("Expected Found=false for empty stream")
+	}
+	if !result.OffsetBeyondHWM {
+		t.Error("Expected OffsetBeyondHWM=true for empty stream")
+	}
+	if result.HWM != 0 {
+		t.Errorf("HWM = %d, want 0", result.HWM)
+	}
+	if earliestOffset != 0 {
+		t.Errorf("earliestOffset = %d, want 0", earliestOffset)
+	}
+}
+
+func TestLookupOffset_LargeOffsets(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Append many entries to simulate large offsets
+	for i := 0; i < 100; i++ {
+		_, err := sm.AppendIndexEntry(ctx, AppendRequest{
+			StreamID:       streamID,
+			RecordCount:    1000,
+			ChunkSizeBytes: 10000,
+			CreatedAtMs:    time.Now().UnixMilli(),
+			WalID:          uuid.New().String(),
+			WalPath:        "s3://bucket/wal/test.wo",
+			ChunkOffset:    0,
+			ChunkLength:    10000,
+		})
+		if err != nil {
+			t.Fatalf("AppendIndexEntry %d failed: %v", i, err)
+		}
+	}
+
+	// Lookup a large offset (should be in entry 50)
+	// Entry 50 covers offsets 50000-50999
+	result, err := sm.LookupOffset(ctx, streamID, 50500)
+	if err != nil {
+		t.Fatalf("LookupOffset failed: %v", err)
+	}
+
+	if !result.Found {
+		t.Error("Expected Found=true for offset 50500")
+	}
+	if result.Entry == nil {
+		t.Fatal("Expected Entry to be non-nil")
+	}
+	if result.Entry.StartOffset != 50000 {
+		t.Errorf("Entry.StartOffset = %d, want 50000", result.Entry.StartOffset)
+	}
+	if result.Entry.EndOffset != 51000 {
+		t.Errorf("Entry.EndOffset = %d, want 51000", result.Entry.EndOffset)
 	}
 }

@@ -258,3 +258,143 @@ func (sm *StreamManager) ListIndexEntries(ctx context.Context, streamID string, 
 
 	return entries, nil
 }
+
+// LookupResult contains the result of an offset lookup.
+type LookupResult struct {
+	// Entry is the index entry that contains the requested offset.
+	Entry *IndexEntry
+	// Found is true if an entry containing the offset was found.
+	Found bool
+	// OffsetBeyondHWM is true if the requested offset is >= hwm.
+	OffsetBeyondHWM bool
+	// HWM is the current high watermark for the stream.
+	HWM int64
+}
+
+// ErrOffsetBeyondHWM is returned when the requested offset is beyond the high watermark.
+var ErrOffsetBeyondHWM = errors.New("index: offset beyond high watermark")
+
+// LookupOffset finds the index entry that contains the requested offset.
+// It uses a range query starting at the requested offset to find the smallest
+// entry where endOffset > fetchOffset (i.e., the entry whose range includes fetchOffset).
+//
+// The key insight is that offset index keys are sorted by offsetEnd (zero-padded),
+// so a List query starting at the fetchOffset will return entries in ascending order
+// of their endOffset. The first entry where endOffset > fetchOffset is the one we want.
+//
+// Returns:
+//   - LookupResult with Found=true and Entry populated if found
+//   - LookupResult with Found=false and OffsetBeyondHWM=true if offset >= hwm
+//   - Error if the stream doesn't exist or on other failures
+//
+// This supports both WAL and Parquet entry types transparently.
+func (sm *StreamManager) LookupOffset(ctx context.Context, streamID string, fetchOffset int64) (*LookupResult, error) {
+	// First, get the current HWM to check if the offset is beyond it
+	hwm, _, err := sm.GetHWM(ctx, streamID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if offset is beyond HWM
+	if fetchOffset >= hwm {
+		return &LookupResult{
+			Found:           false,
+			OffsetBeyondHWM: true,
+			HWM:             hwm,
+		}, nil
+	}
+
+	// Handle negative offset (shouldn't happen but be defensive)
+	if fetchOffset < 0 {
+		fetchOffset = 0
+	}
+
+	// Build the start and end keys for the range query.
+	// We need to find entries where endOffset > fetchOffset.
+	// Since keys are sorted by offsetEnd (zero-padded), we start the query at fetchOffset+1.
+	// This will give us entries with endOffset >= fetchOffset+1, which means endOffset > fetchOffset.
+	startKey, err := keys.OffsetIndexStartKey(streamID, fetchOffset+1)
+	if err != nil {
+		return nil, err
+	}
+
+	// The end key ensures we only match offset-index keys for this stream.
+	// Since offset-index keys have format prefix/<offsetEndZ>/<cumulativeSizeZ>, and
+	// digits come before letters in ASCII, we can use prefix + "~" as the endKey.
+	prefix := keys.OffsetIndexPrefix(streamID)
+	endKey := prefix + "~"
+
+	// Query for just one entry - the first one found will be the smallest
+	// endOffset > fetchOffset by the key ordering.
+	kvs, err := sm.store.List(ctx, startKey, endKey, 1)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(kvs) == 0 {
+		// No entry found with endOffset > fetchOffset.
+		// This could happen if the offset is valid but there's a gap in the index.
+		// Return not found but not beyond HWM (since we checked that above).
+		return &LookupResult{
+			Found: false,
+			HWM:   hwm,
+		}, nil
+	}
+
+	// Parse the entry
+	var entry IndexEntry
+	if err := json.Unmarshal(kvs[0].Value, &entry); err != nil {
+		return nil, err
+	}
+
+	// Verify the entry actually contains our offset
+	// The entry covers [startOffset, endOffset), so we need startOffset <= fetchOffset < endOffset
+	if fetchOffset >= entry.StartOffset && fetchOffset < entry.EndOffset {
+		return &LookupResult{
+			Entry: &entry,
+			Found: true,
+			HWM:   hwm,
+		}, nil
+	}
+
+	// The entry doesn't contain our offset (gap in the index or corruption)
+	return &LookupResult{
+		Found: false,
+		HWM:   hwm,
+	}, nil
+}
+
+// LookupOffsetWithBounds finds the index entry for the requested offset
+// and also returns the valid offset range for this stream.
+// This is useful for ListOffsets (EARLIEST/LATEST) responses.
+func (sm *StreamManager) LookupOffsetWithBounds(ctx context.Context, streamID string, fetchOffset int64) (*LookupResult, int64, error) {
+	// Verify the stream exists first
+	_, _, err := sm.GetHWM(ctx, streamID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Get the earliest available offset by listing the first entry
+	prefix := keys.OffsetIndexPrefix(streamID)
+	kvs, err := sm.store.List(ctx, prefix, "", 1)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var earliestOffset int64 = 0
+	if len(kvs) > 0 {
+		var firstEntry IndexEntry
+		if err := json.Unmarshal(kvs[0].Value, &firstEntry); err != nil {
+			return nil, 0, err
+		}
+		earliestOffset = firstEntry.StartOffset
+	}
+
+	// Now do the lookup
+	result, err := sm.LookupOffset(ctx, streamID, fetchOffset)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return result, earliestOffset, nil
+}

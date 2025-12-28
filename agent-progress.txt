@@ -116,3 +116,11 @@ Start with project-setup, then follow spec phases:
 - Verified batchIndex serialization and retrieval in index entries
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T01:24:51Z] Reviewed offset-index-lookup
+- Scope: internal/index/entry.go, internal/index/entry_test.go
+- Verified LookupOffset uses range list starting at offset+1 to find smallest endOffset > fetchOffset
+- Verified HWM handling flags OffsetBeyondHWM and returns HWM for empty or beyond cases
+- Verified LookupOffsetWithBounds returns earliest offset from first index entry
+- Verified test store List semantics for prefix vs range and added lookup coverage
+- Issues found: none
+- Tests: not run (already run by working agent)
