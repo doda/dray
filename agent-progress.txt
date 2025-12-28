@@ -79,3 +79,9 @@ Start with project-setup, then follow spec phases:
 - Verified list prefix handling for Oxia path semantics when ending with '/'
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T00:45:45Z] Reviewed oxia-ephemeral-keys
+- Scope: internal/metadata/oxia/ephemeral_test.go, internal/metadata/oxia/store.go, internal/metadata/oxia/integration_test.go
+- Verified ephemeral Put uses Oxia ephemeral session binding and session timeout configuration
+- Verified tests cover session-bound lifecycle, renewal, updates, delete, and closed-store behavior
+- Issues found: none
+- Tests: not run (already run by working agent)

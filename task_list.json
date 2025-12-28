@@ -220,7 +220,7 @@
     "scope": [
       "internal/metadata/oxia/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "keyspace-encoders",
