@@ -3,6 +3,7 @@ package groups
 import (
 	"encoding/binary"
 	"sort"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -436,7 +437,7 @@ func TestRangeAssignor_NoOverlap(t *testing.T) {
 	assignments := make(map[string]string) // "topic:partition" -> memberID
 	for memberID, partitions := range result {
 		for _, p := range partitions {
-			key := p.Topic + ":" + string(rune(p.Partition+'0'))
+			key := p.Topic + ":" + strconv.FormatInt(int64(p.Partition), 10)
 			existing, ok := assignments[key]
 			assert.False(t, ok, "partition %s assigned to both %s and %s", key, existing, memberID)
 			assignments[key] = memberID
@@ -528,4 +529,383 @@ func sortPartitions(partitions []TopicPartition) {
 		}
 		return partitions[i].Partition < partitions[j].Partition
 	})
+}
+
+// RoundRobinAssignor tests
+
+func TestRoundRobinAssignor_Name(t *testing.T) {
+	a := NewRoundRobinAssignor()
+	assert.Equal(t, "roundrobin", a.Name())
+}
+
+func TestRoundRobinAssignor_Assign(t *testing.T) {
+	tests := []struct {
+		name    string
+		members map[string]*Subscription
+		topics  map[string]int32
+		want    map[string][]TopicPartition
+	}{
+		{
+			name:    "empty members",
+			members: nil,
+			topics:  map[string]int32{"topic1": 3},
+			want:    nil,
+		},
+		{
+			name: "single consumer single topic",
+			members: map[string]*Subscription{
+				"consumer-1": {Topics: []string{"topic1"}},
+			},
+			topics: map[string]int32{"topic1": 3},
+			want: map[string][]TopicPartition{
+				"consumer-1": {
+					{Topic: "topic1", Partition: 0},
+					{Topic: "topic1", Partition: 1},
+					{Topic: "topic1", Partition: 2},
+				},
+			},
+		},
+		{
+			name: "two consumers even split",
+			members: map[string]*Subscription{
+				"consumer-1": {Topics: []string{"topic1"}},
+				"consumer-2": {Topics: []string{"topic1"}},
+			},
+			topics: map[string]int32{"topic1": 4},
+			want: map[string][]TopicPartition{
+				"consumer-1": {
+					{Topic: "topic1", Partition: 0},
+					{Topic: "topic1", Partition: 2},
+				},
+				"consumer-2": {
+					{Topic: "topic1", Partition: 1},
+					{Topic: "topic1", Partition: 3},
+				},
+			},
+		},
+		{
+			name: "two consumers uneven split",
+			members: map[string]*Subscription{
+				"consumer-1": {Topics: []string{"topic1"}},
+				"consumer-2": {Topics: []string{"topic1"}},
+			},
+			topics: map[string]int32{"topic1": 5},
+			want: map[string][]TopicPartition{
+				"consumer-1": {
+					{Topic: "topic1", Partition: 0},
+					{Topic: "topic1", Partition: 2},
+					{Topic: "topic1", Partition: 4},
+				},
+				"consumer-2": {
+					{Topic: "topic1", Partition: 1},
+					{Topic: "topic1", Partition: 3},
+				},
+			},
+		},
+		{
+			name: "three consumers round-robin",
+			members: map[string]*Subscription{
+				"consumer-1": {Topics: []string{"topic1"}},
+				"consumer-2": {Topics: []string{"topic1"}},
+				"consumer-3": {Topics: []string{"topic1"}},
+			},
+			topics: map[string]int32{"topic1": 7},
+			want: map[string][]TopicPartition{
+				"consumer-1": {
+					{Topic: "topic1", Partition: 0},
+					{Topic: "topic1", Partition: 3},
+					{Topic: "topic1", Partition: 6},
+				},
+				"consumer-2": {
+					{Topic: "topic1", Partition: 1},
+					{Topic: "topic1", Partition: 4},
+				},
+				"consumer-3": {
+					{Topic: "topic1", Partition: 2},
+					{Topic: "topic1", Partition: 5},
+				},
+			},
+		},
+		{
+			name: "more consumers than partitions",
+			members: map[string]*Subscription{
+				"consumer-1": {Topics: []string{"topic1"}},
+				"consumer-2": {Topics: []string{"topic1"}},
+				"consumer-3": {Topics: []string{"topic1"}},
+				"consumer-4": {Topics: []string{"topic1"}},
+			},
+			topics: map[string]int32{"topic1": 2},
+			want: map[string][]TopicPartition{
+				"consumer-1": {
+					{Topic: "topic1", Partition: 0},
+				},
+				"consumer-2": {
+					{Topic: "topic1", Partition: 1},
+				},
+				"consumer-3": nil,
+				"consumer-4": nil,
+			},
+		},
+		{
+			name: "multiple topics - round robin across all partitions",
+			members: map[string]*Subscription{
+				"consumer-1": {Topics: []string{"topic1", "topic2"}},
+				"consumer-2": {Topics: []string{"topic1", "topic2"}},
+			},
+			topics: map[string]int32{"topic1": 3, "topic2": 3},
+			// All 6 partitions assigned round-robin: t1-0, t1-1, t1-2, t2-0, t2-1, t2-2
+			// consumer-1 gets: t1-0, t1-2, t2-1
+			// consumer-2 gets: t1-1, t2-0, t2-2
+			want: map[string][]TopicPartition{
+				"consumer-1": {
+					{Topic: "topic1", Partition: 0},
+					{Topic: "topic1", Partition: 2},
+					{Topic: "topic2", Partition: 1},
+				},
+				"consumer-2": {
+					{Topic: "topic1", Partition: 1},
+					{Topic: "topic2", Partition: 0},
+					{Topic: "topic2", Partition: 2},
+				},
+			},
+		},
+		{
+			name: "partial subscription - different topics per consumer",
+			members: map[string]*Subscription{
+				"consumer-1": {Topics: []string{"topic1", "topic2"}},
+				"consumer-2": {Topics: []string{"topic1"}},
+				"consumer-3": {Topics: []string{"topic2"}},
+			},
+			topics: map[string]int32{"topic1": 4, "topic2": 4},
+			// True cursor-based round-robin (cursor starts at 0):
+			// t1-0: cursor=0, c1 subscribed -> c1, cursor=1
+			// t1-1: cursor=1, c2 subscribed -> c2, cursor=2
+			// t1-2: cursor=2, c3 NOT subscribed, c1 subscribed -> c1, cursor=1
+			// t1-3: cursor=1, c2 subscribed -> c2, cursor=2
+			// t2-0: cursor=2, c3 subscribed -> c3, cursor=0
+			// t2-1: cursor=0, c1 subscribed -> c1, cursor=1
+			// t2-2: cursor=1, c2 NOT subscribed, c3 subscribed -> c3, cursor=0
+			// t2-3: cursor=0, c1 subscribed -> c1, cursor=1
+			want: map[string][]TopicPartition{
+				"consumer-1": {
+					{Topic: "topic1", Partition: 0},
+					{Topic: "topic1", Partition: 2},
+					{Topic: "topic2", Partition: 1},
+					{Topic: "topic2", Partition: 3},
+				},
+				"consumer-2": {
+					{Topic: "topic1", Partition: 1},
+					{Topic: "topic1", Partition: 3},
+				},
+				"consumer-3": {
+					{Topic: "topic2", Partition: 0},
+					{Topic: "topic2", Partition: 2},
+				},
+			},
+		},
+		{
+			name: "consumer subscribed to non-existent topic",
+			members: map[string]*Subscription{
+				"consumer-1": {Topics: []string{"topic1", "nonexistent"}},
+			},
+			topics: map[string]int32{"topic1": 2},
+			want: map[string][]TopicPartition{
+				"consumer-1": {
+					{Topic: "topic1", Partition: 0},
+					{Topic: "topic1", Partition: 1},
+				},
+			},
+		},
+		{
+			name: "topic with no subscribers",
+			members: map[string]*Subscription{
+				"consumer-1": {Topics: []string{"topic1"}},
+			},
+			topics: map[string]int32{"topic1": 2, "topic2": 2},
+			want: map[string][]TopicPartition{
+				"consumer-1": {
+					{Topic: "topic1", Partition: 0},
+					{Topic: "topic1", Partition: 1},
+				},
+			},
+		},
+		{
+			name: "consumer ID ordering is deterministic",
+			members: map[string]*Subscription{
+				"z-consumer": {Topics: []string{"topic1"}},
+				"a-consumer": {Topics: []string{"topic1"}},
+				"m-consumer": {Topics: []string{"topic1"}},
+			},
+			topics: map[string]int32{"topic1": 6},
+			// Sorted order: a-consumer, m-consumer, z-consumer
+			// Round-robin: p0->a, p1->m, p2->z, p3->a, p4->m, p5->z
+			want: map[string][]TopicPartition{
+				"a-consumer": {
+					{Topic: "topic1", Partition: 0},
+					{Topic: "topic1", Partition: 3},
+				},
+				"m-consumer": {
+					{Topic: "topic1", Partition: 1},
+					{Topic: "topic1", Partition: 4},
+				},
+				"z-consumer": {
+					{Topic: "topic1", Partition: 2},
+					{Topic: "topic1", Partition: 5},
+				},
+			},
+		},
+	}
+
+	assignor := NewRoundRobinAssignor()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := assignor.Assign(tt.members, tt.topics)
+			require.NoError(t, err)
+
+			if tt.want == nil {
+				assert.Nil(t, got)
+				return
+			}
+
+			assert.Equal(t, len(tt.want), len(got), "number of members should match")
+
+			for memberID, wantPartitions := range tt.want {
+				gotPartitions := got[memberID]
+				assert.ElementsMatch(t, wantPartitions, gotPartitions, "partitions for %s", memberID)
+			}
+		})
+	}
+}
+
+func TestRoundRobinAssignor_Determinism(t *testing.T) {
+	members := map[string]*Subscription{
+		"consumer-1": {Topics: []string{"topic1", "topic2"}},
+		"consumer-2": {Topics: []string{"topic1", "topic2"}},
+		"consumer-3": {Topics: []string{"topic1"}},
+	}
+	topics := map[string]int32{"topic1": 5, "topic2": 3}
+
+	assignor := NewRoundRobinAssignor()
+
+	// Run multiple times and verify results are identical
+	var firstResult map[string][]TopicPartition
+	for i := 0; i < 10; i++ {
+		result, err := assignor.Assign(members, topics)
+		require.NoError(t, err)
+
+		if firstResult == nil {
+			firstResult = result
+		} else {
+			for memberID := range firstResult {
+				assert.ElementsMatch(t, firstResult[memberID], result[memberID],
+					"iteration %d: assignment for %s should match", i, memberID)
+			}
+		}
+	}
+}
+
+func TestRoundRobinAssignor_NoGaps(t *testing.T) {
+	// Verify all partitions are assigned
+	members := map[string]*Subscription{
+		"consumer-1": {Topics: []string{"topic1"}},
+		"consumer-2": {Topics: []string{"topic1"}},
+	}
+	topics := map[string]int32{"topic1": 10}
+
+	assignor := NewRoundRobinAssignor()
+	result, err := assignor.Assign(members, topics)
+	require.NoError(t, err)
+
+	// Collect all assigned partitions
+	assigned := make(map[int32]bool)
+	for _, partitions := range result {
+		for _, p := range partitions {
+			assert.False(t, assigned[p.Partition], "partition %d assigned twice", p.Partition)
+			assigned[p.Partition] = true
+		}
+	}
+
+	// Verify all partitions were assigned
+	for i := int32(0); i < 10; i++ {
+		assert.True(t, assigned[i], "partition %d not assigned", i)
+	}
+}
+
+func TestRoundRobinAssignor_NoOverlap(t *testing.T) {
+	// Verify no partition is assigned to multiple consumers
+	members := map[string]*Subscription{
+		"consumer-1": {Topics: []string{"topic1", "topic2"}},
+		"consumer-2": {Topics: []string{"topic1", "topic2"}},
+		"consumer-3": {Topics: []string{"topic1"}},
+	}
+	topics := map[string]int32{"topic1": 6, "topic2": 4}
+
+	assignor := NewRoundRobinAssignor()
+	result, err := assignor.Assign(members, topics)
+	require.NoError(t, err)
+
+	// Track which consumer got each partition
+	assignments := make(map[string]string) // "topic:partition" -> memberID
+	for memberID, partitions := range result {
+		for _, p := range partitions {
+			key := p.Topic + ":" + strconv.FormatInt(int64(p.Partition), 10)
+			existing, ok := assignments[key]
+			assert.False(t, ok, "partition %s assigned to both %s and %s", key, existing, memberID)
+			assignments[key] = memberID
+		}
+	}
+}
+
+func TestRoundRobinAssignor_EvenDistribution(t *testing.T) {
+	// Verify that partitions are evenly distributed
+	members := map[string]*Subscription{
+		"consumer-1": {Topics: []string{"topic1"}},
+		"consumer-2": {Topics: []string{"topic1"}},
+		"consumer-3": {Topics: []string{"topic1"}},
+	}
+	topics := map[string]int32{"topic1": 12}
+
+	assignor := NewRoundRobinAssignor()
+	result, err := assignor.Assign(members, topics)
+	require.NoError(t, err)
+
+	// Each consumer should get exactly 4 partitions
+	for memberID, partitions := range result {
+		assert.Equal(t, 4, len(partitions), "consumer %s should have 4 partitions", memberID)
+	}
+}
+
+func TestRoundRobinAssignor_DifferenceFromRange(t *testing.T) {
+	// Demonstrate the difference between range and round-robin assignment
+	members := map[string]*Subscription{
+		"consumer-1": {Topics: []string{"topic1", "topic2"}},
+		"consumer-2": {Topics: []string{"topic1", "topic2"}},
+	}
+	topics := map[string]int32{"topic1": 2, "topic2": 2}
+
+	rangeAssignor := NewRangeAssignor()
+	roundRobinAssignor := NewRoundRobinAssignor()
+
+	rangeResult, err := rangeAssignor.Assign(members, topics)
+	require.NoError(t, err)
+
+	roundRobinResult, err := roundRobinAssignor.Assign(members, topics)
+	require.NoError(t, err)
+
+	// Range assignor: consumer-1 gets topic1-0, topic2-0; consumer-2 gets topic1-1, topic2-1
+	// Round-robin: consumer-1 gets topic1-0, topic1-2/topic2-1; consumer-2 gets topic1-1, topic2-0/topic2-2
+	// Both should assign all partitions but in different patterns
+
+	// Verify total partitions assigned is the same
+	rangeTotal := 0
+	roundRobinTotal := 0
+	for _, partitions := range rangeResult {
+		rangeTotal += len(partitions)
+	}
+	for _, partitions := range roundRobinResult {
+		roundRobinTotal += len(partitions)
+	}
+	assert.Equal(t, 4, rangeTotal)
+	assert.Equal(t, 4, roundRobinTotal)
 }

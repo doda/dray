@@ -251,3 +251,92 @@ func (r *RangeAssignor) Assign(members map[string]*Subscription, topics map[stri
 func NewRangeAssignor() Assignor {
 	return &RangeAssignor{}
 }
+
+// RoundRobinAssignor implements the round-robin partition assignment strategy.
+// It sorts all partitions by topic-partition and then assigns them to consumers
+// in a round-robin fashion. This results in more even distribution across topics
+// compared to the range assignor.
+type RoundRobinAssignor struct{}
+
+// Name returns the assignor name.
+func (r *RoundRobinAssignor) Name() string {
+	return "roundrobin"
+}
+
+// Assign implements the round-robin assignment strategy.
+// This uses true cursor-based round-robin: partitions are sorted by topic-partition,
+// consumers are sorted by member ID, and a cursor advances through consumers
+// for each partition assignment, skipping consumers not subscribed to the topic.
+func (r *RoundRobinAssignor) Assign(members map[string]*Subscription, topics map[string]int32) (map[string][]TopicPartition, error) {
+	if len(members) == 0 {
+		return nil, nil
+	}
+
+	// Initialize result
+	result := make(map[string][]TopicPartition)
+	for memberID := range members {
+		result[memberID] = nil
+	}
+
+	// Build set of topic subscriptions per member
+	memberTopics := make(map[string]map[string]bool)
+	for memberID, sub := range members {
+		memberTopics[memberID] = make(map[string]bool)
+		for _, topic := range sub.Topics {
+			memberTopics[memberID][topic] = true
+		}
+	}
+
+	// Collect all partitions from all topics, sorted by topic then partition
+	var allPartitions []TopicPartition
+	topicNames := make([]string, 0, len(topics))
+	for topic := range topics {
+		topicNames = append(topicNames, topic)
+	}
+	sort.Strings(topicNames)
+
+	for _, topic := range topicNames {
+		numPartitions := topics[topic]
+		for p := int32(0); p < numPartitions; p++ {
+			allPartitions = append(allPartitions, TopicPartition{
+				Topic:     topic,
+				Partition: p,
+			})
+		}
+	}
+
+	// Collect and sort member IDs for deterministic ordering
+	memberIDs := make([]string, 0, len(members))
+	for memberID := range members {
+		memberIDs = append(memberIDs, memberID)
+	}
+	sort.Strings(memberIDs)
+
+	// True round-robin: maintain a cursor that advances through consumers
+	cursor := 0
+	numMembers := len(memberIDs)
+
+	// Assign partitions round-robin to consumers that are subscribed to the topic
+	for _, partition := range allPartitions {
+		// Find the next consumer subscribed to this partition's topic
+		// starting from current cursor position
+		for i := 0; i < numMembers; i++ {
+			memberIdx := (cursor + i) % numMembers
+			memberID := memberIDs[memberIdx]
+			if memberTopics[memberID][partition.Topic] {
+				result[memberID] = append(result[memberID], partition)
+				// Advance cursor past this member for next partition
+				cursor = (memberIdx + 1) % numMembers
+				break
+			}
+		}
+		// If no member is subscribed, partition is unassigned (cursor unchanged).
+	}
+
+	return result, nil
+}
+
+// NewRoundRobinAssignor creates a new round-robin assignor.
+func NewRoundRobinAssignor() Assignor {
+	return &RoundRobinAssignor{}
+}
