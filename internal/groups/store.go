@@ -66,18 +66,21 @@ type GroupState struct {
 
 // GroupMember represents a member of a consumer group.
 type GroupMember struct {
-	MemberID           string `json:"memberId"`
-	GroupID            string `json:"groupId"`
-	ClientID           string `json:"clientId"`
-	ClientHost         string `json:"clientHost"`
-	ProtocolType       string `json:"protocolType,omitempty"`
-	SessionTimeoutMs   int32  `json:"sessionTimeoutMs"`
-	RebalanceTimeoutMs int32  `json:"rebalanceTimeoutMs"`
-	GroupInstanceID    string `json:"groupInstanceId,omitempty"`
-	LastHeartbeatMs    int64  `json:"lastHeartbeatMs"`
-	JoinedAtMs         int64  `json:"joinedAtMs"`
-	Metadata           []byte `json:"metadata,omitempty"`
-	SupportedProtocols []byte `json:"supportedProtocols,omitempty"`
+	MemberID           string   `json:"memberId"`
+	GroupID            string   `json:"groupId"`
+	ClientID           string   `json:"clientId"`
+	ClientHost         string   `json:"clientHost"`
+	ProtocolType       string   `json:"protocolType,omitempty"`
+	SessionTimeoutMs   int32    `json:"sessionTimeoutMs"`
+	RebalanceTimeoutMs int32    `json:"rebalanceTimeoutMs"`
+	GroupInstanceID    string   `json:"groupInstanceId,omitempty"`
+	LastHeartbeatMs    int64    `json:"lastHeartbeatMs"`
+	JoinedAtMs         int64    `json:"joinedAtMs"`
+	Metadata           []byte   `json:"metadata,omitempty"`
+	SupportedProtocols []byte   `json:"supportedProtocols,omitempty"`
+	MemberEpoch        int32    `json:"memberEpoch,omitempty"`        // KIP-848: member epoch
+	RackID             string   `json:"rackId,omitempty"`             // KIP-848: rack for zone-aware assignment
+	SubscribedTopics   []string `json:"subscribedTopics,omitempty"`   // KIP-848: topic subscriptions
 }
 
 // Assignment represents the partition assignment for a member.
@@ -442,6 +445,9 @@ type AddMemberRequest struct {
 	Metadata           []byte
 	SupportedProtocols []byte
 	NowMs              int64
+	MemberEpoch        int32    // KIP-848: member epoch
+	RackID             string   // KIP-848: rack for zone-aware assignment
+	SubscribedTopics   []string // KIP-848: topic subscriptions
 }
 
 // AddMember adds a member to the group atomically.
@@ -466,6 +472,9 @@ func (s *Store) AddMember(ctx context.Context, req AddMemberRequest) (*GroupMemb
 		JoinedAtMs:         req.NowMs,
 		Metadata:           req.Metadata,
 		SupportedProtocols: req.SupportedProtocols,
+		MemberEpoch:        req.MemberEpoch,
+		RackID:             req.RackID,
+		SubscribedTopics:   req.SubscribedTopics,
 	}
 
 	memberData, err := json.Marshal(member)
@@ -594,6 +603,69 @@ func (s *Store) UpdateMemberHeartbeat(ctx context.Context, groupID, memberID str
 		txn.PutWithVersion(memberKey, memberData, version)
 		return nil
 	})
+}
+
+// UpdateConsumerMemberRequest holds parameters for updating a KIP-848 consumer member.
+type UpdateConsumerMemberRequest struct {
+	GroupID          string
+	MemberID         string
+	MemberEpoch      int32
+	LastHeartbeatMs  int64
+	SubscribedTopics []string
+	RackID           string
+}
+
+// UpdateConsumerMember updates a KIP-848 consumer member atomically.
+// Returns the updated member.
+func (s *Store) UpdateConsumerMember(ctx context.Context, req UpdateConsumerMemberRequest) (*GroupMember, error) {
+	if req.GroupID == "" {
+		return nil, ErrInvalidGroupID
+	}
+	if req.MemberID == "" {
+		return nil, ErrInvalidMemberID
+	}
+
+	memberKey := keys.GroupMemberKeyPath(req.GroupID, req.MemberID)
+	var updatedMember *GroupMember
+
+	err := s.meta.Txn(ctx, memberKey, func(txn metadata.Txn) error {
+		data, version, err := txn.Get(memberKey)
+		if err != nil {
+			if errors.Is(err, metadata.ErrKeyNotFound) {
+				return ErrMemberNotFound
+			}
+			return err
+		}
+
+		var member GroupMember
+		if err := json.Unmarshal(data, &member); err != nil {
+			return fmt.Errorf("unmarshal member: %w", err)
+		}
+
+		member.MemberEpoch = req.MemberEpoch
+		member.LastHeartbeatMs = req.LastHeartbeatMs
+		if req.SubscribedTopics != nil {
+			member.SubscribedTopics = req.SubscribedTopics
+		}
+		if req.RackID != "" {
+			member.RackID = req.RackID
+		}
+
+		memberData, err := json.Marshal(member)
+		if err != nil {
+			return fmt.Errorf("marshal member: %w", err)
+		}
+
+		txn.PutWithVersion(memberKey, memberData, version)
+		updatedMember = &member
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return updatedMember, nil
 }
 
 // RemoveMember removes a member from the group.

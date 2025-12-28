@@ -466,3 +466,10 @@ Start with project-setup, then follow spec phases:
 - Verified helper assigns partitions via range strategy and stores assignments via SyncGroup
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T11:02:10Z] Reviewed kip848-heartbeat-handler
+- Scope: internal/groups/store.go, internal/protocol/consumer_group_heartbeat.go, internal/protocol/consumer_group_heartbeat_test.go, task_list.json
+- Verified ConsumerGroupHeartbeat handler covers join/heartbeat/leave flows, error codes, and member updates
+- Verified store updates include member epoch, rack ID, and subscriptions for KIP-848
+- Issues found: join path ignored MemberEpoch==0 when MemberID was set
+- Resolution: treat MemberEpoch==0 as join; added test coverage
+- Tests: not run (already run by working agent)
