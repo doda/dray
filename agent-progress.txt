@@ -190,3 +190,10 @@ Start with project-setup, then follow spec phases:
 - Verified multi-stream failure leaves all request results unset
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T03:24:50Z] Reviewed fetch-handler
+- Scope: internal/protocol/fetch.go, internal/fetch/fetcher.go, internal/fetch/wal_reader.go, internal/fetch/patching.go, internal/protocol/fetch_test.go, internal/fetch/patching_test.go
+- Verified handler resolves topic/partition -> streamId, checks HWM, fetches via index lookup, patches batch offsets, and populates HWM/LSO fields
+- Verified fetcher reads WAL chunk ranges, applies maxBytes behavior, and patches base offsets without touching CRC
+- Verified error mapping for unknown topic/partition, leader not available, and offset out of range
+- Issues found: none
+- Tests: not run (already run by working agent)
