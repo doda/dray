@@ -330,3 +330,10 @@ Start with project-setup, then follow spec phases:
 - Verified handling of empty/missing zone_id gracefully
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T07:33:05Z] Reviewed zone-filtered-metadata
+- Scope: internal/protocol/metadata.go, internal/protocol/metadata_test.go, task_list.json
+- Verified Metadata handler filters brokers by zone and falls back to all brokers on empty/missing match
+- Verified partition leader/replica assignment uses zone-filtered broker set
+- Verified ParseZoneID behavior and metadata response broker racks
+- Issues found: none
+- Tests: not run (already run by working agent)

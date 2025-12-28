@@ -421,3 +421,277 @@ func TestMetadataHandler_VersionedFields(t *testing.T) {
 		t.Error("v1+ should have rack")
 	}
 }
+
+func TestMetadataHandler_ZoneFilteredPartitionLeaders(t *testing.T) {
+	ctx := context.Background()
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+
+	// Create a topic with 6 partitions
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "zone-test-topic",
+		PartitionCount: 6,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	// Set up brokers in 3 zones
+	lister := &mockBrokerLister{
+		brokers: []BrokerInfo{
+			{NodeID: 1, Host: "broker1", Port: 9092, Rack: "us-east-1a"},
+			{NodeID: 2, Host: "broker2", Port: 9092, Rack: "us-east-1a"},
+			{NodeID: 3, Host: "broker3", Port: 9092, Rack: "us-east-1b"},
+			{NodeID: 4, Host: "broker4", Port: 9092, Rack: "us-east-1b"},
+			{NodeID: 5, Host: "broker5", Port: 9092, Rack: "us-east-1c"},
+		},
+		zoneBrokers: map[string][]BrokerInfo{
+			"us-east-1a": {
+				{NodeID: 1, Host: "broker1", Port: 9092, Rack: "us-east-1a"},
+				{NodeID: 2, Host: "broker2", Port: 9092, Rack: "us-east-1a"},
+			},
+			"us-east-1b": {
+				{NodeID: 3, Host: "broker3", Port: 9092, Rack: "us-east-1b"},
+				{NodeID: 4, Host: "broker4", Port: 9092, Rack: "us-east-1b"},
+			},
+			"us-east-1c": {
+				{NodeID: 5, Host: "broker5", Port: 9092, Rack: "us-east-1c"},
+			},
+		},
+	}
+
+	handler := NewMetadataHandler(MetadataHandlerConfig{
+		ClusterID:    "test-cluster",
+		ControllerID: 1,
+		LocalBroker: BrokerInfo{
+			NodeID: 1,
+			Host:   "localhost",
+			Port:   9092,
+		},
+		BrokerLister: lister,
+	}, topicStore)
+
+	req := kmsg.NewPtrMetadataRequest()
+	topicName := "zone-test-topic"
+	reqTopic := kmsg.NewMetadataRequestTopic()
+	reqTopic.Topic = &topicName
+	req.Topics = append(req.Topics, reqTopic)
+
+	// Test 1: Request with zone us-east-1a - should get only zone-1a brokers
+	resp := handler.Handle(ctx, 9, req, "us-east-1a")
+
+	// Verify only us-east-1a brokers are returned
+	if len(resp.Brokers) != 2 {
+		t.Errorf("expected 2 brokers for zone us-east-1a, got %d", len(resp.Brokers))
+	}
+	for _, b := range resp.Brokers {
+		if *b.Rack != "us-east-1a" {
+			t.Errorf("expected rack us-east-1a, got %s", *b.Rack)
+		}
+	}
+
+	// Verify partition leaders are from same zone
+	topic := resp.Topics[0]
+	for _, p := range topic.Partitions {
+		if p.Leader != 1 && p.Leader != 2 {
+			t.Errorf("partition %d leader %d should be from zone us-east-1a (1 or 2)",
+				p.Partition, p.Leader)
+		}
+		// Replicas should also be only same-zone brokers
+		for _, r := range p.Replicas {
+			if r != 1 && r != 2 {
+				t.Errorf("partition %d replica %d should be from zone us-east-1a",
+					p.Partition, r)
+			}
+		}
+	}
+
+	// Test 2: Request with zone us-east-1c - should get only the single broker in that zone
+	resp = handler.Handle(ctx, 9, req, "us-east-1c")
+
+	if len(resp.Brokers) != 1 {
+		t.Errorf("expected 1 broker for zone us-east-1c, got %d", len(resp.Brokers))
+	}
+	if len(resp.Brokers) > 0 && *resp.Brokers[0].Rack != "us-east-1c" {
+		t.Errorf("expected rack us-east-1c, got %s", *resp.Brokers[0].Rack)
+	}
+
+	// All partition leaders should be broker 5
+	topic = resp.Topics[0]
+	for _, p := range topic.Partitions {
+		if p.Leader != 5 {
+			t.Errorf("partition %d leader %d should be 5 (only broker in zone)",
+				p.Partition, p.Leader)
+		}
+	}
+}
+
+func TestMetadataHandler_ZoneFallbackToAllBrokers(t *testing.T) {
+	ctx := context.Background()
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "fallback-test",
+		PartitionCount: 3,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	lister := &mockBrokerLister{
+		brokers: []BrokerInfo{
+			{NodeID: 1, Host: "broker1", Port: 9092, Rack: "us-east-1a"},
+			{NodeID: 2, Host: "broker2", Port: 9092, Rack: "us-east-1b"},
+		},
+		zoneBrokers: map[string][]BrokerInfo{
+			"us-east-1a": {{NodeID: 1, Host: "broker1", Port: 9092, Rack: "us-east-1a"}},
+			"us-east-1b": {{NodeID: 2, Host: "broker2", Port: 9092, Rack: "us-east-1b"}},
+		},
+	}
+
+	handler := NewMetadataHandler(MetadataHandlerConfig{
+		ClusterID:    "test-cluster",
+		ControllerID: 1,
+		LocalBroker: BrokerInfo{
+			NodeID: 1,
+			Host:   "localhost",
+			Port:   9092,
+		},
+		BrokerLister: lister,
+	}, topicStore)
+
+	req := kmsg.NewPtrMetadataRequest()
+
+	// Request with non-existent zone - should fallback to all brokers
+	resp := handler.Handle(ctx, 9, req, "nonexistent-zone")
+
+	if len(resp.Brokers) != 2 {
+		t.Errorf("expected fallback to 2 brokers, got %d", len(resp.Brokers))
+	}
+
+	// Verify brokers from different zones are included
+	zones := make(map[string]bool)
+	for _, b := range resp.Brokers {
+		if b.Rack != nil {
+			zones[*b.Rack] = true
+		}
+	}
+	if !zones["us-east-1a"] || !zones["us-east-1b"] {
+		t.Errorf("expected brokers from both zones in fallback, got zones: %v", zones)
+	}
+}
+
+func TestMetadataHandler_EmptyZoneReturnsAllBrokers(t *testing.T) {
+	ctx := context.Background()
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "no-zone-test",
+		PartitionCount: 2,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	lister := &mockBrokerLister{
+		brokers: []BrokerInfo{
+			{NodeID: 1, Host: "broker1", Port: 9092, Rack: "zone-a"},
+			{NodeID: 2, Host: "broker2", Port: 9092, Rack: "zone-b"},
+			{NodeID: 3, Host: "broker3", Port: 9092, Rack: "zone-c"},
+		},
+	}
+
+	handler := NewMetadataHandler(MetadataHandlerConfig{
+		ClusterID:    "test-cluster",
+		ControllerID: 1,
+		LocalBroker: BrokerInfo{
+			NodeID: 1,
+			Host:   "localhost",
+			Port:   9092,
+		},
+		BrokerLister: lister,
+	}, topicStore)
+
+	req := kmsg.NewPtrMetadataRequest()
+
+	// Request with empty zone - should return all brokers
+	resp := handler.Handle(ctx, 9, req, "")
+
+	if len(resp.Brokers) != 3 {
+		t.Errorf("expected 3 brokers when no zone specified, got %d", len(resp.Brokers))
+	}
+}
+
+func TestMetadataHandler_ZoneFilteredLeadersDistribution(t *testing.T) {
+	ctx := context.Background()
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+
+	// Create topic with 10 partitions
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "distribution-test",
+		PartitionCount: 10,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	// Set up 2 brokers in the same zone
+	lister := &mockBrokerLister{
+		brokers: []BrokerInfo{
+			{NodeID: 1, Host: "broker1", Port: 9092, Rack: "zone-a"},
+			{NodeID: 2, Host: "broker2", Port: 9092, Rack: "zone-a"},
+		},
+		zoneBrokers: map[string][]BrokerInfo{
+			"zone-a": {
+				{NodeID: 1, Host: "broker1", Port: 9092, Rack: "zone-a"},
+				{NodeID: 2, Host: "broker2", Port: 9092, Rack: "zone-a"},
+			},
+		},
+	}
+
+	handler := NewMetadataHandler(MetadataHandlerConfig{
+		ClusterID:    "test-cluster",
+		ControllerID: 1,
+		LocalBroker:  BrokerInfo{NodeID: 1, Host: "localhost", Port: 9092},
+		BrokerLister: lister,
+	}, topicStore)
+
+	req := kmsg.NewPtrMetadataRequest()
+	topicName := "distribution-test"
+	reqTopic := kmsg.NewMetadataRequestTopic()
+	reqTopic.Topic = &topicName
+	req.Topics = append(req.Topics, reqTopic)
+
+	resp := handler.Handle(ctx, 9, req, "zone-a")
+
+	topic := resp.Topics[0]
+	if len(topic.Partitions) != 10 {
+		t.Fatalf("expected 10 partitions, got %d", len(topic.Partitions))
+	}
+
+	// Count leader distribution
+	leaderCounts := make(map[int32]int)
+	for _, p := range topic.Partitions {
+		leaderCounts[p.Leader]++
+	}
+
+	// With 10 partitions and 2 brokers, each should have 5 partitions
+	if leaderCounts[1] != 5 || leaderCounts[2] != 5 {
+		t.Errorf("expected even leader distribution (5, 5), got broker1=%d, broker2=%d",
+			leaderCounts[1], leaderCounts[2])
+	}
+
+	// All leaders should be from zone-a (node 1 or 2)
+	for _, p := range topic.Partitions {
+		if p.Leader != 1 && p.Leader != 2 {
+			t.Errorf("partition %d has leader %d not from zone-a", p.Partition, p.Leader)
+		}
+	}
+}

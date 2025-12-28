@@ -1136,7 +1136,7 @@
     "scope": [
       "internal/protocol/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "zone-filtered-coordinator",
