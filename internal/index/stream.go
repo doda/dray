@@ -294,3 +294,20 @@ func (sm *StreamManager) SetHWM(ctx context.Context, streamID string, hwm int64,
 	newVersion = expectedVersion + 1
 	return newVersion, nil
 }
+
+// MarkStreamDeleted marks a stream for deletion by removing its HWM and metadata.
+// The actual cleanup of WAL and Parquet objects is handled by the GC service.
+// Returns nil if the stream doesn't exist (idempotent).
+func (sm *StreamManager) MarkStreamDeleted(ctx context.Context, streamID string) error {
+	hwmKey := keys.HwmKeyPath(streamID)
+	metaKey := keys.StreamMetaKeyPath(streamID)
+
+	err := sm.store.Txn(ctx, hwmKey, func(txn metadata.Txn) error {
+		// Delete both hwm and meta keys
+		txn.Delete(hwmKey)
+		txn.Delete(metaKey)
+		return nil
+	})
+
+	return err
+}

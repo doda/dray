@@ -241,6 +241,65 @@ func (s *Store) TopicExists(ctx context.Context, name string) (bool, error) {
 	return result.Exists, nil
 }
 
+// DeleteTopicResult holds the result of topic deletion.
+type DeleteTopicResult struct {
+	Topic      TopicMeta
+	Partitions []PartitionMeta
+}
+
+// DeleteTopic deletes a topic and all its partitions atomically.
+// Returns the deleted topic metadata and partitions.
+func (s *Store) DeleteTopic(ctx context.Context, name string) (*DeleteTopicResult, error) {
+	if name == "" {
+		return nil, ErrInvalidTopicName
+	}
+
+	topicKey := keys.TopicKeyPath(name)
+
+	// First, get the topic metadata to return
+	topic, err := s.GetTopic(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get all partitions
+	partitions, err := s.ListPartitions(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	err = s.meta.Txn(ctx, topicKey, func(txn metadata.Txn) error {
+		// Verify topic still exists
+		_, _, err := txn.Get(topicKey)
+		if err != nil {
+			if errors.Is(err, metadata.ErrKeyNotFound) {
+				return ErrTopicNotFound
+			}
+			return err
+		}
+
+		// Delete partition entries
+		for _, p := range partitions {
+			partKey := keys.TopicPartitionKeyPath(name, p.Partition)
+			txn.Delete(partKey)
+		}
+
+		// Delete topic metadata
+		txn.Delete(topicKey)
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &DeleteTopicResult{
+		Topic:      *topic,
+		Partitions: partitions,
+	}, nil
+}
+
 func contains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
 		if s[i:i+len(substr)] == substr {

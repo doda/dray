@@ -299,3 +299,123 @@ func TestStore_InvalidInputs(t *testing.T) {
 		t.Errorf("expected ErrInvalidPartitions for negative partitions, got %v", err)
 	}
 }
+
+func TestStore_DeleteTopic(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	// Create a topic
+	result, err := store.CreateTopic(ctx, CreateTopicRequest{
+		Name:           "delete-topic",
+		PartitionCount: 3,
+		Config: map[string]string{
+			"retention.ms": "604800000",
+		},
+		NowMs: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	// Verify topic exists
+	_, err = store.GetTopic(ctx, "delete-topic")
+	if err != nil {
+		t.Fatalf("topic should exist: %v", err)
+	}
+
+	// Delete the topic
+	deleteResult, err := store.DeleteTopic(ctx, "delete-topic")
+	if err != nil {
+		t.Fatalf("failed to delete topic: %v", err)
+	}
+
+	// Verify returned data matches created data
+	if deleteResult.Topic.Name != "delete-topic" {
+		t.Errorf("expected topic name 'delete-topic', got %s", deleteResult.Topic.Name)
+	}
+	if deleteResult.Topic.TopicID != result.Topic.TopicID {
+		t.Errorf("expected topic ID %s, got %s", result.Topic.TopicID, deleteResult.Topic.TopicID)
+	}
+	if len(deleteResult.Partitions) != 3 {
+		t.Errorf("expected 3 partitions returned, got %d", len(deleteResult.Partitions))
+	}
+
+	// Verify topic no longer exists
+	_, err = store.GetTopic(ctx, "delete-topic")
+	if err != ErrTopicNotFound {
+		t.Errorf("expected ErrTopicNotFound, got %v", err)
+	}
+
+	// Verify partitions no longer exist
+	partitions, err := store.ListPartitions(ctx, "delete-topic")
+	if err != nil {
+		t.Fatalf("failed to list partitions: %v", err)
+	}
+	if len(partitions) != 0 {
+		t.Errorf("expected 0 partitions after delete, got %d", len(partitions))
+	}
+}
+
+func TestStore_DeleteTopicNotFound(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	_, err := store.DeleteTopic(ctx, "nonexistent")
+	if err != ErrTopicNotFound {
+		t.Errorf("expected ErrTopicNotFound, got %v", err)
+	}
+}
+
+func TestStore_DeleteTopicEmptyName(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	_, err := store.DeleteTopic(ctx, "")
+	if err != ErrInvalidTopicName {
+		t.Errorf("expected ErrInvalidTopicName, got %v", err)
+	}
+}
+
+func TestStore_DeleteTopicThenRecreate(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	// Create topic
+	_, err := store.CreateTopic(ctx, CreateTopicRequest{
+		Name:           "recreate-topic",
+		PartitionCount: 2,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	// Delete it
+	_, err = store.DeleteTopic(ctx, "recreate-topic")
+	if err != nil {
+		t.Fatalf("failed to delete topic: %v", err)
+	}
+
+	// Recreate with different partition count
+	result, err := store.CreateTopic(ctx, CreateTopicRequest{
+		Name:           "recreate-topic",
+		PartitionCount: 5,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to recreate topic: %v", err)
+	}
+
+	if result.Topic.PartitionCount != 5 {
+		t.Errorf("expected 5 partitions, got %d", result.Topic.PartitionCount)
+	}
+
+	// Verify the topic exists with new partition count
+	topic, err := store.GetTopic(ctx, "recreate-topic")
+	if err != nil {
+		t.Fatalf("failed to get topic: %v", err)
+	}
+	if topic.PartitionCount != 5 {
+		t.Errorf("expected 5 partitions in stored topic, got %d", topic.PartitionCount)
+	}
+}

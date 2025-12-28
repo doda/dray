@@ -85,7 +85,7 @@ func (m *mockMetadataStore) Txn(ctx context.Context, scopeKey string, fn func(me
 		return metadata.ErrStoreClosed
 	}
 	m.txnCount++
-	txn := &mockTxn{store: m, pending: make(map[string][]byte)}
+	txn := &mockTxn{store: m, pending: make(map[string][]byte), deletes: make(map[string]bool)}
 	if err := fn(txn); err != nil {
 		return err
 	}
@@ -96,6 +96,10 @@ func (m *mockMetadataStore) Txn(ctx context.Context, scopeKey string, fn func(me
 			newVersion = kv.version + 1
 		}
 		m.data[key] = mockKV{value: value, version: newVersion}
+	}
+	// Apply deletes
+	for key := range txn.deletes {
+		delete(m.data, key)
 	}
 	return nil
 }
@@ -116,6 +120,7 @@ func (m *mockMetadataStore) Close() error {
 type mockTxn struct {
 	store   *mockMetadataStore
 	pending map[string][]byte
+	deletes map[string]bool
 }
 
 func (t *mockTxn) Get(key string) (value []byte, version metadata.Version, err error) {
@@ -134,11 +139,11 @@ func (t *mockTxn) PutWithVersion(key string, value []byte, expectedVersion metad
 }
 
 func (t *mockTxn) Delete(key string) {
-	t.pending[key] = nil
+	t.deletes[key] = true
 }
 
 func (t *mockTxn) DeleteWithVersion(key string, expectedVersion metadata.Version) {
-	t.pending[key] = nil
+	t.deletes[key] = true
 }
 
 func TestCreateStream(t *testing.T) {
@@ -426,5 +431,57 @@ func TestMultipleStreamsForSameTopic(t *testing.T) {
 		if meta.TopicName != "multi-partition-topic" {
 			t.Errorf("partition %d: meta.TopicName = %s, want multi-partition-topic", i, meta.TopicName)
 		}
+	}
+}
+
+func TestMarkStreamDeleted(t *testing.T) {
+	store := newMockMetadataStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	// Create a stream
+	streamID, err := sm.CreateStream(ctx, "delete-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Verify stream exists
+	_, _, err = sm.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("stream should exist: %v", err)
+	}
+
+	_, err = sm.GetStreamMeta(ctx, streamID)
+	if err != nil {
+		t.Fatalf("stream meta should exist: %v", err)
+	}
+
+	// Mark stream deleted
+	err = sm.MarkStreamDeleted(ctx, streamID)
+	if err != nil {
+		t.Fatalf("MarkStreamDeleted failed: %v", err)
+	}
+
+	// Verify stream no longer exists
+	_, _, err = sm.GetHWM(ctx, streamID)
+	if err != ErrStreamNotFound {
+		t.Errorf("expected ErrStreamNotFound, got %v", err)
+	}
+
+	_, err = sm.GetStreamMeta(ctx, streamID)
+	if err != ErrStreamNotFound {
+		t.Errorf("expected ErrStreamNotFound, got %v", err)
+	}
+}
+
+func TestMarkStreamDeletedIdempotent(t *testing.T) {
+	store := newMockMetadataStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	// Mark a non-existent stream deleted (should not error)
+	err := sm.MarkStreamDeleted(ctx, "nonexistent-stream")
+	if err != nil {
+		t.Errorf("MarkStreamDeleted on non-existent stream should not error, got %v", err)
 	}
 }

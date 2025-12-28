@@ -1004,7 +1004,7 @@
     "scope": [
       "internal/protocol/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "topic-config-storage",
