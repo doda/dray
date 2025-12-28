@@ -204,8 +204,10 @@ func (h *CreateTopicsHandler) handleTopic(ctx context.Context, version int16, to
 		}
 	}
 
-	// Create Iceberg table if duality mode is enabled
-	if h.tableCreator != nil {
+	// Create Iceberg table if duality mode is enabled for this topic.
+	// Check per-topic override (table.iceberg.enabled) with global default.
+	topicIcebergEnabled := topics.GetIcebergEnabled(config, h.cfg.IcebergEnabled)
+	if h.tableCreator != nil && topicIcebergEnabled {
 		_, err := h.tableCreator.CreateTableForTopic(ctx, topicReq.Topic)
 		if err != nil {
 			// Iceberg table creation failure should not fail topic creation

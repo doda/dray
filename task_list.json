@@ -1937,7 +1937,7 @@
     "scope": [
       "internal/iceberg/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "produce-iceberg-down-test",

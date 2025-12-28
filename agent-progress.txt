@@ -646,3 +646,11 @@ Start with project-setup, then follow spec phases:
 - Fix applied: use strconv for snapshot summary values to avoid rune conversion errors
 - Issues found: none after fix
 - Tests: not run (trusted prior run by working agent)
+[review] duality-mode-config
+- Scope: internal/topics/config.go, internal/topics/config_test.go, internal/protocol/create_topics.go, internal/compaction/iceberg_check.go, internal/compaction/saga.go, internal/compaction/saga_test.go, tests/integration/compaction_crash_recovery_test.go, task_list.json
+- Verified table.iceberg.enabled added to supported configs with validation and helper resolving per-topic vs global default
+- Verified topic creation only creates Iceberg tables when per-topic config allows it
+- Verified new Iceberg checker logic and skip path in saga manager
+- Verified compaction skip integration test covers Iceberg disabled and default-enabled behavior
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)

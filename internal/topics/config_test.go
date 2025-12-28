@@ -321,8 +321,8 @@ func TestConfigValidationError(t *testing.T) {
 
 func TestSupportedConfigs(t *testing.T) {
 	configs := SupportedConfigs()
-	if len(configs) != 5 {
-		t.Errorf("expected 5 supported configs, got %d", len(configs))
+	if len(configs) != 6 {
+		t.Errorf("expected 6 supported configs, got %d", len(configs))
 	}
 	expected := map[string]bool{
 		ConfigRetentionMs:       true,
@@ -330,6 +330,7 @@ func TestSupportedConfigs(t *testing.T) {
 		ConfigCleanupPolicy:     true,
 		ConfigMinInsyncReplicas: true,
 		ConfigReplicationFactor: true,
+		ConfigIcebergEnabled:    true,
 	}
 	for _, c := range configs {
 		if !expected[c] {
@@ -711,5 +712,162 @@ func TestStore_IgnoredConfigsStored(t *testing.T) {
 	}
 	if topic.Config[ConfigReplicationFactor] != "3" {
 		t.Errorf("expected replication.factor=3, got %s", topic.Config[ConfigReplicationFactor])
+	}
+}
+
+// Tests for table.iceberg.enabled config (duality mode)
+
+func TestValidateIcebergEnabled(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"valid true", "true", false},
+		{"valid false", "false", false},
+		{"invalid empty", "", true},
+		{"invalid uppercase", "TRUE", true},
+		{"invalid yes", "yes", true},
+		{"invalid 1", "1", true},
+		{"invalid 0", "0", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateConfig(ConfigIcebergEnabled, tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateConfig(%s, %s) error = %v, wantErr %v", ConfigIcebergEnabled, tt.value, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGetIcebergEnabled(t *testing.T) {
+	tests := []struct {
+		name          string
+		configs       map[string]string
+		globalDefault bool
+		expected      bool
+	}{
+		{
+			name:          "not set, global true",
+			configs:       map[string]string{},
+			globalDefault: true,
+			expected:      true,
+		},
+		{
+			name:          "not set, global false",
+			configs:       map[string]string{},
+			globalDefault: false,
+			expected:      false,
+		},
+		{
+			name:          "explicitly true, global true",
+			configs:       map[string]string{ConfigIcebergEnabled: "true"},
+			globalDefault: true,
+			expected:      true,
+		},
+		{
+			name:          "explicitly true, global false",
+			configs:       map[string]string{ConfigIcebergEnabled: "true"},
+			globalDefault: false,
+			expected:      true,
+		},
+		{
+			name:          "explicitly false, global true",
+			configs:       map[string]string{ConfigIcebergEnabled: "false"},
+			globalDefault: true,
+			expected:      false,
+		},
+		{
+			name:          "explicitly false, global false",
+			configs:       map[string]string{ConfigIcebergEnabled: "false"},
+			globalDefault: false,
+			expected:      false,
+		},
+		{
+			name:          "nil configs, global true",
+			configs:       nil,
+			globalDefault: true,
+			expected:      true,
+		},
+		{
+			name:          "other configs, global true",
+			configs:       map[string]string{ConfigRetentionMs: "86400000"},
+			globalDefault: true,
+			expected:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GetIcebergEnabled(tt.configs, tt.globalDefault)
+			if result != tt.expected {
+				t.Errorf("GetIcebergEnabled() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestStore_CreateTopicWithIcebergEnabled(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	result, err := store.CreateTopic(ctx, CreateTopicRequest{
+		Name:           "iceberg-enabled-topic",
+		PartitionCount: 1,
+		Config: map[string]string{
+			ConfigIcebergEnabled: "true",
+		},
+		NowMs: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	if result.Topic.Config[ConfigIcebergEnabled] != "true" {
+		t.Errorf("expected table.iceberg.enabled=true, got %s", result.Topic.Config[ConfigIcebergEnabled])
+	}
+}
+
+func TestStore_CreateTopicWithIcebergDisabled(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	result, err := store.CreateTopic(ctx, CreateTopicRequest{
+		Name:           "iceberg-disabled-topic",
+		PartitionCount: 1,
+		Config: map[string]string{
+			ConfigIcebergEnabled: "false",
+		},
+		NowMs: time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	if result.Topic.Config[ConfigIcebergEnabled] != "false" {
+		t.Errorf("expected table.iceberg.enabled=false, got %s", result.Topic.Config[ConfigIcebergEnabled])
+	}
+}
+
+func TestStore_CreateTopicWithInvalidIcebergEnabled(t *testing.T) {
+	ctx := context.Background()
+	store := NewStore(metadata.NewMockStore())
+
+	_, err := store.CreateTopic(ctx, CreateTopicRequest{
+		Name:           "iceberg-invalid-topic",
+		PartitionCount: 1,
+		Config: map[string]string{
+			ConfigIcebergEnabled: "invalid",
+		},
+		NowMs: time.Now().UnixMilli(),
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid table.iceberg.enabled value")
+	}
+	var cfgErr *ConfigValidationError
+	if !errors.As(err, &cfgErr) {
+		t.Errorf("expected ConfigValidationError, got %T: %v", err, err)
 	}
 }

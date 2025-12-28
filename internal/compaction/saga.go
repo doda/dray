@@ -131,6 +131,11 @@ type Job struct {
 	// Set when state transitions to ICEBERG_COMMITTED.
 	IcebergSnapshotID int64 `json:"icebergSnapshotId,omitempty"`
 
+	// IcebergSkipped indicates the Iceberg commit was skipped because
+	// table.iceberg.enabled was set to false for this topic.
+	// When true, the job transitions directly from PARQUET_WRITTEN to INDEX_SWAPPED.
+	IcebergSkipped bool `json:"icebergSkipped,omitempty"`
+
 	// ---- Index Swap Phase Fields ----
 
 	// WALObjectsToDecrement contains WAL object IDs whose refcounts need decrementing.
@@ -167,9 +172,11 @@ func (j *Job) IsRecoverable() bool {
 }
 
 // validTransitions defines allowed state transitions.
+// Note: PARQUET_WRITTEN can transition to either ICEBERG_COMMITTED (normal path)
+// or INDEX_SWAPPED (when Iceberg is disabled via table.iceberg.enabled=false).
 var validTransitions = map[JobState][]JobState{
 	JobStateCreated:          {JobStateParquetWritten, JobStateFailed},
-	JobStateParquetWritten:   {JobStateIcebergCommitted, JobStateFailed},
+	JobStateParquetWritten:   {JobStateIcebergCommitted, JobStateIndexSwapped, JobStateFailed},
 	JobStateIcebergCommitted: {JobStateIndexSwapped, JobStateFailed},
 	JobStateIndexSwapped:     {JobStateDone, JobStateFailed},
 	JobStateDone:             {}, // Terminal state
@@ -409,6 +416,17 @@ func (sm *SagaManager) MarkParquetWritten(ctx context.Context, streamID, jobID, 
 func (sm *SagaManager) MarkIcebergCommitted(ctx context.Context, streamID, jobID string, snapshotID int64) (*Job, error) {
 	return sm.TransitionState(ctx, streamID, jobID, JobStateIcebergCommitted, func(j *Job) error {
 		j.IcebergSnapshotID = snapshotID
+		return nil
+	})
+}
+
+// SkipIcebergCommit transitions a job directly from PARQUET_WRITTEN to INDEX_SWAPPED,
+// skipping the Iceberg commit phase. This is used when table.iceberg.enabled is false
+// for the topic, per SPEC.md section 11.2.
+func (sm *SagaManager) SkipIcebergCommit(ctx context.Context, streamID, jobID string, walObjectsToDecrement []string) (*Job, error) {
+	return sm.TransitionState(ctx, streamID, jobID, JobStateIndexSwapped, func(j *Job) error {
+		j.IcebergSkipped = true
+		j.WALObjectsToDecrement = walObjectsToDecrement
 		return nil
 	})
 }
