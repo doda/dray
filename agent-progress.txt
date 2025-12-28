@@ -391,3 +391,10 @@ Start with project-setup, then follow spec phases:
 - Issues found: protocol type mismatch returned wrong error; protocol selection allowed no-common fallback; metadata used wrong protocol; rebalance completion tied to cancelable context
 - Resolution: return INCONSISTENT_GROUP_PROTOCOL on mismatch/no-common, select common protocol deterministically, use selected protocol metadata, detach rebalance ctx
 - Tests: not run (already run by working agent)
+[2025-12-28T09:24:10Z] Reviewed sync-group-handler
+- Scope: internal/protocol/sync_group.go, internal/protocol/sync_group_test.go, task_list.json
+- Verified SyncGroup validates group/member/generation, acquires lease, and enforces state requirements
+- Verified leader assignment distribution, member waiting, and assignment persistence logic
+- Issues found: stable groups could block after restart because assignments were only in-memory; sync timeout left timer non-nil, preventing future timeouts
+- Resolution: return stored assignments for stable groups when generation matches; reset timer to nil after timeout
+- Tests: not run (already run by working agent)
