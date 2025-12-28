@@ -661,3 +661,11 @@ Start with project-setup, then follow spec phases:
 - Fix applied: assert Iceberg append errors are expected (use errors.Is) instead of logging unexpected errors
 - Issues found: none after fix
 - Tests: not run (trusted prior run by working agent)
+[review] wal-refcount-management
+- Scope: internal/produce/commit.go, internal/compaction/swap.go, internal/compaction/swap_test.go, task_list.json
+- Verified WAL object record writes refCount = number of stream chunks on commit
+- Verified refcount decrement uses CAS loop and schedules GC when refcount reaches zero
+- Verified WAL object keys follow /wal/objects/<metaDomain>/<walId> and GC keys /wal/gc/<metaDomain>/<walId>
+- Verified swap result tracks decremented WAL IDs and GC-ready IDs
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)
