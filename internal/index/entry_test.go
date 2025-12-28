@@ -1632,3 +1632,247 @@ func TestConcurrentAppendIndexEntry_HighContention(t *testing.T) {
 		}
 	}
 }
+
+// TestLookupOffsetByTimestamp_Basic tests basic timestamp-based offset lookup.
+func TestLookupOffsetByTimestamp_Basic(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, _ := sm.CreateStream(ctx, "test-topic", 0)
+
+	// Add entries with different timestamp ranges
+	_, err := sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    5,
+		ChunkSizeBytes: 100,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 1500,
+		WalID:          "wal-1",
+		WalPath:        "wal/1.wal",
+		ChunkOffset:    0,
+		ChunkLength:    100,
+	})
+	if err != nil {
+		t.Fatalf("failed to append: %v", err)
+	}
+
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    5,
+		ChunkSizeBytes: 100,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		MinTimestampMs: 2000,
+		MaxTimestampMs: 2500,
+		WalID:          "wal-2",
+		WalPath:        "wal/2.wal",
+		ChunkOffset:    0,
+		ChunkLength:    100,
+	})
+	if err != nil {
+		t.Fatalf("failed to append: %v", err)
+	}
+
+	tests := []struct {
+		name           string
+		timestamp      int64
+		expectedOffset int64
+		expectedFound  bool
+	}{
+		{
+			name:           "before first entry",
+			timestamp:      500,
+			expectedOffset: 0,
+			expectedFound:  true,
+		},
+		{
+			name:           "at first entry start",
+			timestamp:      1000,
+			expectedOffset: 0,
+			expectedFound:  true,
+		},
+		{
+			name:           "in first entry",
+			timestamp:      1200,
+			expectedOffset: 0,
+			expectedFound:  true,
+		},
+		{
+			name:           "at second entry start",
+			timestamp:      2000,
+			expectedOffset: 5,
+			expectedFound:  true,
+		},
+		{
+			name:           "after all entries",
+			timestamp:      3000,
+			expectedOffset: -1,
+			expectedFound:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := sm.LookupOffsetByTimestamp(ctx, streamID, tt.timestamp)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.Found != tt.expectedFound {
+				t.Errorf("Found = %v, expected %v", result.Found, tt.expectedFound)
+			}
+
+			if result.Offset != tt.expectedOffset {
+				t.Errorf("Offset = %d, expected %d", result.Offset, tt.expectedOffset)
+			}
+		})
+	}
+}
+
+// TestLookupOffsetByTimestamp_EmptyStream tests lookup on empty stream.
+func TestLookupOffsetByTimestamp_EmptyStream(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, _ := sm.CreateStream(ctx, "test-topic", 0)
+
+	result, err := sm.LookupOffsetByTimestamp(ctx, streamID, 1000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Found {
+		t.Error("expected not found for empty stream")
+	}
+
+	if result.Offset != -1 {
+		t.Errorf("expected offset=-1, got %d", result.Offset)
+	}
+}
+
+// TestLookupOffsetByTimestamp_WithBatchIndex tests using batchIndex for finer lookup.
+func TestLookupOffsetByTimestamp_WithBatchIndex(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, _ := sm.CreateStream(ctx, "test-topic", 0)
+
+	_, err := sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    15,
+		ChunkSizeBytes: 300,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 3000,
+		WalID:          "wal-1",
+		WalPath:        "wal/1.wal",
+		ChunkOffset:    0,
+		ChunkLength:    300,
+		BatchIndex: []BatchIndexEntry{
+			{BatchStartOffsetDelta: 0, BatchLastOffsetDelta: 4, MinTimestampMs: 1000, MaxTimestampMs: 1500},
+			{BatchStartOffsetDelta: 5, BatchLastOffsetDelta: 9, MinTimestampMs: 2000, MaxTimestampMs: 2500},
+			{BatchStartOffsetDelta: 10, BatchLastOffsetDelta: 14, MinTimestampMs: 2700, MaxTimestampMs: 3000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to append: %v", err)
+	}
+
+	tests := []struct {
+		name           string
+		timestamp      int64
+		expectedOffset int64
+	}{
+		{"in first batch", 1200, 0},
+		{"in second batch", 2200, 5},
+		{"in third batch", 2800, 10},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := sm.LookupOffsetByTimestamp(ctx, streamID, tt.timestamp)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if !result.Found {
+				t.Error("expected to find offset")
+			}
+
+			if result.Offset != tt.expectedOffset {
+				t.Errorf("Offset = %d, expected %d", result.Offset, tt.expectedOffset)
+			}
+		})
+	}
+}
+
+// TestLookupOffsetByTimestamp_StreamNotFound tests error handling.
+func TestLookupOffsetByTimestamp_StreamNotFound(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	_, err := sm.LookupOffsetByTimestamp(ctx, "nonexistent", 1000)
+	if !errors.Is(err, ErrStreamNotFound) {
+		t.Errorf("expected ErrStreamNotFound, got %v", err)
+	}
+}
+
+// TestGetEarliestOffset_Basic tests basic earliest offset lookup.
+func TestGetEarliestOffset_Basic(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, _ := sm.CreateStream(ctx, "test-topic", 0)
+
+	// Empty stream should return 0
+	offset, err := sm.GetEarliestOffset(ctx, streamID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if offset != 0 {
+		t.Errorf("expected 0 for empty stream, got %d", offset)
+	}
+
+	// Add an entry
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    5,
+		ChunkSizeBytes: 100,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 1500,
+		WalID:          "wal-1",
+		WalPath:        "wal/1.wal",
+		ChunkOffset:    0,
+		ChunkLength:    100,
+	})
+	if err != nil {
+		t.Fatalf("failed to append: %v", err)
+	}
+
+	// First entry starts at 0
+	offset, err = sm.GetEarliestOffset(ctx, streamID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if offset != 0 {
+		t.Errorf("expected 0, got %d", offset)
+	}
+}
+
+// TestGetEarliestOffset_StreamNotFound tests error handling.
+func TestGetEarliestOffset_StreamNotFound(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	_, err := sm.GetEarliestOffset(ctx, "nonexistent")
+	if !errors.Is(err, ErrStreamNotFound) {
+		t.Errorf("expected ErrStreamNotFound, got %v", err)
+	}
+}

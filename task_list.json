@@ -887,7 +887,7 @@
     "scope": [
       "internal/protocol/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "list-offsets-timestamp-test",

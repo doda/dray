@@ -229,3 +229,11 @@ Start with project-setup, then follow spec phases:
 - Verified test batch builders now set CRC where required
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T04:36:17Z] Reviewed list-offsets-handler
+- Scope: internal/protocol/list_offsets.go, internal/protocol/list_offsets_test.go, internal/index/entry.go, internal/index/entry_test.go, task_list.json
+- Verified ListOffsets handler returns LATEST HWM, EARLIEST smallest offset, and TIMESTAMP lookup via index timestamps
+- Verified timestamp lookup handles empty streams, not-found timestamps, and batchIndex-assisted narrowing
+- Verified earliest offset lookup reads first index entry and handles missing streams
+- Verified response shaping for v0 (OldStyleOffsets) and v1+ timestamp/offset fields
+- Issues found: none
+- Tests: not run (already run by working agent)

@@ -398,3 +398,177 @@ func (sm *StreamManager) LookupOffsetWithBounds(ctx context.Context, streamID st
 
 	return result, earliestOffset, nil
 }
+
+// TimestampLookupResult contains the result of a timestamp-based lookup.
+type TimestampLookupResult struct {
+	// Offset is the first offset with timestamp >= requested timestamp.
+	// -1 if no matching offset was found.
+	Offset int64
+	// Timestamp is the timestamp of the record at Offset.
+	// -1 if no matching offset was found.
+	Timestamp int64
+	// Found is true if a matching offset was found.
+	Found bool
+}
+
+// LookupOffsetByTimestamp finds the first offset whose record timestamp >= the requested timestamp.
+// It uses a binary search over index entries using their min/max timestamps.
+//
+// Per SPEC section 10.4:
+//   - Use Parquet file stats / index entry min/max timestamps if available
+//   - Else fallback to WAL batchIndex min/max timestamps
+//
+// Returns:
+//   - TimestampLookupResult with Found=true and Offset/Timestamp populated if found
+//   - TimestampLookupResult with Found=false if no record >= timestamp exists
+//   - Error if the stream doesn't exist or on other failures
+func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID string, timestamp int64) (*TimestampLookupResult, error) {
+	// First verify stream exists and get HWM
+	hwm, _, err := sm.GetHWM(ctx, streamID)
+	if err != nil {
+		return nil, err
+	}
+
+	// If stream is empty, return not found
+	if hwm == 0 {
+		return &TimestampLookupResult{
+			Offset:    -1,
+			Timestamp: -1,
+			Found:     false,
+		}, nil
+	}
+
+	// List all index entries for the stream
+	prefix := keys.OffsetIndexPrefix(streamID)
+	kvs, err := sm.store.List(ctx, prefix, "", 0)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(kvs) == 0 {
+		return &TimestampLookupResult{
+			Offset:    -1,
+			Timestamp: -1,
+			Found:     false,
+		}, nil
+	}
+
+	// Parse all entries
+	entries := make([]IndexEntry, 0, len(kvs))
+	for _, kv := range kvs {
+		var entry IndexEntry
+		if err := json.Unmarshal(kv.Value, &entry); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+
+	// Binary search to find the first entry where MaxTimestampMs >= timestamp
+	// We want the entry that potentially contains records with timestamp >= requested
+	lo, hi := 0, len(entries)-1
+	candidateIdx := -1
+
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		entry := entries[mid]
+
+		if entry.MaxTimestampMs >= timestamp {
+			// This entry might contain a matching record
+			candidateIdx = mid
+			hi = mid - 1 // Look for earlier entries
+		} else {
+			// All records in this entry are before the timestamp
+			lo = mid + 1
+		}
+	}
+
+	if candidateIdx == -1 {
+		// No entry has MaxTimestamp >= requested timestamp
+		return &TimestampLookupResult{
+			Offset:    -1,
+			Timestamp: -1,
+			Found:     false,
+		}, nil
+	}
+
+	// We found a candidate entry. Now we need to find the exact offset.
+	entry := entries[candidateIdx]
+
+	// If the entry's MinTimestamp is already >= requested, return start offset
+	if entry.MinTimestampMs >= timestamp {
+		return &TimestampLookupResult{
+			Offset:    entry.StartOffset,
+			Timestamp: entry.MinTimestampMs,
+			Found:     true,
+		}, nil
+	}
+
+	// The timestamp is within this entry's range. Try to narrow down using batchIndex.
+	if len(entry.BatchIndex) > 0 {
+		// Binary search within the batchIndex
+		batchLo, batchHi := 0, len(entry.BatchIndex)-1
+		batchCandidateIdx := -1
+
+		for batchLo <= batchHi {
+			batchMid := (batchLo + batchHi) / 2
+			batch := entry.BatchIndex[batchMid]
+
+			if batch.MaxTimestampMs >= timestamp {
+				batchCandidateIdx = batchMid
+				batchHi = batchMid - 1
+			} else {
+				batchLo = batchMid + 1
+			}
+		}
+
+		if batchCandidateIdx != -1 {
+			batch := entry.BatchIndex[batchCandidateIdx]
+			// Return the start of this batch
+			offset := entry.StartOffset + int64(batch.BatchStartOffsetDelta)
+			ts := batch.MinTimestampMs
+			if ts < timestamp {
+				ts = batch.MaxTimestampMs // Best estimate
+			}
+			return &TimestampLookupResult{
+				Offset:    offset,
+				Timestamp: ts,
+				Found:     true,
+			}, nil
+		}
+	}
+
+	// Fallback: return start of entry if no batchIndex
+	return &TimestampLookupResult{
+		Offset:    entry.StartOffset,
+		Timestamp: entry.MinTimestampMs,
+		Found:     true,
+	}, nil
+}
+
+// GetEarliestOffset returns the earliest available offset for a stream.
+// This is typically 0 unless retention has deleted earlier offsets.
+func (sm *StreamManager) GetEarliestOffset(ctx context.Context, streamID string) (int64, error) {
+	// Verify stream exists first
+	_, _, err := sm.GetHWM(ctx, streamID)
+	if err != nil {
+		return 0, err
+	}
+
+	// Get the first index entry
+	prefix := keys.OffsetIndexPrefix(streamID)
+	kvs, err := sm.store.List(ctx, prefix, "", 1)
+	if err != nil {
+		return 0, err
+	}
+
+	if len(kvs) == 0 {
+		return 0, nil // Empty stream, earliest is 0
+	}
+
+	var firstEntry IndexEntry
+	if err := json.Unmarshal(kvs[0].Value, &firstEntry); err != nil {
+		return 0, err
+	}
+
+	return firstEntry.StartOffset, nil
+}
