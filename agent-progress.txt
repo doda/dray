@@ -237,3 +237,11 @@ Start with project-setup, then follow spec phases:
 - Verified response shaping for v0 (OldStyleOffsets) and v1+ timestamp/offset fields
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T05:22:11Z] Reviewed list-offsets-timestamp-test
+- Scope: internal/protocol/list_offsets_timestamp_test.go, internal/protocol/list_offsets.go, internal/index/entry.go, task_list.json
+- Verified timestamp lookup returns first offset with timestamp >= request via index timestamps and batchIndex
+- Verified empty partitions and after-last timestamps return offset/timestamp -1
+- Verified mid-range and boundary timestamps map to expected batch starts across multiple entries
+- Verified version 0 response uses OldStyleOffsets for timestamp lookup
+- Issues found: none
+- Tests: not run (already run by working agent)
