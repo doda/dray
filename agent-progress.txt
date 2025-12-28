@@ -367,3 +367,10 @@ Start with project-setup, then follow spec phases:
 - Verified deterministic hashing for coordinator selection and stable error handling for transactions
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T08:24:11Z] Reviewed group-state-storage
+- Scope: internal/groups/store.go, internal/groups/store_test.go, task_list.json
+- Verified consumer group type/state/member/assignment storage via MetadataStore transactions
+- Verified state transitions, generation bumps, assignment updates, and list helpers
+- Verified tests cover group lifecycle, member ops, assignments, and error paths
+- Issues found: none
+- Tests: not run (already run by working agent)
