@@ -168,3 +168,11 @@ Start with project-setup, then follow spec phases:
 - Verified parseRecordBatches maps invalid batch format to UNSUPPORTED_FOR_MESSAGE_FORMAT
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T03:10:00Z] Reviewed produce-idempotence-rejection
+- Scope: internal/protocol/produce.go, internal/protocol/produce_test.go, task_list.json
+- Verified idempotent producer detection via producerId >= 0 and rejection with INVALID_PRODUCER_ID_MAPPING
+- Verified transactional produce requests log and reject with UNSUPPORTED_FOR_MESSAGE_FORMAT
+- Verified per-partition rejection behavior and consistent BaseOffset=-1 on error
+- Verified extractProducerId parsing handles short/truncated batches safely
+- Issues found: none
+- Tests: not run (already run by working agent)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/produce"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/dray-io/dray/internal/wal"
@@ -73,6 +74,9 @@ func (h *ProduceHandler) Handle(ctx context.Context, version int16, req *kmsg.Pr
 	// Reject transactional requests per spec 14.3
 	// Use UNSUPPORTED_FOR_MESSAGE_FORMAT to indicate transactions are not supported
 	if req.TransactionID != nil && *req.TransactionID != "" {
+		logging.FromCtx(ctx).Warnf("rejecting transactional produce request: transactions are explicitly deferred per spec 2.2/14.3", map[string]any{
+			"transactionId": *req.TransactionID,
+		})
 		return h.buildErrorResponse(version, req, errUnsupportedForMessageFormat)
 	}
 
@@ -151,7 +155,13 @@ func (h *ProduceHandler) processPartition(ctx context.Context, version int16, to
 	}
 
 	// Check for idempotent producer flags in record batches
-	if isIdempotentRequest(records) {
+	// Reject idempotent producers per spec 2.2/14.3
+	if producerId := extractProducerId(records); producerId >= 0 {
+		logging.FromCtx(ctx).Warnf("rejecting idempotent produce request: idempotent producers are explicitly deferred per spec 2.2/14.3", map[string]any{
+			"topic":      topicMeta.Name,
+			"partition":  partData.Partition,
+			"producerId": producerId,
+		})
 		resp.ErrorCode = errInvalidProducerIDMapping
 		resp.BaseOffset = -1
 		return resp
@@ -321,11 +331,12 @@ func parseRecordBatches(data []byte) ([]wal.BatchEntry, uint32, int64, int64, er
 	return batches, totalRecords, minTs, maxTs, nil
 }
 
-// isIdempotentRequest checks if the record batches indicate idempotent producer.
-// Idempotent producers have producerId >= 0 and producerEpoch >= 0.
-func isIdempotentRequest(data []byte) bool {
+// extractProducerId extracts the producer ID from record batch data.
+// Returns the first non-negative producer ID found, or -1 if none found.
+// Idempotent producers have producerId >= 0.
+func extractProducerId(data []byte) int64 {
 	if len(data) < 53 {
-		return false
+		return -1
 	}
 
 	offset := 0
@@ -343,13 +354,13 @@ func isIdempotentRequest(data []byte) bool {
 		producerId := beInt64(data[offset+43 : offset+51])
 		if producerId >= 0 {
 			// Non-negative producerId indicates idempotent producer
-			return true
+			return producerId
 		}
 
 		offset += batchLength
 	}
 
-	return false
+	return -1
 }
 
 // beUint32 reads a big-endian uint32.

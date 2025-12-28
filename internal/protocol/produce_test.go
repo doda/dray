@@ -157,6 +157,311 @@ func TestProduceHandler_RejectIdempotent(t *testing.T) {
 	}
 }
 
+// TestProduceHandler_RejectIdempotentVariousProducerIds tests rejection with various producer IDs.
+func TestProduceHandler_RejectIdempotentVariousProducerIds(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx := context.Background()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{StartOffset: 0, EndOffset: int64(req.RecordCount)}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer)
+
+	tests := []struct {
+		name       string
+		producerId int64
+		wantReject bool
+	}{
+		{
+			name:       "producerId=0 (idempotent)",
+			producerId: 0,
+			wantReject: true,
+		},
+		{
+			name:       "producerId=1 (idempotent)",
+			producerId: 1,
+			wantReject: true,
+		},
+		{
+			name:       "producerId=1234 (idempotent)",
+			producerId: 1234,
+			wantReject: true,
+		},
+		{
+			name:       "producerId=max_int64 (idempotent)",
+			producerId: 9223372036854775807,
+			wantReject: true,
+		},
+		{
+			name:       "producerId=-1 (non-idempotent)",
+			producerId: -1,
+			wantReject: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := kmsg.NewPtrProduceRequest()
+			req.Acks = -1
+			req.SetVersion(9)
+
+			topicReq := kmsg.NewProduceRequestTopic()
+			topicReq.Topic = "test-topic"
+
+			partReq := kmsg.NewProduceRequestTopicPartition()
+			partReq.Partition = 0
+			partReq.Records = buildRecordBatchWithProducerId(1, tt.producerId)
+
+			topicReq.Partitions = append(topicReq.Partitions, partReq)
+			req.Topics = append(req.Topics, topicReq)
+
+			resp := handler.Handle(ctx, 9, req)
+
+			if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+				t.Fatalf("unexpected response structure")
+			}
+
+			partResp := resp.Topics[0].Partitions[0]
+			if tt.wantReject {
+				if partResp.ErrorCode != errInvalidProducerIDMapping {
+					t.Errorf("expected INVALID_PRODUCER_ID_MAPPING error (%d), got %d", errInvalidProducerIDMapping, partResp.ErrorCode)
+				}
+				if partResp.BaseOffset != -1 {
+					t.Errorf("expected BaseOffset=-1 on rejection, got %d", partResp.BaseOffset)
+				}
+			} else {
+				if partResp.ErrorCode != 0 {
+					t.Errorf("expected success, got error code %d", partResp.ErrorCode)
+				}
+			}
+		})
+	}
+}
+
+// TestProduceHandler_RejectIdempotentMultiplePartitions tests that idempotent rejection is per-partition.
+func TestProduceHandler_RejectIdempotentMultiplePartitions(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx := context.Background()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 2,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{StartOffset: 0, EndOffset: int64(req.RecordCount)}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer)
+
+	// Build request with partition 0 idempotent and partition 1 non-idempotent
+	req := kmsg.NewPtrProduceRequest()
+	req.Acks = -1
+	req.SetVersion(9)
+
+	topicReq := kmsg.NewProduceRequestTopic()
+	topicReq.Topic = "test-topic"
+
+	// Partition 0: idempotent (should reject)
+	part0 := kmsg.NewProduceRequestTopicPartition()
+	part0.Partition = 0
+	part0.Records = buildRecordBatchWithProducerId(1, 1234)
+	topicReq.Partitions = append(topicReq.Partitions, part0)
+
+	// Partition 1: non-idempotent (should succeed)
+	part1 := kmsg.NewProduceRequestTopicPartition()
+	part1.Partition = 1
+	part1.Records = buildRecordBatchWithProducerId(1, -1)
+	topicReq.Partitions = append(topicReq.Partitions, part1)
+
+	req.Topics = append(req.Topics, topicReq)
+
+	resp := handler.Handle(ctx, 9, req)
+
+	if len(resp.Topics) != 1 {
+		t.Fatalf("expected 1 topic response, got %d", len(resp.Topics))
+	}
+
+	topicResp := resp.Topics[0]
+	if len(topicResp.Partitions) != 2 {
+		t.Fatalf("expected 2 partition responses, got %d", len(topicResp.Partitions))
+	}
+
+	var part0Resp, part1Resp *kmsg.ProduceResponseTopicPartition
+	for i := range topicResp.Partitions {
+		if topicResp.Partitions[i].Partition == 0 {
+			part0Resp = &topicResp.Partitions[i]
+		}
+		if topicResp.Partitions[i].Partition == 1 {
+			part1Resp = &topicResp.Partitions[i]
+		}
+	}
+
+	if part0Resp == nil || part1Resp == nil {
+		t.Fatal("missing expected partition responses")
+	}
+
+	// Partition 0 should be rejected (idempotent)
+	if part0Resp.ErrorCode != errInvalidProducerIDMapping {
+		t.Errorf("partition 0: expected INVALID_PRODUCER_ID_MAPPING error (%d), got %d",
+			errInvalidProducerIDMapping, part0Resp.ErrorCode)
+	}
+
+	// Partition 1 should succeed (non-idempotent)
+	if part1Resp.ErrorCode != 0 {
+		t.Errorf("partition 1: expected success, got error code %d", part1Resp.ErrorCode)
+	}
+}
+
+// TestExtractProducerId tests the extractProducerId function directly.
+func TestExtractProducerId(t *testing.T) {
+	tests := []struct {
+		name       string
+		data       []byte
+		wantId     int64
+	}{
+		{
+			name:   "idempotent producer (id=1234)",
+			data:   buildRecordBatchWithProducerId(1, 1234),
+			wantId: 1234,
+		},
+		{
+			name:   "idempotent producer (id=0)",
+			data:   buildRecordBatchWithProducerId(1, 0),
+			wantId: 0,
+		},
+		{
+			name:   "idempotent producer (id=max_int64)",
+			data:   buildRecordBatchWithProducerId(1, 9223372036854775807),
+			wantId: 9223372036854775807,
+		},
+		{
+			name:   "non-idempotent producer (id=-1)",
+			data:   buildRecordBatchWithProducerId(1, -1),
+			wantId: -1,
+		},
+		{
+			name:   "empty data",
+			data:   []byte{},
+			wantId: -1,
+		},
+		{
+			name:   "too short data",
+			data:   make([]byte, 10),
+			wantId: -1,
+		},
+		{
+			name: "truncated batch",
+			data: func() []byte {
+				batch := buildRecordBatchWithProducerId(1, 1234)
+				return batch[:40] // Truncate to less than 53 bytes
+			}(),
+			wantId: -1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractProducerId(tt.data)
+			if got != tt.wantId {
+				t.Errorf("extractProducerId() = %d, want %d", got, tt.wantId)
+			}
+		})
+	}
+}
+
+// TestProduceHandler_IdempotentRejectionClientHandling verifies that the error code returned
+// is consistent with Kafka's expected behavior for idempotent producer rejection.
+// Kafka clients receiving INVALID_PRODUCER_ID_MAPPING (49) should interpret this as
+// "producer ID not found" and will typically retry with InitProducerId or fail gracefully.
+func TestProduceHandler_IdempotentRejectionClientHandling(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx := context.Background()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{StartOffset: 0, EndOffset: int64(req.RecordCount)}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer)
+
+	// Test multiple idempotent requests to ensure consistent rejection behavior
+	for i := 0; i < 3; i++ {
+		req := buildIdempotentProduceRequest("test-topic", 0)
+		resp := handler.Handle(ctx, 9, req)
+
+		if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+			t.Fatalf("iteration %d: unexpected response structure", i)
+		}
+
+		partResp := resp.Topics[0].Partitions[0]
+
+		// Verify consistent error code per Kafka protocol:
+		// INVALID_PRODUCER_ID_MAPPING = 49 indicates the producer ID is not found
+		if partResp.ErrorCode != errInvalidProducerIDMapping {
+			t.Errorf("iteration %d: expected INVALID_PRODUCER_ID_MAPPING error (%d), got %d",
+				i, errInvalidProducerIDMapping, partResp.ErrorCode)
+		}
+
+		// Kafka clients expect BaseOffset=-1 on error
+		if partResp.BaseOffset != -1 {
+			t.Errorf("iteration %d: expected BaseOffset=-1, got %d", i, partResp.BaseOffset)
+		}
+	}
+}
+
 // TestProduceHandler_RejectTransactional tests that transactional requests are rejected.
 func TestProduceHandler_RejectTransactional(t *testing.T) {
 	store := metadata.NewMockStore()
@@ -510,6 +815,12 @@ func buildRecordBatch(recordCount int) []byte {
 
 // buildIdempotentRecordBatch creates a record batch with idempotent producer flags.
 func buildIdempotentRecordBatch(recordCount int) []byte {
+	return buildRecordBatchWithProducerId(recordCount, 1234)
+}
+
+// buildRecordBatchWithProducerId creates a record batch with the specified producer ID.
+// Use producerId >= 0 for idempotent producers, -1 for non-idempotent.
+func buildRecordBatchWithProducerId(recordCount int, producerId int64) []byte {
 	batch := make([]byte, 0, 80)
 
 	// baseOffset (8 bytes)
@@ -544,14 +855,24 @@ func buildIdempotentRecordBatch(recordCount int) []byte {
 		byte(ts>>56), byte(ts>>48), byte(ts>>40), byte(ts>>32),
 		byte(ts>>24), byte(ts>>16), byte(ts>>8), byte(ts))
 
-	// producerId (8 bytes) = 1234 (idempotent)
-	batch = append(batch, 0, 0, 0, 0, 0, 0, 0x04, 0xd2)
+	// producerId (8 bytes)
+	batch = append(batch,
+		byte(producerId>>56), byte(producerId>>48), byte(producerId>>40), byte(producerId>>32),
+		byte(producerId>>24), byte(producerId>>16), byte(producerId>>8), byte(producerId))
 
-	// producerEpoch (2 bytes) = 0
-	batch = append(batch, 0, 0)
+	// producerEpoch (2 bytes)
+	if producerId >= 0 {
+		batch = append(batch, 0, 0) // epoch 0 for idempotent
+	} else {
+		batch = append(batch, 0xff, 0xff) // -1 for non-idempotent
+	}
 
-	// firstSequence (4 bytes) = 0
-	batch = append(batch, 0, 0, 0, 0)
+	// firstSequence (4 bytes)
+	if producerId >= 0 {
+		batch = append(batch, 0, 0, 0, 0) // sequence 0 for idempotent
+	} else {
+		batch = append(batch, 0xff, 0xff, 0xff, 0xff) // -1 for non-idempotent
+	}
 
 	// recordCount (4 bytes)
 	batch = append(batch, 0, 0, 0, byte(recordCount))
