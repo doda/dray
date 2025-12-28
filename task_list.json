@@ -1192,7 +1192,7 @@
     "scope": [
       "tests/integration/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "find-coordinator-handler",

@@ -353,3 +353,10 @@ Start with project-setup, then follow spec phases:
 - Verified tests cover determinism, distribution, and membership changes
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T08:08:59Z] Reviewed zone-filtering-test
+- Scope: tests/integration/zone_filtering_test.go, task_list.json
+- Verified zone-aware Metadata broker filtering and partition leader/replica selection
+- Verified FindCoordinator returns in-zone broker and deterministic selection
+- Verified fallback behavior for empty/unknown zones
+- Issues found: none
+- Tests: not run (already run by working agent)
