@@ -588,3 +588,11 @@ Start with project-setup, then follow spec phases:
 - Checked error handling for invalid IDs, missing jobs, and concurrent modification
 - Issues found: none
 - Tests: not run (working agent already ran)
+[review] compaction-index-swap
+- Scope: internal/compaction/swap.go, internal/compaction/swap_test.go, task_list.json
+- Verified swap deletes WAL index keys and inserts Parquet entry in a single metadata transaction
+- Verified cumulative size calculation uses previous entry and offset range validation covers contiguous WAL ranges
+- Fix applied: sort WAL entries before contiguity checks and require explicit metaDomain in SwapFromJob
+- Fix applied: use parquetRecordCount for Parquet entry counts and validate positive record count
+- Issues found: none after fixes
+- Tests: not run (already run by working agent)
