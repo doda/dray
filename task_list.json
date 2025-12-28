@@ -148,6 +148,25 @@
     "passes": true
   },
   {
+    "id": "oxia-embedded-tests",
+    "category": "metadata",
+    "description": "Embed Oxia standalone server for faithful integration tests instead of stubs/mocks",
+    "steps": [
+      "Create a test helper that starts an Oxia standalone server",
+      "Use the standalone service address when OXIA_SERVICE_ADDRESS is unset",
+      "Set namespace to default for standalone server usage",
+      "Ensure the server is closed via t.Cleanup",
+      "Verify tests exercise real Oxia behavior (not mocks)"
+    ],
+    "depends_on": [
+      "oxia-client-wrapper"
+    ],
+    "scope": [
+      "internal/metadata/oxia/"
+    ],
+    "passes": false
+  },
+  {
     "id": "oxia-cas-transactions",
     "category": "metadata",
     "description": "Implement CAS (compare-and-set) semantics and atomic transactions using Oxia versioning",
