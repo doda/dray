@@ -23,8 +23,11 @@ var (
 
 // PendingRequest represents a produce request waiting for flush completion.
 type PendingRequest struct {
-	// StreamID is the stream this request writes to.
+	// StreamID is the hashed stream identifier for WAL encoding.
 	StreamID uint64
+
+	// StreamIDStr is the original string stream ID for metadata lookups.
+	StreamIDStr string
 
 	// Batches are the Kafka record batches to write.
 	Batches []wal.BatchEntry
@@ -184,6 +187,7 @@ func (b *Buffer) Add(ctx context.Context, streamID string, batches []wal.BatchEn
 	// Create the pending request
 	req := &PendingRequest{
 		StreamID:       parseStreamID(streamID),
+		StreamIDStr:    streamID,
 		Batches:        batches,
 		RecordCount:    recordCount,
 		MinTimestampMs: minTs,
