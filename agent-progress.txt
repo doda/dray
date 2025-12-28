@@ -93,3 +93,11 @@ Start with project-setup, then follow spec phases:
 - Verified MetaDomain enforcement, reset behavior, and chunk offsets ordering
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T00:59:58Z] Reviewed stream-creation
+- Scope: internal/index/stream.go, internal/index/stream_test.go, internal/index/doc.go
+- Verified CreateStream generates UUID streamId and initializes /streams/<streamId>/hwm to 0
+- Verified metadata stored at /dray/v1/streams/<streamId>/meta and retrievable via GetStreamMeta
+- Verified CreateStreamWithID detects existing stream via hwm key and preserves atomic transaction usage
+- Verified hwm encoding/decoding helpers and error paths for missing/invalid hwm
+- Issues found: none
+- Tests: not run (already run by working agent)

@@ -451,7 +451,7 @@
     "scope": [
       "internal/index/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "hwm-maintenance",
