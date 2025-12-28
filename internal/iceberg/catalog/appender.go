@@ -6,9 +6,14 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"time"
 )
+
+// SnapshotPropertyJobID is the snapshot summary property key for tracking the
+// compaction job ID. This enables idempotent commit detection per SPEC.md 11.7.
+const SnapshotPropertyJobID = "dray.job-id"
 
 // AppenderConfig configures the data file appender.
 type AppenderConfig struct {
@@ -87,13 +92,20 @@ func NewAppender(cfg AppenderConfig) *Appender {
 // AppendResult contains the result of a successful append operation.
 type AppendResult struct {
 	// Snapshot is the new snapshot created by the append.
+	// For idempotent skips, this is the existing snapshot that contained the commit.
 	Snapshot *Snapshot
 
 	// Table is the table that was appended to.
 	Table Table
 
 	// Attempts is the number of attempts made (1 = first try succeeded).
+	// For idempotent skips, this is 0.
 	Attempts int
+
+	// IdempotentSkipped indicates the commit was skipped because it was
+	// already applied in a prior snapshot. This enables safe retry of
+	// compaction jobs per SPEC.md section 11.7.
+	IdempotentSkipped bool
 }
 
 // AppendFiles appends data files to an Iceberg table with retry on conflict.
@@ -202,13 +214,105 @@ func (a *Appender) calculateBackoff(base time.Duration) time.Duration {
 
 // AppendFilesForStream is a convenience method that appends files for a compaction job.
 // It includes the job ID in the snapshot properties for idempotent retries per SPEC.md 11.7.
+//
+// This method implements idempotent commit semantics:
+//  1. Before attempting the commit, it checks if the job ID was already applied
+//  2. If the job was already committed, returns the existing snapshot with IdempotentSkipped=true
+//  3. Otherwise proceeds with the normal append operation
+//
+// This ensures that crash-recovery retries of compaction jobs are safe and do not
+// create duplicate data in the Iceberg table.
 func (a *Appender) AppendFilesForStream(ctx context.Context, topicName, jobID string, files []DataFile) (*AppendResult, error) {
+	if a.cfg.Catalog == nil {
+		return nil, ErrCatalogUnavailable
+	}
+
+	identifier := TableIdentifier{
+		Namespace: a.cfg.Namespace,
+		Name:      topicName,
+	}
+
+	table, err := a.cfg.Catalog.LoadTable(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if this job ID was already committed (idempotent retry detection)
+	existingSnapshot, err := a.findCommitByJobID(ctx, table, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check for prior commit: %w", err)
+	}
+
+	if existingSnapshot != nil {
+		slog.Info("iceberg commit already applied, skipping",
+			"topic", topicName,
+			"jobId", jobID,
+			"snapshotId", existingSnapshot.SnapshotID,
+		)
+		return &AppendResult{
+			Snapshot:          existingSnapshot,
+			Table:             table,
+			Attempts:          0,
+			IdempotentSkipped: true,
+		}, nil
+	}
+
+	// Proceed with normal append
 	opts := &AppendFilesOptions{
 		SnapshotProperties: map[string]string{
-			"dray.job-id": jobID,
+			SnapshotPropertyJobID: jobID,
 		},
 	}
 	return a.AppendFiles(ctx, topicName, files, opts)
+}
+
+// findCommitByJobID searches the table's snapshots for one with a matching job ID.
+// Returns the snapshot if found, nil if not found.
+func (a *Appender) findCommitByJobID(ctx context.Context, table Table, jobID string) (*Snapshot, error) {
+	snapshots, err := table.Snapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range snapshots {
+		snap := &snapshots[i]
+		if snap.Summary != nil {
+			if snap.Summary[SnapshotPropertyJobID] == jobID {
+				return snap, nil
+			}
+		}
+	}
+
+	return nil, nil
+}
+
+// IsCommitApplied checks whether a compaction job with the given ID has already
+// been committed to the Iceberg table. This enables idempotent retry detection
+// per SPEC.md section 11.7.
+func (a *Appender) IsCommitApplied(ctx context.Context, topicName, jobID string) (bool, *Snapshot, error) {
+	if a.cfg.Catalog == nil {
+		return false, nil, ErrCatalogUnavailable
+	}
+
+	identifier := TableIdentifier{
+		Namespace: a.cfg.Namespace,
+		Name:      topicName,
+	}
+
+	table, err := a.cfg.Catalog.LoadTable(ctx, identifier)
+	if err != nil {
+		if errors.Is(err, ErrTableNotFound) {
+			return false, nil, nil
+		}
+		return false, nil, err
+	}
+
+	snapshot, err := a.findCommitByJobID(ctx, table, jobID)
+	if err != nil {
+		return false, nil, err
+	}
+
+	return snapshot != nil, snapshot, nil
 }
 
 // BuildDataFileFromStats creates a DataFile from compaction output statistics.

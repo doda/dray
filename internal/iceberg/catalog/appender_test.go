@@ -532,6 +532,10 @@ func (t *conflictMockTable) AppendFiles(ctx context.Context, files []DataFile, o
 	return t.mockTable.AppendFiles(ctx, files, opts)
 }
 
+func (t *conflictMockTable) Snapshots(ctx context.Context) ([]Snapshot, error) {
+	return t.mockTable.Snapshots(ctx)
+}
+
 func (t *conflictMockTable) Refresh(ctx context.Context) error {
 	return nil
 }
@@ -571,4 +575,259 @@ type errorMockTable struct {
 func (t *errorMockTable) AppendFiles(ctx context.Context, files []DataFile, opts *AppendFilesOptions) (*Snapshot, error) {
 	t.catalog.appendCalls++
 	return nil, t.err
+}
+
+func (t *errorMockTable) Snapshots(ctx context.Context) ([]Snapshot, error) {
+	return t.mockTable.Snapshots(ctx)
+}
+
+func TestAppender_IdempotentCommit(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("first commit succeeds and stores job ID", func(t *testing.T) {
+		catalog := newMockCatalog()
+		_, _ = catalog.CreateTableIfMissing(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "idempotent-topic",
+		}, CreateTableOptions{Schema: DefaultSchema()})
+
+		appender := NewAppender(DefaultAppenderConfig(catalog))
+		files := []DataFile{{Path: "s3://bucket/data.parquet", Format: FormatParquet, RecordCount: 100}}
+
+		result, err := appender.AppendFilesForStream(ctx, "idempotent-topic", "job-abc-123", files)
+		if err != nil {
+			t.Fatalf("AppendFilesForStream failed: %v", err)
+		}
+
+		if result.IdempotentSkipped {
+			t.Error("first commit should not be marked as idempotent skip")
+		}
+		if result.Attempts != 1 {
+			t.Errorf("expected 1 attempt, got %d", result.Attempts)
+		}
+		if result.Snapshot == nil {
+			t.Error("expected snapshot")
+		}
+
+		// Verify the job ID was stored in snapshot summary
+		if result.Snapshot.Summary == nil {
+			t.Fatal("expected snapshot summary")
+		}
+		if result.Snapshot.Summary[SnapshotPropertyJobID] != "job-abc-123" {
+			t.Errorf("expected job ID in summary, got %s", result.Snapshot.Summary[SnapshotPropertyJobID])
+		}
+	})
+
+	t.Run("retry of same job ID returns idempotent skip", func(t *testing.T) {
+		catalog := newMockCatalog()
+		_, _ = catalog.CreateTableIfMissing(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "retry-topic",
+		}, CreateTableOptions{Schema: DefaultSchema()})
+
+		appender := NewAppender(DefaultAppenderConfig(catalog))
+		files := []DataFile{{Path: "s3://bucket/data.parquet", Format: FormatParquet, RecordCount: 100}}
+
+		// First commit
+		result1, err := appender.AppendFilesForStream(ctx, "retry-topic", "job-retry-456", files)
+		if err != nil {
+			t.Fatalf("first AppendFilesForStream failed: %v", err)
+		}
+		originalSnapshotID := result1.Snapshot.SnapshotID
+
+		// Retry with same job ID (simulating crash recovery)
+		result2, err := appender.AppendFilesForStream(ctx, "retry-topic", "job-retry-456", files)
+		if err != nil {
+			t.Fatalf("retry AppendFilesForStream failed: %v", err)
+		}
+
+		if !result2.IdempotentSkipped {
+			t.Error("retry should be marked as idempotent skip")
+		}
+		if result2.Attempts != 0 {
+			t.Errorf("idempotent skip should have 0 attempts, got %d", result2.Attempts)
+		}
+		if result2.Snapshot == nil {
+			t.Error("expected existing snapshot on idempotent skip")
+		}
+		if result2.Snapshot.SnapshotID != originalSnapshotID {
+			t.Errorf("expected original snapshot ID %d, got %d", originalSnapshotID, result2.Snapshot.SnapshotID)
+		}
+	})
+
+	t.Run("different job IDs create separate commits", func(t *testing.T) {
+		catalog := newMockCatalog()
+		_, _ = catalog.CreateTableIfMissing(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "multi-job-topic",
+		}, CreateTableOptions{Schema: DefaultSchema()})
+
+		appender := NewAppender(DefaultAppenderConfig(catalog))
+		files := []DataFile{{Path: "s3://bucket/data.parquet", Format: FormatParquet, RecordCount: 100}}
+
+		// First job
+		result1, err := appender.AppendFilesForStream(ctx, "multi-job-topic", "job-a", files)
+		if err != nil {
+			t.Fatalf("first job failed: %v", err)
+		}
+
+		// Second job with different ID
+		result2, err := appender.AppendFilesForStream(ctx, "multi-job-topic", "job-b", files)
+		if err != nil {
+			t.Fatalf("second job failed: %v", err)
+		}
+
+		if result1.IdempotentSkipped || result2.IdempotentSkipped {
+			t.Error("different job IDs should not trigger idempotent skip")
+		}
+		if result2.Snapshot.SnapshotID <= result1.Snapshot.SnapshotID {
+			t.Error("second job should create a new snapshot")
+		}
+		if result2.Snapshot.Summary[SnapshotPropertyJobID] != "job-b" {
+			t.Errorf("expected job-b in summary, got %s", result2.Snapshot.Summary[SnapshotPropertyJobID])
+		}
+	})
+
+	t.Run("table not found returns error", func(t *testing.T) {
+		catalog := newMockCatalog()
+		appender := NewAppender(DefaultAppenderConfig(catalog))
+		files := []DataFile{{Path: "s3://bucket/data.parquet", Format: FormatParquet, RecordCount: 100}}
+
+		_, err := appender.AppendFilesForStream(ctx, "missing-topic", "job-123", files)
+		if !errors.Is(err, ErrTableNotFound) {
+			t.Errorf("expected ErrTableNotFound, got %v", err)
+		}
+	})
+
+	t.Run("nil catalog returns error", func(t *testing.T) {
+		appender := NewAppender(AppenderConfig{Catalog: nil})
+		files := []DataFile{{Path: "s3://bucket/data.parquet", Format: FormatParquet, RecordCount: 100}}
+
+		_, err := appender.AppendFilesForStream(ctx, "topic", "job-123", files)
+		if !errors.Is(err, ErrCatalogUnavailable) {
+			t.Errorf("expected ErrCatalogUnavailable, got %v", err)
+		}
+	})
+}
+
+func TestAppender_IsCommitApplied(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns false for non-existent table", func(t *testing.T) {
+		catalog := newMockCatalog()
+		appender := NewAppender(DefaultAppenderConfig(catalog))
+
+		applied, snapshot, err := appender.IsCommitApplied(ctx, "missing-topic", "job-123")
+		if err != nil {
+			t.Fatalf("IsCommitApplied failed: %v", err)
+		}
+		if applied {
+			t.Error("expected false for non-existent table")
+		}
+		if snapshot != nil {
+			t.Error("expected nil snapshot for non-existent table")
+		}
+	})
+
+	t.Run("returns false for table with no matching job", func(t *testing.T) {
+		catalog := newMockCatalog()
+		_, _ = catalog.CreateTableIfMissing(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "check-topic",
+		}, CreateTableOptions{Schema: DefaultSchema()})
+
+		appender := NewAppender(DefaultAppenderConfig(catalog))
+		files := []DataFile{{Path: "s3://bucket/data.parquet", Format: FormatParquet, RecordCount: 100}}
+
+		// Create a commit with a different job ID
+		_, err := appender.AppendFilesForStream(ctx, "check-topic", "other-job", files)
+		if err != nil {
+			t.Fatalf("AppendFilesForStream failed: %v", err)
+		}
+
+		applied, snapshot, err := appender.IsCommitApplied(ctx, "check-topic", "job-123")
+		if err != nil {
+			t.Fatalf("IsCommitApplied failed: %v", err)
+		}
+		if applied {
+			t.Error("expected false for non-matching job ID")
+		}
+		if snapshot != nil {
+			t.Error("expected nil snapshot for non-matching job ID")
+		}
+	})
+
+	t.Run("returns true for matching job ID", func(t *testing.T) {
+		catalog := newMockCatalog()
+		_, _ = catalog.CreateTableIfMissing(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "applied-topic",
+		}, CreateTableOptions{Schema: DefaultSchema()})
+
+		appender := NewAppender(DefaultAppenderConfig(catalog))
+		files := []DataFile{{Path: "s3://bucket/data.parquet", Format: FormatParquet, RecordCount: 100}}
+
+		// Create a commit with the job ID we'll check
+		result, err := appender.AppendFilesForStream(ctx, "applied-topic", "job-xyz", files)
+		if err != nil {
+			t.Fatalf("AppendFilesForStream failed: %v", err)
+		}
+
+		applied, snapshot, err := appender.IsCommitApplied(ctx, "applied-topic", "job-xyz")
+		if err != nil {
+			t.Fatalf("IsCommitApplied failed: %v", err)
+		}
+		if !applied {
+			t.Error("expected true for matching job ID")
+		}
+		if snapshot == nil {
+			t.Fatal("expected non-nil snapshot")
+		}
+		if snapshot.SnapshotID != result.Snapshot.SnapshotID {
+			t.Errorf("expected snapshot ID %d, got %d", result.Snapshot.SnapshotID, snapshot.SnapshotID)
+		}
+	})
+
+	t.Run("nil catalog returns error", func(t *testing.T) {
+		appender := NewAppender(AppenderConfig{Catalog: nil})
+
+		_, _, err := appender.IsCommitApplied(ctx, "topic", "job-123")
+		if !errors.Is(err, ErrCatalogUnavailable) {
+			t.Errorf("expected ErrCatalogUnavailable, got %v", err)
+		}
+	})
+
+	t.Run("finds job in multiple snapshots", func(t *testing.T) {
+		catalog := newMockCatalog()
+		_, _ = catalog.CreateTableIfMissing(ctx, TableIdentifier{
+			Namespace: []string{"dray"},
+			Name:      "multi-snap-topic",
+		}, CreateTableOptions{Schema: DefaultSchema()})
+
+		appender := NewAppender(DefaultAppenderConfig(catalog))
+		files := []DataFile{{Path: "s3://bucket/data.parquet", Format: FormatParquet, RecordCount: 100}}
+
+		// Create multiple commits
+		_, _ = appender.AppendFilesForStream(ctx, "multi-snap-topic", "job-1", files)
+		result2, _ := appender.AppendFilesForStream(ctx, "multi-snap-topic", "job-2", files)
+		_, _ = appender.AppendFilesForStream(ctx, "multi-snap-topic", "job-3", files)
+
+		// Check for the middle job
+		applied, snapshot, err := appender.IsCommitApplied(ctx, "multi-snap-topic", "job-2")
+		if err != nil {
+			t.Fatalf("IsCommitApplied failed: %v", err)
+		}
+		if !applied {
+			t.Error("expected to find job-2")
+		}
+		if snapshot.SnapshotID != result2.Snapshot.SnapshotID {
+			t.Errorf("expected snapshot ID %d, got %d", result2.Snapshot.SnapshotID, snapshot.SnapshotID)
+		}
+	})
+}
+
+func TestSnapshotPropertyJobID(t *testing.T) {
+	if SnapshotPropertyJobID != "dray.job-id" {
+		t.Errorf("expected SnapshotPropertyJobID to be 'dray.job-id', got %s", SnapshotPropertyJobID)
+	}
 }

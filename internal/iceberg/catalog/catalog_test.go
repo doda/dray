@@ -10,7 +10,7 @@ import (
 type mockTable struct {
 	identifier TableIdentifier
 	schema     Schema
-	snapshot   *Snapshot
+	snapshots  []Snapshot
 	props      TableProperties
 	location   string
 }
@@ -21,37 +21,43 @@ func (t *mockTable) Properties() TableProperties { return t.props }
 func (t *mockTable) Location() string            { return t.location }
 
 func (t *mockTable) CurrentSnapshot(ctx context.Context) (*Snapshot, error) {
-	if t.snapshot == nil {
+	if len(t.snapshots) == 0 {
 		return nil, ErrSnapshotNotFound
 	}
-	return t.snapshot, nil
+	return &t.snapshots[len(t.snapshots)-1], nil
 }
 
 func (t *mockTable) Snapshots(ctx context.Context) ([]Snapshot, error) {
-	if t.snapshot == nil {
-		return nil, nil
-	}
-	return []Snapshot{*t.snapshot}, nil
+	return t.snapshots, nil
 }
 
 func (t *mockTable) AppendFiles(ctx context.Context, files []DataFile, opts *AppendFilesOptions) (*Snapshot, error) {
 	var parentID *int64
 	nextSnapshotID := int64(1)
-	if t.snapshot != nil {
-		parentID = &t.snapshot.SnapshotID
-		nextSnapshotID = t.snapshot.SnapshotID + 1
+	if len(t.snapshots) > 0 {
+		parentID = &t.snapshots[len(t.snapshots)-1].SnapshotID
+		nextSnapshotID = t.snapshots[len(t.snapshots)-1].SnapshotID + 1
 	}
-	newSnapshot := &Snapshot{
+
+	summary := map[string]string{
+		"added-data-files": "1",
+	}
+	// Copy snapshot properties from options to summary
+	if opts != nil && opts.SnapshotProperties != nil {
+		for k, v := range opts.SnapshotProperties {
+			summary[k] = v
+		}
+	}
+
+	newSnapshot := Snapshot{
 		SnapshotID:       nextSnapshotID,
 		ParentSnapshotID: parentID,
 		TimestampMs:      1234567890,
 		Operation:        OpAppend,
-		Summary: map[string]string{
-			"added-data-files": "1",
-		},
+		Summary:          summary,
 	}
-	t.snapshot = newSnapshot
-	return newSnapshot, nil
+	t.snapshots = append(t.snapshots, newSnapshot)
+	return &t.snapshots[len(t.snapshots)-1], nil
 }
 
 func (t *mockTable) Refresh(ctx context.Context) error {
@@ -90,7 +96,7 @@ func (c *mockCatalog) CreateTableIfMissing(ctx context.Context, identifier Table
 		schema:     opts.Schema,
 		props:      opts.Properties,
 		location:   opts.Location,
-		snapshot:   nil,
+		snapshots:  nil,
 	}
 	c.tables[key] = t
 	return t, nil
