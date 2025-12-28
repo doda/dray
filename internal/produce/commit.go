@@ -254,6 +254,8 @@ func (c *Committer) commitMetadata(ctx context.Context, domain metadata.MetaDoma
 				MaxTimestampMs: chunkOffset.MaxTimestampMs,
 				WalID:          writeResult.WalID.String(),
 				WalPath:        writeResult.Path,
+				ChunkOffset:    chunkOffset.ByteOffset,
+				ChunkLength:    chunkOffset.ByteLength,
 			}
 
 			entryBytes, err := json.Marshal(entry)

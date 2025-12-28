@@ -589,8 +589,15 @@ func TestStagingWriterChunkOffsets(t *testing.T) {
 		t.Fatalf("ChunkOffsets len = %d, want 2", len(result.ChunkOffsets))
 	}
 
-	// ChunkOffsets should be in the order added (not sorted)
-	for i, chunk := range chunks {
+	// ChunkOffsets are sorted by StreamID to match the WAL encoding order.
+	// This is necessary because ByteOffset and ByteLength must match the actual
+	// positions in the encoded WAL, which sorts chunks by StreamID.
+	sortedChunks := []Chunk{
+		{StreamID: 100, RecordCount: 5, MinTimestampMs: 1000, MaxTimestampMs: 1500, Batches: []BatchEntry{{Data: []byte("c")}}},
+		{StreamID: 300, RecordCount: 15, MinTimestampMs: 3000, MaxTimestampMs: 3500, Batches: []BatchEntry{{Data: []byte("a")}, {Data: []byte("b")}}},
+	}
+
+	for i, chunk := range sortedChunks {
 		offset := result.ChunkOffsets[i]
 		if offset.StreamID != chunk.StreamID {
 			t.Errorf("ChunkOffsets[%d].StreamID = %d, want %d", i, offset.StreamID, chunk.StreamID)
@@ -601,5 +608,24 @@ func TestStagingWriterChunkOffsets(t *testing.T) {
 		if offset.BatchCount != uint32(len(chunk.Batches)) {
 			t.Errorf("ChunkOffsets[%d].BatchCount = %d, want %d", i, offset.BatchCount, len(chunk.Batches))
 		}
+	}
+
+	// Verify ByteOffset and ByteLength are set correctly
+	// First chunk should start at HeaderSize (49 bytes)
+	if result.ChunkOffsets[0].ByteOffset != HeaderSize {
+		t.Errorf("ChunkOffsets[0].ByteOffset = %d, want %d", result.ChunkOffsets[0].ByteOffset, HeaderSize)
+	}
+	// First chunk (StreamID=100) has 1 batch of 1 byte: 4 bytes length + 1 byte data = 5 bytes
+	if result.ChunkOffsets[0].ByteLength != 5 {
+		t.Errorf("ChunkOffsets[0].ByteLength = %d, want 5", result.ChunkOffsets[0].ByteLength)
+	}
+	// Second chunk should start after first chunk
+	expectedSecondOffset := uint64(HeaderSize) + 5
+	if result.ChunkOffsets[1].ByteOffset != expectedSecondOffset {
+		t.Errorf("ChunkOffsets[1].ByteOffset = %d, want %d", result.ChunkOffsets[1].ByteOffset, expectedSecondOffset)
+	}
+	// Second chunk (StreamID=300) has 2 batches: (4+1) + (4+1) = 10 bytes
+	if result.ChunkOffsets[1].ByteLength != 10 {
+		t.Errorf("ChunkOffsets[1].ByteLength = %d, want 10", result.ChunkOffsets[1].ByteLength)
 	}
 }

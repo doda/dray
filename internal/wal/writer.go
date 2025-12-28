@@ -60,6 +60,12 @@ type ChunkOffset struct {
 
 	// MaxTimestampMs is the maximum record timestamp in this chunk.
 	MaxTimestampMs int64
+
+	// ByteOffset is the byte offset of this chunk's body within the WAL object.
+	ByteOffset uint64
+
+	// ByteLength is the length in bytes of this chunk's body.
+	ByteLength uint32
 }
 
 // PathFormatter generates object storage paths for WAL objects.

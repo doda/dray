@@ -245,3 +245,11 @@ Start with project-setup, then follow spec phases:
 - Verified version 0 response uses OldStyleOffsets for timestamp lookup
 - Issues found: none
 - Tests: not run (already run by working agent)
+[2025-12-28T05:58:29Z] Reviewed read-your-writes-test
+- Scope: internal/produce/commit.go, internal/wal/encoder.go, internal/wal/staging.go, internal/wal/staging_test.go, internal/wal/writer.go, tests/integration/read_your_writes_test.go, task_list.json
+- Verified commit metadata now includes WAL chunk byte offsets/lengths for fetch reads
+- Verified staging writer calculates chunk layouts based on WAL encoding order
+- Verified integration tests exercise produce->fetch immediate visibility and offset continuity
+- Verified chunk offset tests updated for StreamID-sorted WAL layout
+- Issues found: none
+- Tests: not run (already run by working agent)

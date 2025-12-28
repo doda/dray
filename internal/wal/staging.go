@@ -171,6 +171,9 @@ func (w *StagingWriter) Flush(ctx context.Context) (*StagingWriteResult, error) 
 		return nil, fmt.Errorf("wal: write to object store failed: %w", err)
 	}
 
+	// Calculate chunk layouts to get byte offsets and lengths
+	layouts := CalculateChunkLayouts(wal)
+
 	result := &StagingWriteResult{
 		WriteResult: WriteResult{
 			WalID:           walID,
@@ -178,18 +181,20 @@ func (w *StagingWriter) Flush(ctx context.Context) (*StagingWriteResult, error) 
 			MetaDomain:      metaDomain,
 			CreatedAtUnixMs: createdAt,
 			Size:            size,
-			ChunkOffsets:    make([]ChunkOffset, len(w.chunks)),
+			ChunkOffsets:    make([]ChunkOffset, len(layouts)),
 		},
 		StagingKey: stagingKey,
 	}
 
-	for i, chunk := range w.chunks {
+	for i, layout := range layouts {
 		result.ChunkOffsets[i] = ChunkOffset{
-			StreamID:       chunk.StreamID,
-			RecordCount:    chunk.RecordCount,
-			BatchCount:     uint32(len(chunk.Batches)),
-			MinTimestampMs: chunk.MinTimestampMs,
-			MaxTimestampMs: chunk.MaxTimestampMs,
+			StreamID:       layout.StreamID,
+			RecordCount:    layout.RecordCount,
+			BatchCount:     layout.BatchCount,
+			MinTimestampMs: layout.MinTimestampMs,
+			MaxTimestampMs: layout.MaxTimestampMs,
+			ByteOffset:     layout.ByteOffset,
+			ByteLength:     layout.ByteLength,
 		}
 	}
 

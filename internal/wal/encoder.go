@@ -238,3 +238,51 @@ func CalculateEncodedSize(wal *WAL) uint64 {
 		uint64(ChunkIndexEntrySize*len(wal.Chunks)) +
 		FooterSize
 }
+
+// ChunkLayout describes the position of a chunk within an encoded WAL.
+type ChunkLayout struct {
+	// StreamID is the stream identifier.
+	StreamID uint64
+	// ByteOffset is the byte offset of the chunk body.
+	ByteOffset uint64
+	// ByteLength is the length of the chunk body in bytes.
+	ByteLength uint32
+	// RecordCount is the total record count in this chunk.
+	RecordCount uint32
+	// BatchCount is the number of batches in this chunk.
+	BatchCount uint32
+	// MinTimestampMs is the minimum timestamp in this chunk.
+	MinTimestampMs int64
+	// MaxTimestampMs is the maximum timestamp in this chunk.
+	MaxTimestampMs int64
+}
+
+// CalculateChunkLayouts calculates the byte offset and length for each chunk
+// when encoding the WAL. Chunks are sorted by StreamID before calculating positions.
+func CalculateChunkLayouts(wal *WAL) []ChunkLayout {
+	// Sort chunks by StreamID as required by spec
+	sortedChunks := make([]Chunk, len(wal.Chunks))
+	copy(sortedChunks, wal.Chunks)
+	sort.Slice(sortedChunks, func(i, j int) bool {
+		return sortedChunks[i].StreamID < sortedChunks[j].StreamID
+	})
+
+	layouts := make([]ChunkLayout, len(sortedChunks))
+	currentOffset := uint64(HeaderSize)
+
+	for i, chunk := range sortedChunks {
+		bodySize := calculateChunkBodySize(chunk)
+		layouts[i] = ChunkLayout{
+			StreamID:       chunk.StreamID,
+			ByteOffset:     currentOffset,
+			ByteLength:     bodySize,
+			RecordCount:    chunk.RecordCount,
+			BatchCount:     uint32(len(chunk.Batches)),
+			MinTimestampMs: chunk.MinTimestampMs,
+			MaxTimestampMs: chunk.MaxTimestampMs,
+		}
+		currentOffset += uint64(bodySize)
+	}
+
+	return layouts
+}
