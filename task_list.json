@@ -470,7 +470,7 @@
     "scope": [
       "internal/index/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "offset-index-append",

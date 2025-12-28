@@ -205,3 +205,92 @@ func DecodeHWM(b []byte) (int64, error) {
 	}
 	return int64(binary.BigEndian.Uint64(b)), nil
 }
+
+// IncrementHWM atomically increments the high watermark for a stream by delta.
+// It uses CAS (compare-and-set) semantics to ensure atomic updates:
+//   - Reads the current hwm with its version
+//   - Increments by delta
+//   - Writes back with version checking
+//
+// Returns the new hwm value after increment, or an error if the operation fails.
+// The expectedVersion parameter specifies the version we expect the hwm to be at;
+// if it doesn't match, ErrVersionMismatch is returned and the caller should retry.
+func (sm *StreamManager) IncrementHWM(ctx context.Context, streamID string, delta int64, expectedVersion metadata.Version) (int64, metadata.Version, error) {
+	hwmKey := keys.HwmKeyPath(streamID)
+	var newHwm int64
+	var newVersion metadata.Version
+
+	err := sm.store.Txn(ctx, hwmKey, func(txn metadata.Txn) error {
+		// Read current hwm and version
+		value, currentVersion, err := txn.Get(hwmKey)
+		if err != nil {
+			if errors.Is(err, metadata.ErrKeyNotFound) {
+				return ErrStreamNotFound
+			}
+			return err
+		}
+
+		// Verify expected version matches current version
+		if expectedVersion != currentVersion {
+			return metadata.ErrVersionMismatch
+		}
+
+		// Decode current hwm
+		currentHwm, err := DecodeHWM(value)
+		if err != nil {
+			return err
+		}
+
+		// Calculate new hwm
+		newHwm = currentHwm + delta
+
+		// Write new hwm with version check
+		txn.PutWithVersion(hwmKey, EncodeHWM(newHwm), expectedVersion)
+
+		return nil
+	})
+
+	if err != nil {
+		return 0, 0, err
+	}
+
+	// The new version is expectedVersion + 1 after successful commit
+	newVersion = expectedVersion + 1
+	return newHwm, newVersion, nil
+}
+
+// SetHWM atomically sets the high watermark for a stream to a specific value.
+// This is useful for initialization or recovery scenarios.
+// It uses CAS semantics to ensure atomic updates.
+//
+// Returns the new version after the update, or an error if the operation fails.
+func (sm *StreamManager) SetHWM(ctx context.Context, streamID string, hwm int64, expectedVersion metadata.Version) (metadata.Version, error) {
+	hwmKey := keys.HwmKeyPath(streamID)
+	var newVersion metadata.Version
+
+	err := sm.store.Txn(ctx, hwmKey, func(txn metadata.Txn) error {
+		// Verify the stream exists and check version
+		_, currentVersion, err := txn.Get(hwmKey)
+		if err != nil {
+			if errors.Is(err, metadata.ErrKeyNotFound) {
+				return ErrStreamNotFound
+			}
+			return err
+		}
+
+		if expectedVersion != currentVersion {
+			return metadata.ErrVersionMismatch
+		}
+
+		// Write new hwm with version check
+		txn.PutWithVersion(hwmKey, EncodeHWM(hwm), expectedVersion)
+		return nil
+	})
+
+	if err != nil {
+		return 0, err
+	}
+
+	newVersion = expectedVersion + 1
+	return newVersion, nil
+}
