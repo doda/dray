@@ -540,3 +540,11 @@ Start with project-setup, then follow spec phases:
 - Verified periodic Start/Stop behavior matches session sweeper pattern
 - Issues found: none
 - Tests: not run (already run by working agent)
+[review] compaction-planner
+- Scope: internal/compaction/planner/planner.go, internal/compaction/planner/planner_test.go, task_list.json
+- Verified planner selects contiguous WAL entries and stops at gaps or Parquet entries
+- Verified trigger policies: max age, max files, max size, min entries, and size exception for first entry
+- Found edge case when MinEntries=0 and no eligible entries; could panic on result construction
+- Fix applied: return nil when no entries selected before min-entries check
+- Issues found: none after fix
+- Tests: not re-run (per instructions; prior agent already ran)

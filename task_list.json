@@ -1654,7 +1654,7 @@
     "scope": [
       "internal/compaction/planner/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "compaction-lock",
