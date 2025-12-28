@@ -676,3 +676,10 @@ Start with project-setup, then follow spec phases:
 - Verified GC record type centralization in gc package and compaction swap uses it
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[review] wal-orphan-gc
+- Scope: internal/gc/wal_orphan_gc.go, internal/gc/wal_orphan_gc_test.go, internal/gc/doc.go, task_list.json
+- Verified orphan GC scans /wal/staging/<metaDomain>/, checks wal.orphan_ttl, deletes WAL object and staging marker
+- Verified config defaults and Start/Stop behavior, plus helper methods (ScanOnce, ProcessOrphans, counts)
+- Fix applied: paginate metadata List with range end key to avoid starving orphans beyond first batch
+- Issues found: none after fix
+- Tests: not run (trusted prior run by working agent)

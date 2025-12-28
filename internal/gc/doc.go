@@ -24,9 +24,29 @@
 //
 // # Orphan Cleanup
 //
-// WAL orphan GC (not yet implemented) handles WAL objects that were written
-// but never committed due to broker crashes. These are detected via
-// staging markers that remain after the orphan TTL.
+// The WAL orphan GC worker ([WALOrphanGCWorker]) handles WAL objects that were
+// written but never committed due to broker crashes. Per spec section 9.7,
+// orphaned WALs are detected via staging markers at:
+//
+//	/wal/staging/<metaDomain>/<walId>
+//
+// When a WAL object is written, a staging marker is created first. On successful
+// commit, the staging marker is deleted in the same transaction. If the broker
+// crashes after writing the WAL but before commit, the staging marker remains.
+//
+// The orphan GC worker periodically scans staging markers and deletes those
+// older than wal.orphan_ttl (default 24 hours), along with their WAL objects.
+//
+// Usage:
+//
+//	worker := gc.NewWALOrphanGCWorker(metaStore, objStore, gc.WALOrphanGCWorkerConfig{
+//	    ScanIntervalMs: 60000,
+//	    OrphanTTLMs:    86400000, // 24 hours
+//	    NumDomains:     16,
+//	    BatchSize:      100,
+//	})
+//	worker.Start()
+//	defer worker.Stop()
 //
 // # Retention Enforcement
 //

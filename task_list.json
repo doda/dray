@@ -2015,7 +2015,7 @@
     "scope": [
       "internal/gc/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "parquet-gc",
