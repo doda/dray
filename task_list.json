@@ -2129,7 +2129,7 @@
     "scope": [
       "internal/auth/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "acl-enforcement",

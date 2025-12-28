@@ -1543,21 +1543,25 @@ func TestParseIcebergLockKey(t *testing.T) {
 
 func TestACLKeyPath(t *testing.T) {
 	tests := []struct {
-		resType  string
-		resName  string
-		princip  string
-		want     string
+		resType   string
+		resName   string
+		pattern   string
+		princip   string
+		operation string
+		permission string
+		host      string
+		want      string
 	}{
-		{"topic", "my-topic", "User:alice", "/dray/v1/acls/topic/my-topic/User:alice"},
-		{"group", "consumer-group", "User:bob", "/dray/v1/acls/group/consumer-group/User:bob"},
-		{"cluster", "*", "User:admin", "/dray/v1/acls/cluster/*/User:admin"},
+		{"topic", "my-topic", "literal", "User:alice", "READ", "ALLOW", "*", "/dray/v1/acls/topic/my-topic/literal/User:alice/READ/ALLOW/*"},
+		{"group", "consumer-group", "literal", "User:bob", "WRITE", "DENY", "*", "/dray/v1/acls/group/consumer-group/literal/User:bob/WRITE/DENY/*"},
+		{"cluster", "*", "literal", "User:admin", "ALL", "ALLOW", "*", "/dray/v1/acls/cluster/*/literal/User:admin/ALL/ALLOW/*"},
 	}
 
 	for _, tc := range tests {
-		got := ACLKeyPath(tc.resType, tc.resName, tc.princip)
+		got := ACLKeyPath(tc.resType, tc.resName, tc.pattern, tc.princip, tc.operation, tc.permission, tc.host)
 		if got != tc.want {
-			t.Errorf("ACLKeyPath(%q, %q, %q) = %q, want %q",
-				tc.resType, tc.resName, tc.princip, got, tc.want)
+			t.Errorf("ACLKeyPath(%q, %q, %q, %q, %q, %q, %q) = %q, want %q",
+				tc.resType, tc.resName, tc.pattern, tc.princip, tc.operation, tc.permission, tc.host, got, tc.want)
 		}
 	}
 }
@@ -1580,57 +1584,89 @@ func TestACLTypePrefix(t *testing.T) {
 
 func TestParseACLKey(t *testing.T) {
 	tests := []struct {
-		name        string
-		key         string
-		wantType    string
-		wantName    string
-		wantPrincip string
-		wantErr     bool
+		name         string
+		key          string
+		wantType     string
+		wantName     string
+		wantPattern  string
+		wantPrincip  string
+		wantOperation string
+		wantPermission string
+		wantHost     string
+		wantErr      bool
 	}{
 		{
-			name:        "valid",
-			key:         "/dray/v1/acls/topic/my-topic/User:alice",
-			wantType:    "topic",
-			wantName:    "my-topic",
-			wantPrincip: "User:alice",
+			name:          "valid",
+			key:           "/dray/v1/acls/topic/my-topic/literal/User:alice/READ/ALLOW/*",
+			wantType:      "topic",
+			wantName:      "my-topic",
+			wantPattern:   "literal",
+			wantPrincip:   "User:alice",
+			wantOperation: "READ",
+			wantPermission: "ALLOW",
+			wantHost:      "*",
 		},
 		{
-			name:        "cluster_wildcard",
-			key:         "/dray/v1/acls/cluster/*/User:admin",
-			wantType:    "cluster",
-			wantName:    "*",
-			wantPrincip: "User:admin",
+			name:          "cluster_wildcard",
+			key:           "/dray/v1/acls/cluster/*/literal/User:admin/ALL/ALLOW/*",
+			wantType:      "cluster",
+			wantName:      "*",
+			wantPattern:   "literal",
+			wantPrincip:   "User:admin",
+			wantOperation: "ALL",
+			wantPermission: "ALLOW",
+			wantHost:      "*",
 		},
 		{
 			name:    "wrong_prefix",
-			key:     "/wrong/acls/topic/my-topic/User:alice",
+			key:     "/wrong/acls/topic/my-topic/literal/User:alice/READ/ALLOW/*",
 			wantErr: true,
 		},
 		{
 			name:    "missing_principal",
-			key:     "/dray/v1/acls/topic/my-topic",
+			key:     "/dray/v1/acls/topic/my-topic/literal/User:alice/READ/ALLOW",
 			wantErr: true,
 		},
 		{
 			name:    "empty_type",
-			key:     "/dray/v1/acls//my-topic/User:alice",
+			key:     "/dray/v1/acls//my-topic/literal/User:alice/READ/ALLOW/*",
 			wantErr: true,
 		},
 		{
 			name:    "empty_name",
-			key:     "/dray/v1/acls/topic//User:alice",
+			key:     "/dray/v1/acls/topic//literal/User:alice/READ/ALLOW/*",
+			wantErr: true,
+		},
+		{
+			name:    "empty_pattern",
+			key:     "/dray/v1/acls/topic/my-topic//User:alice/READ/ALLOW/*",
 			wantErr: true,
 		},
 		{
 			name:    "empty_principal",
-			key:     "/dray/v1/acls/topic/my-topic/",
+			key:     "/dray/v1/acls/topic/my-topic/literal//READ/ALLOW/*",
+			wantErr: true,
+		},
+		{
+			name:    "empty_operation",
+			key:     "/dray/v1/acls/topic/my-topic/literal/User:alice//ALLOW/*",
+			wantErr: true,
+		},
+		{
+			name:    "empty_permission",
+			key:     "/dray/v1/acls/topic/my-topic/literal/User:alice/READ///*",
+			wantErr: true,
+		},
+		{
+			name:    "empty_host",
+			key:     "/dray/v1/acls/topic/my-topic/literal/User:alice/READ/ALLOW/",
 			wantErr: true,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resType, resName, princip, err := ParseACLKey(tc.key)
+			resType, resName, patternType, princip, operation, permission, host, err := ParseACLKey(tc.key)
 			if tc.wantErr {
 				if err == nil {
 					t.Errorf("ParseACLKey(%q) expected error", tc.key)
@@ -1641,9 +1677,11 @@ func TestParseACLKey(t *testing.T) {
 				t.Errorf("ParseACLKey(%q) unexpected error: %v", tc.key, err)
 				return
 			}
-			if resType != tc.wantType || resName != tc.wantName || princip != tc.wantPrincip {
-				t.Errorf("ParseACLKey(%q) = (%q, %q, %q), want (%q, %q, %q)",
-					tc.key, resType, resName, princip, tc.wantType, tc.wantName, tc.wantPrincip)
+			if resType != tc.wantType || resName != tc.wantName || patternType != tc.wantPattern ||
+				princip != tc.wantPrincip || operation != tc.wantOperation || permission != tc.wantPermission || host != tc.wantHost {
+				t.Errorf("ParseACLKey(%q) = (%q, %q, %q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q, %q, %q)",
+					tc.key, resType, resName, patternType, princip, operation, permission, host,
+					tc.wantType, tc.wantName, tc.wantPattern, tc.wantPrincip, tc.wantOperation, tc.wantPermission, tc.wantHost)
 			}
 		})
 	}
@@ -1739,14 +1777,20 @@ func TestIcebergLockKeyRoundTrip(t *testing.T) {
 func TestACLKeyRoundTrip(t *testing.T) {
 	resType := "topic"
 	resName := "my-topic"
+	patternType := "literal"
 	principal := "User:alice"
-	key := ACLKeyPath(resType, resName, principal)
-	parsedType, parsedName, parsedPrincipal, err := ParseACLKey(key)
+	operation := "READ"
+	permission := "ALLOW"
+	host := "*"
+	key := ACLKeyPath(resType, resName, patternType, principal, operation, permission, host)
+	parsedType, parsedName, parsedPattern, parsedPrincipal, parsedOperation, parsedPermission, parsedHost, err := ParseACLKey(key)
 	if err != nil {
 		t.Fatalf("ParseACLKey failed: %v", err)
 	}
-	if parsedType != resType || parsedName != resName || parsedPrincipal != principal {
-		t.Errorf("Round trip failed: got (%q, %q, %q), want (%q, %q, %q)",
-			parsedType, parsedName, parsedPrincipal, resType, resName, principal)
+	if parsedType != resType || parsedName != resName || parsedPattern != patternType ||
+		parsedPrincipal != principal || parsedOperation != operation || parsedPermission != permission || parsedHost != host {
+		t.Errorf("Round trip failed: got (%q, %q, %q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q, %q, %q)",
+			parsedType, parsedName, parsedPattern, parsedPrincipal, parsedOperation, parsedPermission, parsedHost,
+			resType, resName, patternType, principal, operation, permission, host)
 	}
 }

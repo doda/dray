@@ -688,9 +688,18 @@ func ParseIcebergLockKey(key string) (topic string, err error) {
 // =============================================================================
 
 // ACLKeyPath returns the key for an ACL entry.
-// Format: /dray/v1/acls/<resourceType>/<resourceName>/<principal>
-func ACLKeyPath(resourceType, resourceName, principal string) string {
-	return fmt.Sprintf("%s/%s/%s/%s", ACLsPrefix, resourceType, resourceName, principal)
+// Format: /dray/v1/acls/<resourceType>/<resourceName>/<patternType>/<principal>/<operation>/<permission>/<host>
+func ACLKeyPath(resourceType, resourceName, patternType, principal, operation, permission, host string) string {
+	return fmt.Sprintf("%s/%s/%s/%s/%s/%s/%s/%s",
+		ACLsPrefix,
+		resourceType,
+		resourceName,
+		patternType,
+		principal,
+		operation,
+		permission,
+		host,
+	)
 }
 
 // ACLResourcePrefix returns the prefix for listing all ACLs for a resource.
@@ -704,17 +713,22 @@ func ACLTypePrefix(resourceType string) string {
 }
 
 // ParseACLKey parses an ACL key.
-func ParseACLKey(key string) (resourceType, resourceName, principal string, err error) {
+func ParseACLKey(key string) (resourceType, resourceName, patternType, principal, operation, permission, host string, err error) {
 	prefix := ACLsPrefix + "/"
 	if !strings.HasPrefix(key, prefix) {
-		return "", "", "", ErrInvalidKey
+		return "", "", "", "", "", "", "", ErrInvalidKey
 	}
 
 	rest := key[len(prefix):]
-	parts := strings.SplitN(rest, "/", 3)
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return "", "", "", ErrInvalidKey
+	parts := strings.Split(rest, "/")
+	if len(parts) != 7 {
+		return "", "", "", "", "", "", "", ErrInvalidKey
+	}
+	for _, part := range parts {
+		if part == "" {
+			return "", "", "", "", "", "", "", ErrInvalidKey
+		}
 	}
 
-	return parts[0], parts[1], parts[2], nil
+	return parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6], nil
 }
