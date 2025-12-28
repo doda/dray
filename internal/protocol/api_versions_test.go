@@ -127,7 +127,7 @@ func TestGetAPIVersionRange(t *testing.T) {
 	}{
 		{0, 0, 11, true, "Produce"},
 		{1, 0, 16, true, "Fetch"},
-		{18, 0, 3, true, "ApiVersions"},
+		{18, 0, 4, true, "ApiVersions"},
 		{22, 0, 0, false, "InitProducerId (excluded)"},
 		{999, 0, 0, false, "Unknown API"},
 	}

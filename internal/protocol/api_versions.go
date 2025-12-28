@@ -35,7 +35,7 @@ var supportedAPIs = []APIVersionEntry{
 	{APIKey: 16, MinVersion: 0, MaxVersion: 4}, // ListGroups
 
 	// ApiVersions itself
-	{APIKey: 18, MinVersion: 0, MaxVersion: 3}, // ApiVersions
+	{APIKey: 18, MinVersion: 0, MaxVersion: 4}, // ApiVersions (v4 required for Kafka 4.x)
 
 	// Admin APIs (SHOULD implement per spec 14.2)
 	{APIKey: 19, MinVersion: 0, MaxVersion: 7}, // CreateTopics

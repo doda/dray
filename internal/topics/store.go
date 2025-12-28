@@ -216,6 +216,21 @@ func (s *Store) CreateTopic(ctx context.Context, req CreateTopicRequest) (*Creat
 	}, nil
 }
 
+// GetTopicByID retrieves topic metadata by topic ID.
+// This performs a linear scan of all topics since we don't have an index by ID.
+func (s *Store) GetTopicByID(ctx context.Context, topicID string) (*TopicMeta, error) {
+	topics, err := s.ListTopics(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range topics {
+		if topics[i].TopicID == topicID {
+			return &topics[i], nil
+		}
+	}
+	return nil, ErrTopicNotFound
+}
+
 // TopicExists checks if a topic exists.
 func (s *Store) TopicExists(ctx context.Context, name string) (bool, error) {
 	key := keys.TopicKeyPath(name)

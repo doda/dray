@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/dray-io/dray/internal/fetch"
@@ -81,8 +82,21 @@ func (h *FetchHandler) Handle(ctx context.Context, version int16, req *kmsg.Fetc
 		topicResp := kmsg.NewFetchResponseTopic()
 		topicResp.Topic = topicReq.Topic
 
+		// For v13+, the client sends TopicID instead of Topic name
+		// We need to resolve the topic name from the TopicID
+		topicName := topicReq.Topic
+		if version >= 13 && topicName == "" {
+			// Look up topic by TopicID - convert bytes to UUID string with dashes
+			id := topicReq.TopicID
+			topicIDStr := fmt.Sprintf("%x-%x-%x-%x-%x", id[0:4], id[4:6], id[6:8], id[8:10], id[10:16])
+			meta, err := h.topicStore.GetTopicByID(ctx, topicIDStr)
+			if err == nil {
+				topicName = meta.Name
+			}
+		}
+
 		// Get topic metadata to validate topic exists
-		topicMeta, err := h.topicStore.GetTopic(ctx, topicReq.Topic)
+		topicMeta, err := h.topicStore.GetTopic(ctx, topicName)
 		if err != nil {
 			// Topic not found - add error for all partitions
 			for _, partReq := range topicReq.Partitions {

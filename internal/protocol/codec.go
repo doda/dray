@@ -66,8 +66,13 @@ func (e *Encoder) EncodeResponseWithCorrelationID(correlationID int32, resp *Res
 	// Append correlation ID as big-endian int32
 	buf = append(buf, byte(correlationID>>24), byte(correlationID>>16), byte(correlationID>>8), byte(correlationID))
 
-	// For flexible versions (v1+ response header), append empty tag buffer
-	if resp.IsFlexible() {
+	// For flexible versions (v1+ response header), append empty tag buffer.
+	// EXCEPTION: ApiVersions (key 18) always uses response header v0 (no tag buffer)
+	// even though the response body uses flexible encoding for v3+.
+	// This is a special case in the Kafka protocol to ensure ApiVersions can be
+	// understood before version negotiation is complete.
+	// See: https://kafka.apache.org/protocol.html and KIP-482
+	if resp.IsFlexible() && resp.Key() != 18 {
 		buf = append(buf, 0)
 	}
 

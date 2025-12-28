@@ -259,6 +259,7 @@ func (s *Server) readRequest(r io.Reader) (*RequestHeader, []byte, error) {
 
 // parseRequestHeader parses the Kafka request header from the buffer.
 // Returns the header and the number of bytes consumed.
+// Handles both flexible (v2 header) and non-flexible (v1 header) formats.
 func parseRequestHeader(buf []byte) (*RequestHeader, int, error) {
 	if len(buf) < 8 {
 		return nil, 0, errors.New("request too short for header")
@@ -272,9 +273,12 @@ func parseRequestHeader(buf []byte) (*RequestHeader, int, error) {
 
 	offset := 8
 
-	// clientId is a nullable string: int16 length followed by bytes
-	// -1 means null, 0 means empty string, >0 means that many bytes
-	// Other negative values are invalid per Kafka protocol
+	// Determine if this request uses flexible encoding (request header v2)
+	flexible := isFlexibleRequest(header.APIKey, header.APIVersion)
+
+	// Parse clientId - always uses int16 length (nullable string) in both header v1 and v2.
+	// Despite what one might expect, request header v2 does NOT use compact string for clientId.
+	// See: https://ivanyu.me/blog/2024/09/08/kafka-protocol-practical-guide/
 	if len(buf) < offset+2 {
 		return nil, 0, errors.New("request too short for clientId length")
 	}
@@ -291,9 +295,119 @@ func parseRequestHeader(buf []byte) (*RequestHeader, int, error) {
 		header.ClientID = string(buf[offset : offset+int(clientIDLen)])
 		offset += int(clientIDLen)
 	}
-	// clientIDLen == -1 (null) or 0 (empty): header.ClientID remains ""
+
+	// Check if we need to parse tagged fields.
+	// - Flexible APIs (header v2) always have tagged fields
+	// - ApiVersions v3+ is special: it uses int16 clientId but STILL has tagged fields
+	hasTaggedFields := flexible || (header.APIKey == 18 && header.APIVersion >= 3)
+
+	if hasTaggedFields {
+		// Parse tagged fields after clientId
+		if len(buf) < offset+1 {
+			return nil, 0, errors.New("request too short for header tags")
+		}
+		numTags, bytesRead := readUvarint(buf[offset:])
+		offset += bytesRead
+		// Skip each tag
+		for i := uint64(0); i < numTags; i++ {
+			if len(buf) <= offset {
+				return nil, 0, errors.New("request too short for tag key")
+			}
+			_, bytesRead := readUvarint(buf[offset:]) // tag key
+			offset += bytesRead
+			if len(buf) <= offset {
+				return nil, 0, errors.New("request too short for tag length")
+			}
+			tagLen, bytesRead := readUvarint(buf[offset:]) // tag length
+			offset += bytesRead
+			if len(buf) < offset+int(tagLen) {
+				return nil, 0, errors.New("request too short for tag data")
+			}
+			offset += int(tagLen) // skip tag data
+		}
+	}
 
 	return header, offset, nil
+}
+
+// readUvarint reads an unsigned varint from the buffer.
+// Returns the value and the number of bytes consumed.
+func readUvarint(buf []byte) (uint64, int) {
+	var x uint64
+	var s uint
+	for i, b := range buf {
+		if b < 0x80 {
+			return x | uint64(b)<<s, i + 1
+		}
+		x |= uint64(b&0x7f) << s
+		s += 7
+		if s >= 64 {
+			return 0, i + 1 // Overflow, return what we have
+		}
+	}
+	return x, len(buf)
+}
+
+// isFlexibleRequest returns true if the given API key and version uses flexible encoding
+// in the REQUEST HEADER (not the body). This is important because ApiVersions is special-cased
+// to always use the v1 request header format (non-flexible) even for v3+ requests.
+// Based on Kafka protocol specification for request header versions.
+func isFlexibleRequest(apiKey, version int16) bool {
+	// ApiVersions is special: it always uses the v1 request header format (non-flexible)
+	// because the broker needs to understand the request to negotiate versions.
+	// The REQUEST BODY still uses flexible encoding for v3+, but the HEADER does not.
+	if apiKey == 18 { // ApiVersions
+		return false // Always use non-flexible header
+	}
+
+	// This maps API keys to the version at which their HEADER becomes flexible.
+	// See: https://kafka.apache.org/protocol.html#protocol_api_keys
+	switch apiKey {
+	case 0: // Produce
+		return version >= 9
+	case 1: // Fetch
+		return version >= 12
+	case 2: // ListOffsets
+		return version >= 6
+	case 3: // Metadata
+		return version >= 9
+	case 8: // OffsetCommit
+		return version >= 8
+	case 9: // OffsetFetch
+		return version >= 6
+	case 10: // FindCoordinator
+		return version >= 3
+	case 11: // JoinGroup
+		return version >= 6
+	case 12: // Heartbeat
+		return version >= 4
+	case 13: // LeaveGroup
+		return version >= 4
+	case 14: // SyncGroup
+		return version >= 4
+	case 15: // DescribeGroups
+		return version >= 5
+	case 16: // ListGroups
+		return version >= 3
+	case 19: // CreateTopics
+		return version >= 5
+	case 20: // DeleteTopics
+		return version >= 4
+	case 32: // DescribeConfigs
+		return version >= 4
+	case 42: // DeleteGroups
+		return version >= 2
+	case 44: // IncrementalAlterConfigs
+		return version >= 1
+	case 60: // DescribeCluster
+		return version >= 0 // All versions are flexible
+	case 68: // ConsumerGroupHeartbeat
+		return version >= 0 // All versions are flexible
+	case 69: // ConsumerGroupDescribe
+		return version >= 0 // All versions are flexible
+	default:
+		return false
+	}
 }
 
 // writeResponse writes a Kafka response with the length prefix.
