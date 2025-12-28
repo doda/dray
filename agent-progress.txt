@@ -398,3 +398,11 @@ Start with project-setup, then follow spec phases:
 - Issues found: stable groups could block after restart because assignments were only in-memory; sync timeout left timer non-nil, preventing future timeouts
 - Resolution: return stored assignments for stable groups when generation matches; reset timer to nil after timeout
 - Tests: not run (already run by working agent)
+[2025-12-28T09:29:12Z] Reviewed heartbeat-handler
+- Scope: internal/protocol/heartbeat.go, internal/protocol/heartbeat_test.go, task_list.json
+- Verified Heartbeat handler validates group/member IDs, generation, and lease coordination
+- Verified error handling for dead groups, rebalance-in-progress, and unknown members
+- Verified heartbeat updates member last heartbeat timestamp and preserves response version
+- Verified v3+ instance ID fencing behavior and coordinator-not-available responses
+- Issues found: none
+- Tests: not run (already run by working agent)

@@ -1307,7 +1307,7 @@
     "scope": [
       "internal/protocol/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "leave-group-handler",
