@@ -686,6 +686,146 @@ func TestWALReader_GetRecordCount_TooSmall(t *testing.T) {
 	}
 }
 
+func TestWALReaderWithCache_CacheHit(t *testing.T) {
+	store := newMockStore()
+	cache := NewObjectRangeCache(nil, DefaultRangeCacheConfig())
+	defer cache.Close()
+	reader := NewWALReaderWithCache(store, cache)
+
+	// Create a single batch
+	batch := makeMinimalBatch(0, 5)
+	chunkData := makeChunkData([][]byte{batch})
+
+	walPath := "wal/domain=0/test.wo"
+	store.objects[walPath] = chunkData
+
+	entry := &index.IndexEntry{
+		StreamID:    "stream1",
+		StartOffset: 100,
+		EndOffset:   105,
+		FileType:    index.FileTypeWAL,
+		WalPath:     walPath,
+		ChunkOffset: 0,
+		ChunkLength: uint32(len(chunkData)),
+	}
+
+	ctx := context.Background()
+
+	// First read - should populate cache
+	result1, err := reader.ReadBatches(ctx, entry, 100, 0)
+	if err != nil {
+		t.Fatalf("First ReadBatches failed: %v", err)
+	}
+
+	// Verify cache was populated
+	stats := cache.Stats()
+	if stats.RangeCount != 1 {
+		t.Errorf("Expected 1 cached range after first read, got %d", stats.RangeCount)
+	}
+
+	// Delete the object from store to ensure second read must use cache
+	delete(store.objects, walPath)
+
+	// Second read - should hit cache
+	result2, err := reader.ReadBatches(ctx, entry, 100, 0)
+	if err != nil {
+		t.Fatalf("Second ReadBatches failed: %v", err)
+	}
+
+	// Results should be identical
+	if len(result1.Batches) != len(result2.Batches) {
+		t.Errorf("Batch counts differ: %d vs %d", len(result1.Batches), len(result2.Batches))
+	}
+	if result1.StartOffset != result2.StartOffset {
+		t.Errorf("StartOffsets differ: %d vs %d", result1.StartOffset, result2.StartOffset)
+	}
+}
+
+func TestWALReaderWithCache_CacheInvalidation(t *testing.T) {
+	store := newMockStore()
+	cache := NewObjectRangeCache(nil, DefaultRangeCacheConfig())
+	defer cache.Close()
+	reader := NewWALReaderWithCache(store, cache)
+
+	// Create a single batch
+	batch := makeMinimalBatch(0, 5)
+	chunkData := makeChunkData([][]byte{batch})
+
+	walPath := "wal/domain=0/test.wo"
+	store.objects[walPath] = chunkData
+
+	entry := &index.IndexEntry{
+		StreamID:    "stream1",
+		StartOffset: 100,
+		EndOffset:   105,
+		FileType:    index.FileTypeWAL,
+		WalPath:     walPath,
+		ChunkOffset: 0,
+		ChunkLength: uint32(len(chunkData)),
+	}
+
+	ctx := context.Background()
+
+	// First read - populates cache
+	_, err := reader.ReadBatches(ctx, entry, 100, 0)
+	if err != nil {
+		t.Fatalf("First ReadBatches failed: %v", err)
+	}
+
+	// Invalidate the WAL
+	cache.InvalidateWAL(walPath)
+
+	// Verify cache is empty
+	stats := cache.Stats()
+	if stats.RangeCount != 0 {
+		t.Errorf("Expected 0 cached ranges after invalidation, got %d", stats.RangeCount)
+	}
+
+	// Third read should work (re-fetches from store)
+	_, err = reader.ReadBatches(ctx, entry, 100, 0)
+	if err != nil {
+		t.Fatalf("Third ReadBatches failed: %v", err)
+	}
+
+	// Cache should be repopulated
+	stats = cache.Stats()
+	if stats.RangeCount != 1 {
+		t.Errorf("Expected 1 cached range after re-read, got %d", stats.RangeCount)
+	}
+}
+
+func TestWALReaderWithCache_NilCache(t *testing.T) {
+	store := newMockStore()
+	reader := NewWALReaderWithCache(store, nil) // nil cache
+
+	batch := makeMinimalBatch(0, 5)
+	chunkData := makeChunkData([][]byte{batch})
+
+	walPath := "wal/domain=0/test.wo"
+	store.objects[walPath] = chunkData
+
+	entry := &index.IndexEntry{
+		StreamID:    "stream1",
+		StartOffset: 100,
+		EndOffset:   105,
+		FileType:    index.FileTypeWAL,
+		WalPath:     walPath,
+		ChunkOffset: 0,
+		ChunkLength: uint32(len(chunkData)),
+	}
+
+	ctx := context.Background()
+
+	// Should work without cache
+	result, err := reader.ReadBatches(ctx, entry, 100, 0)
+	if err != nil {
+		t.Fatalf("ReadBatches with nil cache failed: %v", err)
+	}
+	if len(result.Batches) != 1 {
+		t.Errorf("Expected 1 batch, got %d", len(result.Batches))
+	}
+}
+
 func TestWALReader_ReadBatches_BatchIndexMaxBytes(t *testing.T) {
 	store := newMockStore()
 	reader := NewWALReader(store)

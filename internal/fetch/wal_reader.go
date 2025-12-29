@@ -26,11 +26,18 @@ var (
 // WALReader reads record batches from WAL objects.
 type WALReader struct {
 	store objectstore.Store
+	cache *ObjectRangeCache
 }
 
 // NewWALReader creates a new WAL reader.
 func NewWALReader(store objectstore.Store) *WALReader {
 	return &WALReader{store: store}
+}
+
+// NewWALReaderWithCache creates a new WAL reader with an optional range cache.
+// If cache is non-nil, WAL chunk reads will be cached for faster subsequent access.
+func NewWALReaderWithCache(store objectstore.Store, cache *ObjectRangeCache) *WALReader {
+	return &WALReader{store: store, cache: cache}
 }
 
 // FetchResult contains the result of a fetch operation.
@@ -51,6 +58,7 @@ type FetchResult struct {
 
 // ReadBatches reads record batches from a WAL object for the given index entry.
 // It uses the batchIndex for efficient offset seeking when available.
+// If a cache is configured, reads are served from cache when available.
 //
 // Parameters:
 //   - ctx: Context for cancellation
@@ -69,10 +77,33 @@ func (r *WALReader) ReadBatches(ctx context.Context, entry *index.IndexEntry, fe
 	startByte := int64(entry.ChunkOffset)
 	endByte := startByte + int64(entry.ChunkLength) - 1
 
-	rc, err := r.store.GetRange(ctx, entry.WalPath, startByte, endByte)
+	chunkData, err := r.readChunk(ctx, entry.WalPath, startByte, endByte, int(entry.ChunkLength))
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse batches from chunk data and find the ones we need
+	return r.extractBatches(chunkData, entry, fetchOffset, maxBytes)
+}
+
+// readChunk reads a WAL chunk, using the cache if available.
+func (r *WALReader) readChunk(ctx context.Context, walPath string, startByte, endByte int64, expectedLen int) ([]byte, error) {
+	// Try cache first if available
+	if r.cache != nil {
+		if data, ok := r.cache.Get(walPath, startByte, endByte); ok {
+			if len(data) == expectedLen {
+				return data, nil
+			}
+			// Cache data size mismatch - invalidate and fetch fresh
+			r.cache.InvalidateWAL(walPath)
+		}
+	}
+
+	// Fetch from object store
+	rc, err := r.store.GetRange(ctx, walPath, startByte, endByte)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
-			return nil, fmt.Errorf("%w: %s", ErrChunkNotFound, entry.WalPath)
+			return nil, fmt.Errorf("%w: %s", ErrChunkNotFound, walPath)
 		}
 		return nil, fmt.Errorf("fetch: reading WAL chunk: %w", err)
 	}
@@ -83,12 +114,16 @@ func (r *WALReader) ReadBatches(ctx context.Context, entry *index.IndexEntry, fe
 		return nil, fmt.Errorf("fetch: reading chunk data: %w", err)
 	}
 
-	if len(chunkData) != int(entry.ChunkLength) {
-		return nil, fmt.Errorf("%w: expected %d bytes, got %d", ErrInvalidChunk, entry.ChunkLength, len(chunkData))
+	if len(chunkData) != expectedLen {
+		return nil, fmt.Errorf("%w: expected %d bytes, got %d", ErrInvalidChunk, expectedLen, len(chunkData))
 	}
 
-	// Parse batches from chunk data and find the ones we need
-	return r.extractBatches(chunkData, entry, fetchOffset, maxBytes)
+	// Store in cache if available
+	if r.cache != nil {
+		r.cache.Put(walPath, startByte, endByte, chunkData)
+	}
+
+	return chunkData, nil
 }
 
 // extractBatches parses the chunk data and extracts batches starting from fetchOffset.

@@ -20,6 +20,7 @@ type Fetcher struct {
 	walReader     *WALReader
 	parquetReader *ParquetReader
 	streamManager *index.StreamManager
+	rangeCache    *ObjectRangeCache
 }
 
 // NewFetcher creates a new Fetcher.
@@ -29,6 +30,22 @@ func NewFetcher(store objectstore.Store, streamManager *index.StreamManager) *Fe
 		parquetReader: NewParquetReader(store),
 		streamManager: streamManager,
 	}
+}
+
+// NewFetcherWithCache creates a new Fetcher with an optional range cache for WAL reads.
+// If cache is non-nil, WAL chunk reads will be cached for faster subsequent access.
+func NewFetcherWithCache(store objectstore.Store, streamManager *index.StreamManager, cache *ObjectRangeCache) *Fetcher {
+	return &Fetcher{
+		walReader:     NewWALReaderWithCache(store, cache),
+		parquetReader: NewParquetReader(store),
+		streamManager: streamManager,
+		rangeCache:    cache,
+	}
+}
+
+// RangeCache returns the configured range cache, or nil if not configured.
+func (f *Fetcher) RangeCache() *ObjectRangeCache {
+	return f.rangeCache
 }
 
 // FetchRequest contains the parameters for a fetch operation.

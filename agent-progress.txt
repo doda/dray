@@ -937,3 +937,11 @@ Start with project-setup, then follow spec phases:
 - Verified lease conflict handling ensures only one broker acquires lease
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+
+[2025-12-29T06:22:30Z] Reviewed object-range-cache
+- Scope: internal/fetch/fetcher.go, internal/fetch/range_cache.go, internal/fetch/range_cache_test.go, internal/fetch/wal_reader.go, internal/fetch/wal_reader_test.go, task_list.json
+- Verified object range cache provides bounded WAL slice caching with LRU and per-WAL limits
+- Verified WAL reader uses cache for range reads and invalidates on size mismatch
+- Verified notification-driven invalidation for WAL GC/object deletions
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)
