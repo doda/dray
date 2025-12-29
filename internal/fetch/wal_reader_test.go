@@ -455,6 +455,65 @@ func TestWALReader_ReadBatches_WithBatchIndex(t *testing.T) {
 	}
 }
 
+func TestWALReader_ReadBatches_LargeBatchIndex(t *testing.T) {
+	store := newMockStore()
+	reader := NewWALReader(store)
+
+	const batchCount = 1000
+	batches := make([][]byte, batchCount)
+	batchIndex := make([]index.BatchIndexEntry, 0, batchCount)
+	var offsetDelta uint32
+	var chunkOffset uint32
+
+	for i := 0; i < batchCount; i++ {
+		batch := makeMinimalBatch(0, 1)
+		batches[i] = batch
+
+		batchIndex = append(batchIndex, index.BatchIndexEntry{
+			BatchStartOffsetDelta: offsetDelta,
+			BatchLastOffsetDelta:  offsetDelta,
+			BatchOffsetInChunk:    chunkOffset + 4,
+			BatchLength:           uint32(len(batch)),
+			MinTimestampMs:        1000,
+			MaxTimestampMs:        2000,
+		})
+
+		offsetDelta++
+		chunkOffset += 4 + uint32(len(batch))
+	}
+
+	chunkData := makeChunkData(batches)
+	walPath := "wal/domain=0/large.wo"
+	store.objects[walPath] = chunkData
+
+	entry := &index.IndexEntry{
+		StreamID:    "stream1",
+		StartOffset: 100,
+		EndOffset:   1100,
+		FileType:    index.FileTypeWAL,
+		WalPath:     walPath,
+		ChunkOffset: 0,
+		ChunkLength: uint32(len(chunkData)),
+		BatchIndex:  batchIndex,
+	}
+
+	fetchOffset := int64(800)
+	result, err := reader.ReadBatches(context.Background(), entry, fetchOffset, 0)
+	if err != nil {
+		t.Fatalf("ReadBatches failed: %v", err)
+	}
+
+	expectedStart := fetchOffset
+	if result.StartOffset != expectedStart {
+		t.Errorf("expected StartOffset %d, got %d", expectedStart, result.StartOffset)
+	}
+
+	expectedBatches := batchCount - int(fetchOffset-entry.StartOffset)
+	if len(result.Batches) != expectedBatches {
+		t.Errorf("expected %d batches, got %d", expectedBatches, len(result.Batches))
+	}
+}
+
 func TestWALReader_ReadBatches_ChunkOffset(t *testing.T) {
 	store := newMockStore()
 	reader := NewWALReader(store)

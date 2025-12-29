@@ -200,19 +200,21 @@ func (r *WALReader) extractBatchesWithIndex(chunkData []byte, entry *index.Index
 		StartOffset: -1,
 	}
 
-	// Find the first batch that contains data at or after fetchOffset
+	// Find the first batch where lastOffset >= fetchOffset.
 	startBatchIdx := -1
-	for i, bi := range entry.BatchIndex {
-		batchStartOffset := entry.StartOffset + int64(bi.BatchStartOffsetDelta)
-		batchLastOffset := entry.StartOffset + int64(bi.BatchLastOffsetDelta)
+	targetDelta := fetchOffset - entry.StartOffset
+	lo, hi := 0, len(entry.BatchIndex)-1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		batch := entry.BatchIndex[mid]
+		lastDelta := int64(batch.BatchLastOffsetDelta)
 
-		// This batch contains our offset if: fetchOffset <= batchLastOffset
-		// (batch covers [batchStartOffset, batchLastOffset])
-		if fetchOffset <= batchLastOffset {
-			startBatchIdx = i
-			break
+		if lastDelta >= targetDelta {
+			startBatchIdx = mid
+			hi = mid - 1
+		} else {
+			lo = mid + 1
 		}
-		_ = batchStartOffset // used for offset tracking
 	}
 
 	if startBatchIdx < 0 {
@@ -230,20 +232,8 @@ func (r *WALReader) extractBatchesWithIndex(chunkData []byte, entry *index.Index
 			break
 		}
 
-		// Read the batch data using the batchIndex offsets
-		batchStart := int(bi.BatchOffsetInChunk)
-		batchEnd := batchStart + int(bi.BatchLength)
-
-		// Note: BatchOffsetInChunk is the offset within the chunk data AFTER the 4-byte length prefix
-		// So we need to adjust for the batch format in the chunk
-		// The chunk format is: [4-byte length][batch data][4-byte length][batch data]...
-		// But BatchOffsetInChunk might already account for this - let's check the actual layout
-
-		// Actually, looking at the WAL format, the chunk body has:
-		// [batchLen (4 bytes), batchData (batchLen bytes)] repeated
-		// So we need to skip the length prefix when reading
-
-		// Recalculate the actual position accounting for length prefixes
+		// Read the batch data using the batchIndex offsets.
+		// BatchOffsetInChunk is the offset to the batch data (after the length prefix).
 		actualStart := int(bi.BatchOffsetInChunk)
 		if actualStart+int(bi.BatchLength) > len(chunkData) {
 			return nil, fmt.Errorf("%w: batch %d overflows chunk", ErrInvalidChunk, i)
@@ -261,7 +251,6 @@ func (r *WALReader) extractBatchesWithIndex(chunkData []byte, entry *index.Index
 			result.StartOffset = batchStartOffset
 		}
 		result.EndOffset = batchEndOffset
-		_ = batchEnd // mark as used
 	}
 
 	if len(result.Batches) == 0 {

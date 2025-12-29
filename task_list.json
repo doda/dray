@@ -2725,7 +2725,7 @@
     "scope": [
       "internal/fetch/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "non-owner-request-handling",

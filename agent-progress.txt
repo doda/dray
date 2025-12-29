@@ -982,3 +982,17 @@ Start with project-setup, then follow spec phases:
 - Challenges: needed explicit MetadataRequest to assert zone filtering from client.id.
 - Resolution: used kmsg.MetadataRequest v9 with client RequestWith and zone_id client IDs.
 - Follow-ups: none
+[2025-12-29T17:59:09Z] Completed batch-index-efficient-lookup: PASS
+- Stored batchIndex for WAL index entries during metadata commit and exposed optional batch index in CommitStream.
+- Added binary search in WAL reader to locate first batch with lastOffset >= fetch offset and cleaned batch offset slicing comments.
+- Added large batch index WAL reader test to exercise efficient lookup on big chunks.
+- Files changed: internal/produce/batch_index.go
+- Files changed: internal/produce/commit.go
+- Files changed: internal/fetch/wal_reader.go
+- Files changed: internal/fetch/wal_reader_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./internal/fetch -run TestWALReader_ReadBatches_LargeBatchIndex -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./internal/produce -run TestCommitter_CommitStream -count=1 (pass)
+- Tests: ./init.sh (pass)
+- Challenge: init.sh timed out at 120s and 240s while running go test ./...
+- Resolution: reran ./init.sh with a 600s timeout to completion.

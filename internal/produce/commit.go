@@ -256,7 +256,14 @@ func (c *Committer) commitMetadata(ctx context.Context, domain metadata.MetaDoma
 				WalPath:        writeResult.Path,
 				ChunkOffset:    chunkOffset.ByteOffset,
 				ChunkLength:    chunkOffset.ByteLength,
+				BatchIndex:     nil,
 			}
+
+			batchIndex, err := buildBatchIndex(pc.batches)
+			if err != nil {
+				return err
+			}
+			entry.BatchIndex = batchIndex
 
 			entryBytes, err := json.Marshal(entry)
 			if err != nil {
@@ -329,6 +336,7 @@ type StreamCommitRequest struct {
 	MaxTimestampMs int64
 	WalID          string
 	WalPath        string
+	BatchIndex     []index.BatchIndexEntry
 }
 
 // CommitStream commits a single stream's records without a full WAL write.
@@ -395,6 +403,7 @@ func (c *Committer) CommitStream(ctx context.Context, req StreamCommitRequest) (
 			MaxTimestampMs: req.MaxTimestampMs,
 			WalID:          req.WalID,
 			WalPath:        req.WalPath,
+			BatchIndex:     req.BatchIndex,
 		}
 
 		entryBytes, err := json.Marshal(entry)
