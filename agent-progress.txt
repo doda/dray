@@ -1096,3 +1096,14 @@ Start with project-setup, then follow spec phases:
 - Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/produce -run WALWriteFailure -count=1 (pass)
 - Challenges: none
 - Follow-ups: none
+[2025-12-29T21:40:00Z] Completed fix-wal-cumulative-size-chunklength: PASS
+- Implemented cumulativeSize calculation using WAL chunkLength bytes from staging writer (includes batch length prefixes).
+- Added unit test ensuring cumulativeSize equals chunkLength for multi-batch chunk.
+- Files changed: internal/produce/commit.go
+- Files changed: internal/produce/commit_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/produce -run Committer -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: gofmt not available in PATH.
+- Resolution: left formatting consistent with existing file style.
+- Follow-ups: none

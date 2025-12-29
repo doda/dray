@@ -314,6 +314,58 @@ func TestCommitter_CumulativeSize(t *testing.T) {
 	}
 }
 
+// TestCommitter_CumulativeSizeMatchesChunkLength verifies WAL cumulativeSize uses chunkLength bytes.
+func TestCommitter_CumulativeSizeMatchesChunkLength(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	streamMgr := index.NewStreamManager(metaStore)
+	streamIDStr := "test-stream-chunk"
+	if err := streamMgr.CreateStreamWithID(ctx, streamIDStr, "test-topic", 0); err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	streamID := parseStreamID(streamIDStr)
+	batch1 := []byte("alpha")
+	batch2 := []byte("bravo!")
+	requests := []*PendingRequest{
+		{
+			StreamID:       streamID,
+			StreamIDStr:    streamIDStr,
+			Batches:        []wal.BatchEntry{{Data: batch1}, {Data: batch2}},
+			RecordCount:    2,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           64,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	if err := committer.Commit(ctx, 0, requests); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	entries, err := streamMgr.ListIndexEntries(ctx, streamIDStr, 10)
+	if err != nil {
+		t.Fatalf("failed to list index entries: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 index entry, got %d", len(entries))
+	}
+
+	expectedChunkLength := int64(4+len(batch1)) + int64(4+len(batch2))
+	entry := entries[0]
+	if entry.ChunkLength != uint32(expectedChunkLength) {
+		t.Fatalf("expected chunkLength %d, got %d", expectedChunkLength, entry.ChunkLength)
+	}
+	if entry.CumulativeSize != expectedChunkLength {
+		t.Fatalf("expected cumulative size %d, got %d", expectedChunkLength, entry.CumulativeSize)
+	}
+}
+
 // TestCommitter_StreamNotFound tests that commit fails for non-existent stream.
 func TestCommitter_StreamNotFound(t *testing.T) {
 	metaStore := metadata.NewMockStore()

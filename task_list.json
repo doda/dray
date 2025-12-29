@@ -2859,7 +2859,7 @@
       "Add unit test validating cumulativeSize equals chunkLength",
       "Run produce/commit tests"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/produce/commit.go"

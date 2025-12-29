@@ -182,10 +182,7 @@ func (c *Committer) commitMetadata(ctx context.Context, domain metadata.MetaDoma
 
 			streamIDStr := pc.streamIDStr
 
-			var chunkSize int64
-			for _, batch := range pc.batches {
-				chunkSize += int64(len(batch.Data))
-			}
+			chunkSize := int64(chunkOffset.ByteLength)
 
 			hwmKey := keys.HwmKeyPath(streamIDStr)
 
