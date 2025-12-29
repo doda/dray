@@ -2706,7 +2706,7 @@
     "scope": [
       "tests/integration/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "batch-index-efficient-lookup",

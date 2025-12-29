@@ -971,3 +971,14 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh (pass)
 - Challenge: ./init.sh timed out at 240s on first run.
 - Resolution: reran ./init.sh with a longer timeout; completed successfully.
+[2025-12-29T18:10:00Z] Completed multi-zone-deployment-test: PASS
+- Implemented multi-zone integration test with three brokers sharing metadata/object storage and zone-aware routing checks.
+- Added zone broker harness that registers via routing registry and wires protocol handlers per broker.
+- Verified zone-local metadata, cross-zone fallback, and produce/fetch across zones using franz-go clients.
+- Files changed: tests/integration/multi_zone_deployment_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./tests/integration -run TestMultiZoneDeployment -count=1 (pass)
+- Tests: ./init.sh (pass)
+- Challenges: needed explicit MetadataRequest to assert zone filtering from client.id.
+- Resolution: used kmsg.MetadataRequest v9 with client RequestWith and zone_id client IDs.
+- Follow-ups: none
