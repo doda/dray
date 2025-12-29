@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -31,6 +32,7 @@ func TestMetadataHandler_BasicMetadata(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	// Create a test topic
 	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
@@ -50,7 +52,7 @@ func TestMetadataHandler_BasicMetadata(t *testing.T) {
 			Host:   "localhost",
 			Port:   9092,
 		},
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	// Request metadata for specific topic
 	req := kmsg.NewPtrMetadataRequest()
@@ -97,6 +99,7 @@ func TestMetadataHandler_TopicNotFound(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	handler := NewMetadataHandler(MetadataHandlerConfig{
 		ClusterID:        "test-cluster",
@@ -107,7 +110,7 @@ func TestMetadataHandler_TopicNotFound(t *testing.T) {
 			Host:   "localhost",
 			Port:   9092,
 		},
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 	topicName := "nonexistent-topic"
@@ -129,6 +132,7 @@ func TestMetadataHandler_AutoCreateTopic(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	handler := NewMetadataHandler(MetadataHandlerConfig{
 		ClusterID:         "test-cluster",
@@ -140,7 +144,7 @@ func TestMetadataHandler_AutoCreateTopic(t *testing.T) {
 			Host:   "localhost",
 			Port:   9092,
 		},
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 	req.AllowAutoTopicCreation = true
@@ -170,12 +174,34 @@ func TestMetadataHandler_AutoCreateTopic(t *testing.T) {
 	if !exists {
 		t.Error("topic should exist after auto-creation")
 	}
+
+	partitions, err := topicStore.ListPartitions(ctx, "auto-created-topic")
+	if err != nil {
+		t.Fatalf("failed to list partitions: %v", err)
+	}
+	for _, partition := range partitions {
+		hwm, _, err := streamManager.GetHWM(ctx, partition.StreamID)
+		if err != nil {
+			t.Fatalf("expected hwm for stream %s: %v", partition.StreamID, err)
+		}
+		if hwm != 0 {
+			t.Fatalf("expected hwm=0 for stream %s, got %d", partition.StreamID, hwm)
+		}
+		meta, err := streamManager.GetStreamMeta(ctx, partition.StreamID)
+		if err != nil {
+			t.Fatalf("expected stream meta for %s: %v", partition.StreamID, err)
+		}
+		if meta.TopicName != "auto-created-topic" || meta.Partition != partition.Partition {
+			t.Fatalf("unexpected stream meta for %s: %+v", partition.StreamID, meta)
+		}
+	}
 }
 
 func TestMetadataHandler_ZoneFiltering(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	// Create a test topic
 	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
@@ -208,7 +234,7 @@ func TestMetadataHandler_ZoneFiltering(t *testing.T) {
 			Port:   9092,
 		},
 		BrokerLister: lister,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	// Test with zone filtering
 	req := kmsg.NewPtrMetadataRequest()
@@ -238,6 +264,7 @@ func TestMetadataHandler_ListAllTopics(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	// Create multiple topics
 	for _, name := range []string{"topic-a", "topic-b", "topic-c"} {
@@ -259,7 +286,7 @@ func TestMetadataHandler_ListAllTopics(t *testing.T) {
 			Host:   "localhost",
 			Port:   9092,
 		},
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	// Request all topics (empty Topics array)
 	req := kmsg.NewPtrMetadataRequest()
@@ -311,6 +338,7 @@ func TestMetadataHandler_PartitionLeaderAssignment(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	// Create a topic with multiple partitions
 	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
@@ -335,7 +363,7 @@ func TestMetadataHandler_PartitionLeaderAssignment(t *testing.T) {
 		ControllerID: 1,
 		LocalBroker:  BrokerInfo{NodeID: 1, Host: "localhost", Port: 9092},
 		BrokerLister: lister,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 	topicName := "multi-partition"
@@ -381,6 +409,7 @@ func TestMetadataHandler_VersionedFields(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
 		Name:           "test-topic",
@@ -400,7 +429,7 @@ func TestMetadataHandler_VersionedFields(t *testing.T) {
 			Port:   9092,
 			Rack:   "rack1",
 		},
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 
@@ -427,6 +456,7 @@ func TestMetadataHandler_ZoneFilteredPartitionLeaders(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	// Create a topic with 6 partitions
 	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
@@ -471,7 +501,7 @@ func TestMetadataHandler_ZoneFilteredPartitionLeaders(t *testing.T) {
 			Port:   9092,
 		},
 		BrokerLister: lister,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 	topicName := "zone-test-topic"
@@ -532,6 +562,7 @@ func TestMetadataHandler_ZoneFallbackToAllBrokers(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
 		Name:           "fallback-test",
@@ -562,7 +593,7 @@ func TestMetadataHandler_ZoneFallbackToAllBrokers(t *testing.T) {
 			Port:   9092,
 		},
 		BrokerLister: lister,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 
@@ -589,6 +620,7 @@ func TestMetadataHandler_EmptyZoneReturnsAllBrokers(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
 		Name:           "no-zone-test",
@@ -616,7 +648,7 @@ func TestMetadataHandler_EmptyZoneReturnsAllBrokers(t *testing.T) {
 			Port:   9092,
 		},
 		BrokerLister: lister,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 
@@ -632,6 +664,7 @@ func TestMetadataHandler_ZoneFilteredLeadersDistribution(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	// Create topic with 10 partitions
 	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
@@ -662,7 +695,7 @@ func TestMetadataHandler_ZoneFilteredLeadersDistribution(t *testing.T) {
 		ControllerID: 1,
 		LocalBroker:  BrokerInfo{NodeID: 1, Host: "localhost", Port: 9092},
 		BrokerLister: lister,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 	topicName := "distribution-test"
@@ -714,6 +747,7 @@ func TestMetadataHandler_WithLeaderSelector(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	// Create a topic with 3 partitions
 	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
@@ -748,7 +782,7 @@ func TestMetadataHandler_WithLeaderSelector(t *testing.T) {
 		LocalBroker:    BrokerInfo{NodeID: 1, Host: "localhost", Port: 9092},
 		BrokerLister:   lister,
 		LeaderSelector: selector,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 	topicName := "selector-test"
@@ -786,6 +820,7 @@ func TestMetadataHandler_LeaderSelectorDeterministic(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
 
 	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
 		Name:           "deterministic-test",
@@ -821,7 +856,7 @@ func TestMetadataHandler_LeaderSelectorDeterministic(t *testing.T) {
 		LocalBroker:    BrokerInfo{NodeID: 1, Host: "localhost", Port: 9092},
 		BrokerLister:   lister,
 		LeaderSelector: selector,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 	topicName := "deterministic-test"

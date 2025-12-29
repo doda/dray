@@ -127,12 +127,17 @@ type testBroker struct {
 	server        *server.Server
 	addr          string
 	port          int32
+	autoCreate    bool
 	t             *testing.T
 }
 
 // newTestBroker creates a new test broker with all components wired up.
 // Must call start() to get the actual port before use.
 func newTestBroker(t *testing.T) *testBroker {
+	return newTestBrokerWithAutoCreate(t, false)
+}
+
+func newTestBrokerWithAutoCreate(t *testing.T, autoCreate bool) *testBroker {
 	metaStore := metadata.NewMockStore()
 	topicStore := topics.NewStore(metaStore)
 	streamManager := index.NewStreamManager(metaStore)
@@ -156,6 +161,7 @@ func newTestBroker(t *testing.T) *testBroker {
 		objStore:      objStore,
 		buffer:        buffer,
 		committer:     committer,
+		autoCreate:    autoCreate,
 		t:             t,
 	}
 }
@@ -178,7 +184,7 @@ func (b *testBroker) start() {
 		protocol.MetadataHandlerConfig{
 			ClusterID:          "test-cluster",
 			ControllerID:       1,
-			AutoCreateTopics:   false, // We create topics explicitly
+			AutoCreateTopics:   b.autoCreate,
 			DefaultPartitions:  1,
 			DefaultReplication: 1,
 			LocalBroker: protocol.BrokerInfo{
@@ -189,6 +195,7 @@ func (b *testBroker) start() {
 			},
 		},
 		b.topicStore,
+		b.streamManager,
 	)
 
 	// Create a disabled enforcer - ACL enforcement is off so all operations are allowed.
@@ -373,6 +380,75 @@ func TestProduceFetchIntegration(t *testing.T) {
 	}
 
 	t.Logf("Successfully produced and fetched %d messages", len(fetchedMessages))
+}
+
+func TestProduceFetchIntegration_AutoCreateTopic(t *testing.T) {
+	broker := newTestBrokerWithAutoCreate(t, true)
+	broker.start()
+	defer broker.stop()
+
+	ctx := context.Background()
+	topicName := "auto-created-produce-fetch"
+
+	client, err := kgo.NewClient(
+		kgo.SeedBrokers(broker.addr),
+		kgo.DefaultProduceTopic(topicName),
+		kgo.RequiredAcks(kgo.AllISRAcks()),
+		kgo.DisableIdempotentWrite(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create Kafka client: %v", err)
+	}
+	defer client.Close()
+
+	metaReq := kmsg.NewPtrMetadataRequest()
+	metaReq.AllowAutoTopicCreation = true
+	metaTopic := kmsg.NewMetadataRequestTopic()
+	metaTopic.Topic = &topicName
+	metaReq.Topics = append(metaReq.Topics, metaTopic)
+	if _, err := metaReq.RequestWith(ctx, client); err != nil {
+		t.Fatalf("metadata request failed: %v", err)
+	}
+
+	result := client.ProduceSync(ctx, &kgo.Record{
+		Topic: topicName,
+		Key:   []byte("key"),
+		Value: []byte("auto-created"),
+	})
+	if result.FirstErr() != nil {
+		t.Fatalf("produce failed: %v", result.FirstErr())
+	}
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	consumer, err := kgo.NewClient(
+		kgo.SeedBrokers(broker.addr),
+		kgo.ConsumeTopics(topicName),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+		kgo.DisableIdempotentWrite(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create consumer client: %v", err)
+	}
+	defer consumer.Close()
+
+	var fetched string
+	for fetched == "" && fetchCtx.Err() == nil {
+		fetches := consumer.PollFetches(fetchCtx)
+		if fetches.IsClientClosed() {
+			break
+		}
+		fetches.EachRecord(func(r *kgo.Record) {
+			if fetched == "" {
+				fetched = string(r.Value)
+			}
+		})
+	}
+
+	if fetched != "auto-created" {
+		t.Fatalf("expected fetched message to be %q, got %q", "auto-created", fetched)
+	}
 }
 
 // TestProduceFetchIntegration_MultiplePartitions tests produce/fetch with multiple partitions.

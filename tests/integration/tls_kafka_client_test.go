@@ -150,6 +150,7 @@ func (b *tlsTestBroker) start() {
 			},
 		},
 		b.topicStore,
+		b.streamManager,
 	)
 
 	produceHandler := protocol.NewProduceHandler(

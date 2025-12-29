@@ -101,7 +101,7 @@ func (b *zoneBroker) start(ctx context.Context) {
 		},
 		BrokerLister:   adapter,
 		LeaderSelector: adapter,
-	}, b.topicStore)
+	}, b.topicStore, b.streamManager)
 
 	enforcer := auth.NewEnforcer(nil, auth.EnforcerConfig{Enabled: false}, nil)
 

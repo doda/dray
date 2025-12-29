@@ -321,6 +321,7 @@ func (b *Broker) createHandler() server.Handler {
 				LeaderSelector: adapter,
 			},
 			b.topicStore,
+			b.streamManager,
 		),
 
 		produce: protocol.NewProduceHandler(

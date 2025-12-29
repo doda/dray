@@ -595,6 +595,7 @@ func TestInvariantI1_WithServer(t *testing.T) {
 			},
 		},
 		topicStore,
+		streamManager,
 	)
 
 	enforcer := auth.NewEnforcer(nil, auth.EnforcerConfig{Enabled: false}, nil)

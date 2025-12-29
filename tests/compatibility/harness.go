@@ -205,6 +205,7 @@ func NewCompatibilityHandler(
 			},
 		},
 		topicStore,
+		streamManager,
 	)
 
 	produceHandler := protocol.NewProduceHandler(

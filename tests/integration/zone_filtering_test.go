@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
 	"github.com/dray-io/dray/internal/protocol"
@@ -21,6 +22,7 @@ func TestZoneFiltering_MetadataReturnsOnlySameZoneBrokers(t *testing.T) {
 	ctx := context.Background()
 	metaStore := metadata.NewMockStore()
 	topicStore := topics.NewStore(metaStore)
+	streamManager := index.NewStreamManager(metaStore)
 
 	// Step 1: Register brokers in multiple zones
 	brokers := []routing.BrokerInfo{
@@ -69,7 +71,7 @@ func TestZoneFiltering_MetadataReturnsOnlySameZoneBrokers(t *testing.T) {
 		LocalBroker:    localBroker,
 		BrokerLister:   adapter,
 		LeaderSelector: adapter,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	// Step 2 & 3: Request with zone_id=us-east-1a - should return only zone-1a brokers
 	req := kmsg.NewPtrMetadataRequest()
@@ -425,6 +427,7 @@ func TestZoneFiltering_PartitionLeadersFromZone(t *testing.T) {
 	ctx := context.Background()
 	metaStore := metadata.NewMockStore()
 	topicStore := topics.NewStore(metaStore)
+	streamManager := index.NewStreamManager(metaStore)
 
 	// Register brokers in multiple zones
 	brokers := []routing.BrokerInfo{
@@ -471,7 +474,7 @@ func TestZoneFiltering_PartitionLeadersFromZone(t *testing.T) {
 		LocalBroker:    localBroker,
 		BrokerLister:   adapter,
 		LeaderSelector: adapter,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 	topicName := "multi-partition-topic"
@@ -533,6 +536,7 @@ func TestZoneFiltering_ReplicasOnlyFromZone(t *testing.T) {
 	ctx := context.Background()
 	metaStore := metadata.NewMockStore()
 	topicStore := topics.NewStore(metaStore)
+	streamManager := index.NewStreamManager(metaStore)
 
 	// Register brokers in multiple zones
 	brokers := []routing.BrokerInfo{
@@ -577,7 +581,7 @@ func TestZoneFiltering_ReplicasOnlyFromZone(t *testing.T) {
 		LocalBroker:    localBroker,
 		BrokerLister:   adapter,
 		LeaderSelector: adapter,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 	topicName := "replica-test-topic"

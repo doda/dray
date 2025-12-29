@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -56,15 +57,17 @@ type PartitionLeaderSelector interface {
 
 // MetadataHandler handles Metadata (key 3) requests.
 type MetadataHandler struct {
-	cfg        MetadataHandlerConfig
-	topicStore *topics.Store
+	cfg           MetadataHandlerConfig
+	topicStore    *topics.Store
+	streamManager *index.StreamManager
 }
 
 // NewMetadataHandler creates a new Metadata handler.
-func NewMetadataHandler(cfg MetadataHandlerConfig, topicStore *topics.Store) *MetadataHandler {
+func NewMetadataHandler(cfg MetadataHandlerConfig, topicStore *topics.Store, streamManager *index.StreamManager) *MetadataHandler {
 	return &MetadataHandler{
-		cfg:        cfg,
-		topicStore: topicStore,
+		cfg:           cfg,
+		topicStore:    topicStore,
+		streamManager: streamManager,
 	}
 }
 
@@ -189,6 +192,10 @@ func (h *MetadataHandler) buildTopicMetadata(ctx context.Context, version int16,
 				NowMs:          time.Now().UnixMilli(),
 			})
 			if createErr == nil {
+				if err := h.ensurePartitionStreams(ctx, topicName, result.Partitions); err != nil {
+					topic.ErrorCode = errUnknownTopicOrPartition
+					return topic
+				}
 				topicMeta = &result.Topic
 			} else {
 				topic.ErrorCode = errUnknownTopicOrPartition
@@ -223,6 +230,20 @@ func (h *MetadataHandler) buildTopicMetadata(ctx context.Context, version int16,
 	}
 
 	return topic
+}
+
+func (h *MetadataHandler) ensurePartitionStreams(ctx context.Context, topicName string, partitions []topics.PartitionMeta) error {
+	if h.streamManager == nil {
+		return errors.New("metadata: stream manager is required for auto-creation")
+	}
+	for _, partition := range partitions {
+		if err := h.streamManager.CreateStreamWithID(ctx, partition.StreamID, topicName, partition.Partition); err != nil {
+			if !errors.Is(err, index.ErrStreamExists) {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // buildPartitionMetadata builds metadata for a single partition.

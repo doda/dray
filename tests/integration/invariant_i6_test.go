@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
 	"github.com/dray-io/dray/internal/protocol"
@@ -25,6 +26,7 @@ func TestInvariantI6_ZoneAwareMetadata(t *testing.T) {
 	ctx := context.Background()
 	metaStore := metadata.NewMockStore()
 	topicStore := topics.NewStore(metaStore)
+	streamManager := index.NewStreamManager(metaStore)
 
 	clusterID := "test-cluster-i6"
 
@@ -73,7 +75,7 @@ func TestInvariantI6_ZoneAwareMetadata(t *testing.T) {
 		LocalBroker:    localBroker,
 		BrokerLister:   adapter,
 		LeaderSelector: adapter,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	// Step 2: Send Metadata with zone_id in client.id
 	req := kmsg.NewPtrMetadataRequest()
@@ -346,6 +348,7 @@ func TestInvariantI6_PartitionLeadersZoneAware(t *testing.T) {
 	ctx := context.Background()
 	metaStore := metadata.NewMockStore()
 	topicStore := topics.NewStore(metaStore)
+	streamManager := index.NewStreamManager(metaStore)
 
 	clusterID := "test-cluster-i6-leaders"
 
@@ -392,7 +395,7 @@ func TestInvariantI6_PartitionLeadersZoneAware(t *testing.T) {
 		LocalBroker:    localBroker,
 		BrokerLister:   adapter,
 		LeaderSelector: adapter,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 	topicName := "invariant-i6-leaders-topic"
@@ -441,6 +444,7 @@ func TestInvariantI6_ReplicasZoneAware(t *testing.T) {
 	ctx := context.Background()
 	metaStore := metadata.NewMockStore()
 	topicStore := topics.NewStore(metaStore)
+	streamManager := index.NewStreamManager(metaStore)
 
 	clusterID := "test-cluster-i6-replicas"
 
@@ -485,7 +489,7 @@ func TestInvariantI6_ReplicasZoneAware(t *testing.T) {
 		LocalBroker:    localBroker,
 		BrokerLister:   adapter,
 		LeaderSelector: adapter,
-	}, topicStore)
+	}, topicStore, streamManager)
 
 	req := kmsg.NewPtrMetadataRequest()
 	topicName := "invariant-i6-replicas-topic"
