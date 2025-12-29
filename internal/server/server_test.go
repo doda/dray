@@ -45,6 +45,25 @@ func (h *errorHandler) HandleRequest(ctx context.Context, header *RequestHeader,
 	return nil, errors.New("handler error")
 }
 
+type blockingHandler struct {
+	started chan struct{}
+	unblock chan struct{}
+}
+
+func (h *blockingHandler) HandleRequest(ctx context.Context, header *RequestHeader, payload []byte) ([]byte, error) {
+	select {
+	case <-h.started:
+	default:
+		close(h.started)
+	}
+	<-h.unblock
+
+	resp := make([]byte, 4+len(payload))
+	binary.BigEndian.PutUint32(resp[:4], uint32(header.CorrelationID))
+	copy(resp[4:], payload)
+	return resp, nil
+}
+
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.ListenAddr != ":9092" {
@@ -275,6 +294,79 @@ func TestServerHandlerError(t *testing.T) {
 		if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
 			t.Errorf("expected EOF or timeout, got %v", err)
 		}
+	}
+}
+
+func TestServerShutdownDrainsInFlight(t *testing.T) {
+	handler := &blockingHandler{
+		started: make(chan struct{}),
+		unblock: make(chan struct{}),
+	}
+	logger := logging.DefaultLogger()
+	logger.SetLevel(logging.LevelError)
+
+	cfg := DefaultConfig()
+	cfg.ListenAddr = "127.0.0.1:0"
+
+	srv := New(cfg, handler, logger)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	conn, err := net.Dial("tcp", srv.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	request := buildKafkaRequest(18, 0, 4242, "client", []byte("data"))
+	go func() {
+		_, _ = conn.Write(request)
+	}()
+
+	<-handler.started
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- srv.Shutdown(context.Background())
+	}()
+
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("shutdown completed early: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(handler.unblock)
+
+	response, err := readKafkaResponse(conn)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	gotCorrelationID := int32(binary.BigEndian.Uint32(response[:4]))
+	if gotCorrelationID != 4242 {
+		t.Errorf("expected correlation ID 4242, got %d", gotCorrelationID)
+	}
+
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("shutdown error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not complete")
+	}
+
+	select {
+	case err := <-errCh:
+		if err != ErrServerClosed {
+			t.Fatalf("expected ErrServerClosed, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not stop")
 	}
 }
 

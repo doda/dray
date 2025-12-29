@@ -116,8 +116,11 @@ type Server struct {
 
 	mu           sync.Mutex
 	conns        map[net.Conn]struct{}
+	stopping     atomic.Bool
 	closed       atomic.Bool
 	connWg       sync.WaitGroup
+	inflightWg   sync.WaitGroup
+	requestMu    sync.Mutex
 	connID       atomic.Int64
 	certReloader *CertReloader
 }
@@ -178,7 +181,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			if s.closed.Load() {
+			if s.stopping.Load() || s.closed.Load() {
 				return ErrServerClosed
 			}
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
@@ -204,11 +207,14 @@ func (s *Server) Addr() net.Addr {
 	return s.listener.Addr()
 }
 
-// Close shuts down the server gracefully.
+// Close shuts down the server immediately.
 func (s *Server) Close() error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return ErrServerClosed
 	}
+	s.requestMu.Lock()
+	s.stopping.Store(true)
+	s.requestMu.Unlock()
 
 	s.mu.Lock()
 	if s.listener != nil {
@@ -225,6 +231,73 @@ func (s *Server) Close() error {
 
 	s.connWg.Wait()
 	return nil
+}
+
+// StopAccepting stops accepting new connections and new requests on existing connections.
+func (s *Server) StopAccepting() error {
+	s.requestMu.Lock()
+	if s.closed.Load() {
+		s.requestMu.Unlock()
+		return ErrServerClosed
+	}
+	if s.stopping.Load() {
+		s.requestMu.Unlock()
+		return nil
+	}
+	s.stopping.Store(true)
+	s.requestMu.Unlock()
+
+	s.mu.Lock()
+	if s.listener != nil {
+		s.listener.Close()
+	}
+	s.mu.Unlock()
+
+	return nil
+}
+
+// Drain waits for in-flight requests to complete, then closes all connections.
+func (s *Server) Drain(ctx context.Context) error {
+	if s.closed.Load() {
+		return ErrServerClosed
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.inflightWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+
+	s.mu.Lock()
+	for conn := range s.conns {
+		conn.Close()
+	}
+	s.mu.Unlock()
+
+	if s.certReloader != nil {
+		s.certReloader.Stop()
+	}
+
+	s.connWg.Wait()
+	s.closed.Store(true)
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return nil
+}
+
+// Shutdown stops accepting new connections, drains in-flight requests, and closes connections.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if err := s.StopAccepting(); err != nil {
+		return err
+	}
+	return s.Drain(ctx)
 }
 
 // ReloadCertificate manually triggers a certificate reload.
@@ -276,7 +349,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	state := &connState{}
 
 	for {
-		if s.closed.Load() {
+		if s.stopping.Load() || s.closed.Load() {
 			return
 		}
 
@@ -295,6 +368,9 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 			logger.Warnf("read error", map[string]any{"error": err.Error()})
+			return
+		}
+		if s.stopping.Load() || s.closed.Load() {
 			return
 		}
 
@@ -325,6 +401,13 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 
 		apiName := APIKey(header.APIKey)
+		s.requestMu.Lock()
+		if s.stopping.Load() || s.closed.Load() {
+			s.requestMu.Unlock()
+			return
+		}
+		s.inflightWg.Add(1)
+		s.requestMu.Unlock()
 		response, err := s.handler.HandleRequest(ctx, header, payload)
 		if err != nil {
 			reqLogger.Errorf("handler error", map[string]any{"error": err.Error()})
@@ -332,6 +415,7 @@ func (s *Server) handleConn(conn net.Conn) {
 				s.metrics.RecordFailure(apiName)
 				s.metrics.RecordError(apiName, "HANDLER_ERROR")
 			}
+			s.inflightWg.Done()
 			return
 		}
 
@@ -346,9 +430,11 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		if err := s.writeResponse(conn, response); err != nil {
 			reqLogger.Warnf("write error", map[string]any{"error": err.Error()})
+			s.inflightWg.Done()
 			return
 		}
 
+		s.inflightWg.Done()
 		reqLogger.Debug("response sent")
 	}
 }

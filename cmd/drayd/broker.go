@@ -15,6 +15,7 @@ import (
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metrics"
+	"github.com/dray-io/dray/internal/objectstore"
 	"github.com/dray-io/dray/internal/produce"
 	"github.com/dray-io/dray/internal/protocol"
 	"github.com/dray-io/dray/internal/routing"
@@ -40,6 +41,7 @@ type Broker struct {
 	opts          BrokerOptions
 	logger        *logging.Logger
 	metaStore     metadata.MetadataStore
+	objectStore   objectstore.Store
 	topicStore    *topics.Store
 	streamManager *index.StreamManager
 	buffer        *produce.Buffer
@@ -99,10 +101,8 @@ func (b *Broker) Start(ctx context.Context) error {
 	b.groupStore = groups.NewStore(b.metaStore)
 	b.leaseManager = groups.NewLeaseManager(b.metaStore, b.opts.BrokerID)
 
-	// Create committer with a mock object store (to be replaced with real S3)
-	// For now, we use a nil object store which will cause errors on actual writes
-	// This is acceptable because the task only requires starting the server and registration
-	b.committer = produce.NewCommitter(nil, b.metaStore, produce.CommitterConfig{
+	// Create committer with object store (nil until object store integration).
+	b.committer = produce.NewCommitter(b.objectStore, b.metaStore, produce.CommitterConfig{
 		NumDomains: cfg.Metadata.NumDomains,
 	})
 
@@ -206,10 +206,9 @@ func (b *Broker) Shutdown(ctx context.Context) error {
 		b.healthServer.SetShuttingDown()
 	}
 
-	// Deregister from Oxia
-	if b.registry != nil {
-		if err := b.registry.Deregister(ctx); err != nil {
-			b.logger.Warnf("failed to deregister broker", map[string]any{
+	if b.tcpServer != nil {
+		if err := b.tcpServer.StopAccepting(); err != nil && err != server.ErrServerClosed {
+			b.logger.Warnf("error stopping tcp server accepts", map[string]any{
 				"error": err.Error(),
 			})
 		}
@@ -220,10 +219,20 @@ func (b *Broker) Shutdown(ctx context.Context) error {
 		b.buffer.Close()
 	}
 
-	// Close TCP server
+	var drainErr error
 	if b.tcpServer != nil {
-		if err := b.tcpServer.Close(); err != nil && err != server.ErrServerClosed {
-			b.logger.Warnf("error closing tcp server", map[string]any{
+		drainErr = b.tcpServer.Drain(ctx)
+		if drainErr != nil && drainErr != server.ErrServerClosed {
+			b.logger.Warnf("error draining tcp server", map[string]any{
+				"error": drainErr.Error(),
+			})
+		}
+	}
+
+	// Deregister from Oxia
+	if b.registry != nil {
+		if err := b.registry.Deregister(ctx); err != nil {
+			b.logger.Warnf("failed to deregister broker", map[string]any{
 				"error": err.Error(),
 			})
 		}
@@ -233,6 +242,15 @@ func (b *Broker) Shutdown(ctx context.Context) error {
 	if b.healthServer != nil {
 		if err := b.healthServer.Close(); err != nil {
 			b.logger.Warnf("error closing health server", map[string]any{
+				"error": err.Error(),
+			})
+		}
+	}
+
+	// Close object store
+	if b.objectStore != nil {
+		if err := b.objectStore.Close(); err != nil {
+			b.logger.Warnf("error closing object store", map[string]any{
 				"error": err.Error(),
 			})
 		}
@@ -248,7 +266,10 @@ func (b *Broker) Shutdown(ctx context.Context) error {
 	}
 
 	b.logger.Info("broker shutdown complete")
-	return nil
+	if drainErr == server.ErrServerClosed {
+		return nil
+	}
+	return drainErr
 }
 
 // createHandler creates the protocol handler that routes requests to handlers.
@@ -265,7 +286,7 @@ func (b *Broker) createHandler() server.Handler {
 	enforcer := auth.NewEnforcer(nil, auth.EnforcerConfig{Enabled: false}, b.logger)
 
 	// Create fetcher
-	fetcher := fetch.NewFetcher(nil, b.streamManager) // nil object store for now
+	fetcher := fetch.NewFetcher(b.objectStore, b.streamManager)
 
 	// Create join group handler first since leave group depends on it
 	joinGroupHandler := protocol.NewJoinGroupHandler(protocol.JoinGroupHandlerConfig{}, b.groupStore, b.leaseManager)

@@ -2685,7 +2685,7 @@
     "scope": [
       "internal/server/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "multi-zone-deployment-test",

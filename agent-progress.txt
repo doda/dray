@@ -959,3 +959,15 @@ Start with project-setup, then follow spec phases:
 - Challenge: init.sh failed on TestGolden_SyncGroup_TwoMemberCoordination generation mismatch.
 - Resolution: made member2 join wait while leader rejoins; test now coordinates rebalance order.
 - Follow-ups: none
+[2025-12-29T18:00:00Z] Completed graceful-shutdown: PASS
+- Implemented TCP server drain flow (stop accepting, drain in-flight, close conns) with new StopAccepting/Drain/Shutdown helpers.
+- Wired broker shutdown to stop accepts, flush produce buffer, drain requests, deregister, and close object/metadata stores.
+- Added server drain test to ensure in-flight request completes before shutdown returns.
+- Files changed: internal/server/server.go
+- Files changed: internal/server/server_test.go
+- Files changed: cmd/drayd/broker.go
+- Files changed: task_list.json
+- Tests: PATH="$PATH:/usr/local/go/bin" go test ./internal/server -run TestServerShutdownDrainsInFlight -count=1 (pass)
+- Tests: ./init.sh (pass)
+- Challenge: ./init.sh timed out at 240s on first run.
+- Resolution: reran ./init.sh with a longer timeout; completed successfully.
