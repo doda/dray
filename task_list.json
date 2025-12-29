@@ -3071,7 +3071,7 @@
       "Add test covering non-default namespace deletion",
       "Run delete topics tests"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/protocol/delete_topics.go"
