@@ -1203,3 +1203,14 @@ Start with project-setup, then follow spec phases:
 - Challenges: Iceberg removal not previously tracked in GC markers.
 - Resolution: Added IcebergEnabled/IcebergRemovalConfirmed fields with explicit confirmation helper.
 - Follow-ups: Wire compaction/Iceberg commit flow to call ConfirmParquetIcebergRemoval when removal is implemented.
+[2025-12-30T00:20:00Z] Completed kip848-offset-commit-epoch-validation: PASS
+- Implemented OffsetCommit validation to branch on group type and check consumer member epochs for KIP-848.
+- Added OffsetCommit tests for consumer group member epoch success and stale epoch error.
+- Files changed: internal/protocol/offset_commit.go
+- Files changed: internal/protocol/offset_commit_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol -run OffsetCommit -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (initial run timed out at 120s; reran with 600s timeout; pass)
+- Challenge: init.sh timed out at default 120s.
+- Resolution: reran init.sh with a longer timeout.
+- Follow-ups: none

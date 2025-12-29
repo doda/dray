@@ -133,6 +133,65 @@ func TestOffsetCommitHandler_Handle(t *testing.T) {
 		}
 	})
 
+	t.Run("success - consumer group member epoch", func(t *testing.T) {
+		store := newTestGroupStore()
+		handler := NewOffsetCommitHandler(store, nil)
+
+		_, err := store.CreateGroup(ctx, groups.CreateGroupRequest{
+			GroupID:      "consumer-group",
+			Type:         groups.GroupTypeConsumer,
+			ProtocolType: "consumer",
+			NowMs:        nowMs,
+		})
+		if err != nil {
+			t.Fatalf("create group: %v", err)
+		}
+
+		_, err = store.AddMember(ctx, groups.AddMemberRequest{
+			GroupID:          "consumer-group",
+			MemberID:         "member-1",
+			ClientID:         "client-1",
+			SessionTimeoutMs: 30000,
+			NowMs:            nowMs,
+			MemberEpoch:      3,
+		})
+		if err != nil {
+			t.Fatalf("add member: %v", err)
+		}
+
+		req := kmsg.NewPtrOffsetCommitRequest()
+		req.Group = "consumer-group"
+		req.Generation = 3
+		req.MemberID = "member-1"
+
+		topic := kmsg.NewOffsetCommitRequestTopic()
+		topic.Topic = "test-topic"
+
+		partition := kmsg.NewOffsetCommitRequestTopicPartition()
+		partition.Partition = 0
+		partition.Offset = 100
+
+		topic.Partitions = append(topic.Partitions, partition)
+		req.Topics = append(req.Topics, topic)
+
+		resp := handler.Handle(ctx, 9, req)
+
+		if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+			t.Fatal("unexpected response structure")
+		}
+		if resp.Topics[0].Partitions[0].ErrorCode != errOffsetCommitNone {
+			t.Errorf("expected no error, got %d", resp.Topics[0].Partitions[0].ErrorCode)
+		}
+
+		offset, err := store.GetCommittedOffset(ctx, "consumer-group", "test-topic", 0)
+		if err != nil {
+			t.Fatalf("get committed offset: %v", err)
+		}
+		if offset == nil || offset.Offset != 100 {
+			t.Error("offset was not stored correctly")
+		}
+	})
+
 	t.Run("success - multiple topics and partitions", func(t *testing.T) {
 		store := newTestGroupStore()
 		handler := NewOffsetCommitHandler(store, nil)
@@ -319,6 +378,52 @@ func TestOffsetCommitHandler_Handle(t *testing.T) {
 
 		if resp.Topics[0].Partitions[0].ErrorCode != errOffsetCommitUnknownMemberID {
 			t.Errorf("expected UNKNOWN_MEMBER_ID (25), got %d", resp.Topics[0].Partitions[0].ErrorCode)
+		}
+	})
+
+	t.Run("error - stale member epoch for consumer group", func(t *testing.T) {
+		store := newTestGroupStore()
+		handler := NewOffsetCommitHandler(store, nil)
+
+		_, err := store.CreateGroup(ctx, groups.CreateGroupRequest{
+			GroupID:      "consumer-group",
+			Type:         groups.GroupTypeConsumer,
+			ProtocolType: "consumer",
+			NowMs:        nowMs,
+		})
+		if err != nil {
+			t.Fatalf("create group: %v", err)
+		}
+
+		_, err = store.AddMember(ctx, groups.AddMemberRequest{
+			GroupID:          "consumer-group",
+			MemberID:         "member-1",
+			ClientID:         "client-1",
+			SessionTimeoutMs: 30000,
+			NowMs:            nowMs,
+			MemberEpoch:      5,
+		})
+		if err != nil {
+			t.Fatalf("add member: %v", err)
+		}
+
+		req := kmsg.NewPtrOffsetCommitRequest()
+		req.Group = "consumer-group"
+		req.Generation = 3
+		req.MemberID = "member-1"
+
+		topic := kmsg.NewOffsetCommitRequestTopic()
+		topic.Topic = "test-topic"
+		partition := kmsg.NewOffsetCommitRequestTopicPartition()
+		partition.Partition = 0
+		partition.Offset = 100
+		topic.Partitions = append(topic.Partitions, partition)
+		req.Topics = append(req.Topics, topic)
+
+		resp := handler.Handle(ctx, 9, req)
+
+		if resp.Topics[0].Partitions[0].ErrorCode != errOffsetCommitStaleMemberEpoch {
+			t.Errorf("expected STALE_MEMBER_EPOCH (110), got %d", resp.Topics[0].Partitions[0].ErrorCode)
 		}
 	})
 

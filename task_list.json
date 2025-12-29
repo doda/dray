@@ -2980,7 +2980,7 @@
       "Validate member epoch for consumer groups and return protocol-appropriate errors",
       "Add tests for consumer-group epoch validation and error codes"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/protocol/offset_commit.go"

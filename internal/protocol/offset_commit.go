@@ -66,7 +66,7 @@ func (h *OffsetCommitHandler) Handle(ctx context.Context, version int16, req *km
 		}
 	}
 
-	// For v1+, we need to validate generation and member if they are provided
+	// For v1+, we need to validate generation/member epoch and member if they are provided
 	// Generation -1 and empty member ID means "simple" mode (storing offsets only, no group validation)
 	simpleMode := req.Generation == -1 && req.MemberID == ""
 
@@ -77,56 +77,98 @@ func (h *OffsetCommitHandler) Handle(ctx context.Context, version int16, req *km
 			return h.buildErrorResponse(version, req, errOffsetCommitUnknownMemberID)
 		}
 
-		// Get group state to validate generation
-		state, err := h.store.GetGroupState(ctx, req.Group)
+		// Determine group type for generation vs member epoch validation
+		groupType, err := h.store.GetGroupType(ctx, req.Group)
 		if err != nil {
 			if errors.Is(err, groups.ErrGroupNotFound) {
 				// For OffsetCommit, an unknown group is not an error - we can auto-create
 				// But we need to verify the member exists if not in simple mode
 				return h.buildErrorResponse(version, req, errOffsetCommitCoordinatorNotAvail)
 			}
-			logger.Warnf("failed to get group state", map[string]any{
+			logger.Warnf("failed to get group type", map[string]any{
 				"group": req.Group,
 				"error": err.Error(),
 			})
 			return h.buildErrorResponse(version, req, errOffsetCommitCoordinatorNotAvail)
 		}
-		groupState = state
 
-		// Check if group is Dead
-		if state.State == groups.GroupStateDead {
-			return h.buildErrorResponse(version, req, errOffsetCommitUnknownMemberID)
-		}
+		if groupType == groups.GroupTypeConsumer {
+			// Validate member epoch for consumer groups (KIP-848)
+			member, err := h.store.GetMember(ctx, req.Group, req.MemberID)
+			if err != nil {
+				if errors.Is(err, groups.ErrMemberNotFound) {
+					return h.buildErrorResponse(version, req, errOffsetCommitUnknownMemberID)
+				}
+				logger.Warnf("failed to get member", map[string]any{
+					"group":  req.Group,
+					"member": req.MemberID,
+					"error":  err.Error(),
+				})
+				return h.buildErrorResponse(version, req, errOffsetCommitCoordinatorNotAvail)
+			}
 
-		// Validate generation - must match current group generation
-		if req.Generation != state.Generation {
-			return h.buildErrorResponse(version, req, errOffsetCommitIllegalGeneration)
-		}
+			if req.Generation != member.MemberEpoch {
+				return h.buildErrorResponse(version, req, errOffsetCommitStaleMemberEpoch)
+			}
 
-		// Verify member exists in the group
-		member, err := h.store.GetMember(ctx, req.Group, req.MemberID)
-		if err != nil {
-			if errors.Is(err, groups.ErrMemberNotFound) {
+			// For v7+, validate instance ID if provided
+			if version >= 7 && req.InstanceID != nil && *req.InstanceID != "" {
+				if member.GroupInstanceID != "" && member.GroupInstanceID != *req.InstanceID {
+					return h.buildErrorResponse(version, req, errOffsetCommitFencedInstanceID)
+				}
+			}
+		} else {
+			// Get group state to validate generation for classic groups
+			state, err := h.store.GetGroupState(ctx, req.Group)
+			if err != nil {
+				if errors.Is(err, groups.ErrGroupNotFound) {
+					// For OffsetCommit, an unknown group is not an error - we can auto-create
+					// But we need to verify the member exists if not in simple mode
+					return h.buildErrorResponse(version, req, errOffsetCommitCoordinatorNotAvail)
+				}
+				logger.Warnf("failed to get group state", map[string]any{
+					"group": req.Group,
+					"error": err.Error(),
+				})
+				return h.buildErrorResponse(version, req, errOffsetCommitCoordinatorNotAvail)
+			}
+			groupState = state
+
+			// Check if group is Dead
+			if state.State == groups.GroupStateDead {
 				return h.buildErrorResponse(version, req, errOffsetCommitUnknownMemberID)
 			}
-			logger.Warnf("failed to get member", map[string]any{
-				"group":  req.Group,
-				"member": req.MemberID,
-				"error":  err.Error(),
-			})
-			return h.buildErrorResponse(version, req, errOffsetCommitCoordinatorNotAvail)
-		}
 
-		// For v7+, validate instance ID if provided
-		if version >= 7 && req.InstanceID != nil && *req.InstanceID != "" {
-			if member.GroupInstanceID != "" && member.GroupInstanceID != *req.InstanceID {
-				return h.buildErrorResponse(version, req, errOffsetCommitFencedInstanceID)
+			// Validate generation - must match current group generation
+			if req.Generation != state.Generation {
+				return h.buildErrorResponse(version, req, errOffsetCommitIllegalGeneration)
 			}
-		}
 
-		// Check if rebalance is in progress
-		if state.State == groups.GroupStatePreparingRebalance || state.State == groups.GroupStateCompletingRebalance {
-			return h.buildErrorResponse(version, req, errOffsetCommitRebalanceInProgress)
+			// Verify member exists in the group
+			member, err := h.store.GetMember(ctx, req.Group, req.MemberID)
+			if err != nil {
+				if errors.Is(err, groups.ErrMemberNotFound) {
+					return h.buildErrorResponse(version, req, errOffsetCommitUnknownMemberID)
+				}
+				logger.Warnf("failed to get member", map[string]any{
+					"group":  req.Group,
+					"member": req.MemberID,
+					"error":  err.Error(),
+				})
+				return h.buildErrorResponse(version, req, errOffsetCommitCoordinatorNotAvail)
+			}
+
+			// For v7+, validate instance ID if provided
+			if version >= 7 && req.InstanceID != nil && *req.InstanceID != "" {
+				if member.GroupInstanceID != "" && member.GroupInstanceID != *req.InstanceID {
+					return h.buildErrorResponse(version, req, errOffsetCommitFencedInstanceID)
+				}
+			}
+
+			// Check if rebalance is in progress
+			if state.State == groups.GroupStatePreparingRebalance || state.State == groups.GroupStateCompletingRebalance {
+				return h.buildErrorResponse(version, req, errOffsetCommitRebalanceInProgress)
+			}
 		}
 	}
 
