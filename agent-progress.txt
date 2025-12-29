@@ -920,3 +920,11 @@ Start with project-setup, then follow spec phases:
 - Fixed test socket reads to use io.ReadFull to avoid partial read flakiness
 - Issues found: none after fix
 - Tests: not run (trusted prior run by working agent)
+
+[2025-12-29T05:13:21Z] Reviewed inter-broker-api-rejection
+- Scope: cmd/drayd/broker.go, cmd/drayd/broker_test.go, internal/protocol/inter_broker.go, internal/protocol/inter_broker_test.go, task_list.json
+- Verified inter-broker/controller APIs return UNSUPPORTED_VERSION responses and are not advertised in ApiVersions
+- Added ControlledShutdown rejection handler to cover remaining inter-broker controller API
+- Added protocol-level coverage for ControlledShutdown rejection
+- Issues found: missing ControlledShutdown rejection (fixed)
+- Tests: not run (trusted prior run by working agent)

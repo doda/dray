@@ -646,6 +646,43 @@ func (h *brokerHandler) HandleRequest(ctx context.Context, header *server.Reques
 		resp := protocol.HandleTxnOffsetCommit(version, txnReq, h.logger)
 		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
 
+	// Inter-broker/controller APIs - explicitly rejected per spec 14.4
+	case 4: // LeaderAndISR
+		req, err := h.decoder.DecodeRequest(apiKey, version, payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode LeaderAndISR: %w", err)
+		}
+		isrReq := req.Inner().(*kmsg.LeaderAndISRRequest)
+		resp := protocol.HandleLeaderAndISR(version, isrReq, h.logger)
+		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
+
+	case 5: // StopReplica
+		req, err := h.decoder.DecodeRequest(apiKey, version, payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode StopReplica: %w", err)
+		}
+		stopReq := req.Inner().(*kmsg.StopReplicaRequest)
+		resp := protocol.HandleStopReplica(version, stopReq, h.logger)
+		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
+
+	case 6: // UpdateMetadata
+		req, err := h.decoder.DecodeRequest(apiKey, version, payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode UpdateMetadata: %w", err)
+		}
+		metaReq := req.Inner().(*kmsg.UpdateMetadataRequest)
+		resp := protocol.HandleUpdateMetadata(version, metaReq, h.logger)
+		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
+
+	case 7: // ControlledShutdown
+		req, err := h.decoder.DecodeRequest(apiKey, version, payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode ControlledShutdown: %w", err)
+		}
+		ctrlReq := req.Inner().(*kmsg.ControlledShutdownRequest)
+		resp := protocol.HandleControlledShutdown(version, ctrlReq, h.logger)
+		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
+
 	default:
 		return nil, fmt.Errorf("unsupported API key: %d", apiKey)
 	}
