@@ -1314,3 +1314,13 @@ Start with project-setup, then follow spec phases:
 - Challenges: none
 - Resolutions: none
 - Follow-ups: none
+[2025-12-30T02:20:00Z] Completed test-fetch-logstartoffset: PASS
+- Added fetch handler test that simulates retention deleting old index entry then compaction swap to Parquet and asserts LogStartOffset.
+- Verified LogStartOffset reflects earliest offset after retention + compaction swap.
+- Files changed: internal/protocol/fetch_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol -run LogStartOffsetAfterCompactionSwap -count=1 (pass)
+- Tests: ./init.sh (pass)
+- Challenge: none
+- Resolution: none
+- Follow-ups: none
