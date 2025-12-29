@@ -2934,7 +2934,7 @@
       "Corrupt payload to ensure validation detects errors",
       "Run fetch/protocol tests and fix any failures"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/fetch/patching_test.go"

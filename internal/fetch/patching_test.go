@@ -3,10 +3,12 @@ package fetch
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"testing"
 
+	"github.com/twmb/franz-go/pkg/kbin"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -372,6 +374,86 @@ func writeVarint(w *bytes.Buffer, v int64) {
 	w.WriteByte(byte(uv))
 }
 
+func buildFranzBatchWithCompression(t *testing.T, recordCount int, baseOffset int64, compressionType int) []byte {
+	t.Helper()
+
+	records := buildFranzRecords(recordCount)
+	compressed := records
+
+	if compressionType != CompressionNone {
+		codec, err := compressionCodecForType(compressionType)
+		if err != nil {
+			t.Fatalf("compression codec error: %v", err)
+		}
+		compressor, err := kgo.DefaultCompressor(codec)
+		if err != nil {
+			t.Fatalf("failed to create compressor: %v", err)
+		}
+		var buf bytes.Buffer
+		compressed, _ = compressor.Compress(&buf, records)
+	}
+
+	lastOffsetDelta := int32(-1)
+	if recordCount > 0 {
+		lastOffsetDelta = int32(recordCount - 1)
+	}
+
+	ts := int64(1234567890)
+	recordBatch := kmsg.RecordBatch{
+		FirstOffset:          baseOffset,
+		Length:               int32(49 + len(compressed)),
+		PartitionLeaderEpoch: 0,
+		Magic:                2,
+		CRC:                  0,
+		Attributes:           int16(compressionType & 0x07),
+		LastOffsetDelta:      lastOffsetDelta,
+		FirstTimestamp:       ts,
+		MaxTimestamp:         ts,
+		ProducerID:           -1,
+		ProducerEpoch:        -1,
+		FirstSequence:        -1,
+		NumRecords:           int32(recordCount),
+		Records:              compressed,
+	}
+
+	batch := recordBatch.AppendTo(nil)
+	crcValue := CalculateCRC(batch)
+	binary.BigEndian.PutUint32(batch[17:21], crcValue)
+
+	return batch
+}
+
+func buildFranzRecords(recordCount int) []byte {
+	var records []byte
+	for i := 0; i < recordCount; i++ {
+		var body []byte
+		body = kbin.AppendInt8(body, 0)
+		body = kbin.AppendVarlong(body, 0)
+		body = kbin.AppendVarint(body, int32(i))
+		body = kbin.AppendVarintBytes(body, []byte("k"))
+		body = kbin.AppendVarintBytes(body, []byte("v"))
+		body = kbin.AppendVarint(body, 0)
+		records = kbin.AppendVarint(records, int32(len(body)))
+		records = append(records, body...)
+	}
+	return records
+}
+
+func compressionCodecForType(compressionType int) (kgo.CompressionCodec, error) {
+	switch compressionType {
+	case CompressionGzip:
+		return kgo.GzipCompression(), nil
+	case CompressionSnappy:
+		return kgo.SnappyCompression(), nil
+	case CompressionLz4:
+		return kgo.Lz4Compression(), nil
+	case CompressionZstd:
+		return kgo.ZstdCompression(), nil
+	default:
+		return kgo.NoCompression(), fmt.Errorf("unsupported compression type %d", compressionType)
+	}
+}
+
 // TestCRCVerification tests that CRC verification works correctly.
 func TestCRCVerification(t *testing.T) {
 	t.Run("valid CRC passes verification", func(t *testing.T) {
@@ -579,6 +661,51 @@ func TestValidateCompression(t *testing.T) {
 		err := ValidateCompression(batch)
 		if err == nil {
 			t.Error("ValidateCompression() expected error for small batch")
+		}
+	})
+}
+
+// TestPatchAndValidate_FranzCompressedBatches verifies real franz-go compressed batches validate.
+func TestPatchAndValidate_FranzCompressedBatches(t *testing.T) {
+	compressionTypes := []struct {
+		name string
+		typ  int
+	}{
+		{"gzip", CompressionGzip},
+		{"snappy", CompressionSnappy},
+		{"lz4", CompressionLz4},
+		{"zstd", CompressionZstd},
+	}
+
+	for _, tc := range compressionTypes {
+		t.Run(tc.name, func(t *testing.T) {
+			batch := buildFranzBatchWithCompression(t, 3, 0, tc.typ)
+
+			if err := PatchAndValidate(batch, 100); err != nil {
+				t.Fatalf("PatchAndValidate() unexpected error for %s: %v", tc.name, err)
+			}
+		})
+	}
+
+	t.Run("corrupted compressed payload fails", func(t *testing.T) {
+		for _, tc := range compressionTypes {
+			t.Run(tc.name, func(t *testing.T) {
+				batch := buildFranzBatchWithCompression(t, 3, 0, tc.typ)
+				recordsOffset := 61
+				if len(batch) <= recordsOffset {
+					t.Fatalf("expected records payload, got batch length %d", len(batch))
+				}
+				batch[recordsOffset] ^= 0xFF
+				binary.BigEndian.PutUint32(batch[17:21], CalculateCRC(batch))
+
+				err := PatchAndValidate(batch, 100)
+				if err == nil {
+					t.Fatalf("expected error for corrupted %s payload", tc.name)
+				}
+				if !errors.Is(err, ErrInvalidCompression) {
+					t.Fatalf("expected ErrInvalidCompression, got %v", err)
+				}
+			})
 		}
 	})
 }

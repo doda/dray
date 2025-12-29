@@ -1167,3 +1167,13 @@ Start with project-setup, then follow spec phases:
 - Challenge: test helper name collided with existing testWALPath in wal_reader_test.
 - Resolution: renamed helper/constants to rangeCacheWALPath to avoid package-level conflict.
 - Follow-ups: none
+[2025-12-29T23:00:00Z] Completed test-compressed-batch-validation: PASS
+- Implemented franz-go compressed batch builders and validation coverage for fetch patching plus protocol parsing tests.
+- Files changed: internal/fetch/patching_test.go
+- Files changed: internal/protocol/produce_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/fetch -run PatchAndValidate_FranzCompressedBatches -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol -run ParseRecordBatches_Compressed -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: none
+- Follow-ups: none

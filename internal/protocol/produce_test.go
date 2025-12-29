@@ -1,8 +1,10 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"testing"
 	"time"
@@ -13,6 +15,8 @@ import (
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"github.com/twmb/franz-go/pkg/kbin"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
@@ -1147,6 +1151,39 @@ func TestProduceHandler_TruncatedBatch(t *testing.T) {
 	}
 }
 
+func TestParseRecordBatches_Compressed(t *testing.T) {
+	compressionTypes := []struct {
+		name string
+		typ  int
+	}{
+		{"gzip", compressionGzip},
+		{"snappy", compressionSnappy},
+		{"lz4", compressionLz4},
+		{"zstd", compressionZstd},
+	}
+
+	ts := int64(1234567890)
+	for _, tc := range compressionTypes {
+		t.Run(tc.name, func(t *testing.T) {
+			batch := buildFranzCompressedBatch(t, 3, tc.typ, ts)
+
+			batches, recordCount, minTs, maxTs, err := parseRecordBatches(batch)
+			if err != nil {
+				t.Fatalf("parseRecordBatches() error: %v", err)
+			}
+			if len(batches) != 1 {
+				t.Fatalf("expected 1 batch, got %d", len(batches))
+			}
+			if recordCount != 3 {
+				t.Fatalf("expected recordCount=3, got %d", recordCount)
+			}
+			if minTs != ts || maxTs != ts {
+				t.Fatalf("expected timestamps %d, got min=%d max=%d", ts, minTs, maxTs)
+			}
+		})
+	}
+}
+
 // buildRecordBatchWithMagic creates a record batch with a specified magic byte.
 func buildRecordBatchWithMagic(recordCount int, magic byte) []byte {
 	batch := make([]byte, 0, 80)
@@ -1201,6 +1238,93 @@ func buildRecordBatchWithMagic(recordCount int, magic byte) []byte {
 	binary.BigEndian.PutUint32(batch[17:21], crcValue)
 
 	return batch
+}
+
+const (
+	compressionNone   = 0
+	compressionGzip   = 1
+	compressionSnappy = 2
+	compressionLz4    = 3
+	compressionZstd   = 4
+)
+
+func buildFranzCompressedBatch(t *testing.T, recordCount int, compressionType int, ts int64) []byte {
+	t.Helper()
+
+	records := buildFranzRecords(recordCount)
+	compressed := records
+	if compressionType != compressionNone {
+		codec, err := compressionCodecForType(compressionType)
+		if err != nil {
+			t.Fatalf("compression codec error: %v", err)
+		}
+		compressor, err := kgo.DefaultCompressor(codec)
+		if err != nil {
+			t.Fatalf("failed to create compressor: %v", err)
+		}
+		var buf bytes.Buffer
+		compressed, _ = compressor.Compress(&buf, records)
+	}
+
+	lastOffsetDelta := int32(-1)
+	if recordCount > 0 {
+		lastOffsetDelta = int32(recordCount - 1)
+	}
+
+	recordBatch := kmsg.RecordBatch{
+		FirstOffset:          0,
+		Length:               int32(49 + len(compressed)),
+		PartitionLeaderEpoch: 0,
+		Magic:                2,
+		CRC:                  0,
+		Attributes:           int16(compressionType & 0x07),
+		LastOffsetDelta:      lastOffsetDelta,
+		FirstTimestamp:       ts,
+		MaxTimestamp:         ts,
+		ProducerID:           -1,
+		ProducerEpoch:        -1,
+		FirstSequence:        -1,
+		NumRecords:           int32(recordCount),
+		Records:              compressed,
+	}
+
+	batch := recordBatch.AppendTo(nil)
+	table := crc32.MakeTable(crc32.Castagnoli)
+	crcValue := crc32.Checksum(batch[21:], table)
+	binary.BigEndian.PutUint32(batch[17:21], crcValue)
+
+	return batch
+}
+
+func buildFranzRecords(recordCount int) []byte {
+	var records []byte
+	for i := 0; i < recordCount; i++ {
+		var body []byte
+		body = kbin.AppendInt8(body, 0)
+		body = kbin.AppendVarlong(body, 0)
+		body = kbin.AppendVarint(body, int32(i))
+		body = kbin.AppendVarintBytes(body, []byte("k"))
+		body = kbin.AppendVarintBytes(body, []byte("v"))
+		body = kbin.AppendVarint(body, 0)
+		records = kbin.AppendVarint(records, int32(len(body)))
+		records = append(records, body...)
+	}
+	return records
+}
+
+func compressionCodecForType(compressionType int) (kgo.CompressionCodec, error) {
+	switch compressionType {
+	case compressionGzip:
+		return kgo.GzipCompression(), nil
+	case compressionSnappy:
+		return kgo.SnappyCompression(), nil
+	case compressionLz4:
+		return kgo.Lz4Compression(), nil
+	case compressionZstd:
+		return kgo.ZstdCompression(), nil
+	default:
+		return kgo.NoCompression(), fmt.Errorf("unsupported compression type %d", compressionType)
+	}
 }
 
 // TestProduceHandler_MetricsRecording verifies that produce latency metrics are recorded correctly.
