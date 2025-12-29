@@ -3041,7 +3041,7 @@
       "Add integration test that advances earliest offset via retention/compaction and asserts response",
       "Run fetch handler tests"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/protocol/fetch.go"

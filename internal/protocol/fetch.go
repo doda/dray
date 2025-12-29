@@ -138,7 +138,7 @@ func (h *FetchHandler) Handle(ctx context.Context, version int16, req *kmsg.Fetc
 			if errCode := h.enforcer.AuthorizeTopicFromCtx(ctx, topicName, auth.OperationRead); errCode != nil {
 				// Authorization failed - add error for all partitions
 				for _, partReq := range topicReq.Partitions {
-					partResp := h.buildPartitionError(version, partReq.Partition, *errCode, 0)
+					partResp := h.buildPartitionError(version, partReq.Partition, *errCode, 0, 0)
 					topicResp.Partitions = append(topicResp.Partitions, partResp)
 				}
 				resp.Topics = append(resp.Topics, topicResp)
@@ -151,7 +151,7 @@ func (h *FetchHandler) Handle(ctx context.Context, version int16, req *kmsg.Fetc
 		if err != nil {
 			// Topic not found - add error for all partitions
 			for _, partReq := range topicReq.Partitions {
-				partResp := h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, 0)
+				partResp := h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, 0, 0)
 				topicResp.Partitions = append(topicResp.Partitions, partResp)
 			}
 			resp.Topics = append(resp.Topics, topicResp)
@@ -185,14 +185,14 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 	partMeta, err := h.topicStore.GetPartition(ctx, topicName, partReq.Partition)
 	if err != nil {
 		if errors.Is(err, topics.ErrPartitionNotFound) {
-			return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, 0)
+			return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, 0, 0)
 		}
-		return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, 0)
+		return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, 0, 0)
 	}
 
 	// Check partition state
 	if partMeta.State != "active" {
-		return h.buildPartitionError(version, partReq.Partition, errLeaderNotAvailable, 0)
+		return h.buildPartitionError(version, partReq.Partition, errLeaderNotAvailable, 0, 0)
 	}
 
 	if h.cfg.LeaderSelector != nil {
@@ -208,7 +208,7 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 				"zoneId":      zoneID,
 			})
 			if h.cfg.EnforceOwner {
-				return h.buildPartitionError(version, partReq.Partition, errNotLeaderOrFollower, 0)
+				return h.buildPartitionError(version, partReq.Partition, errNotLeaderOrFollower, 0, 0)
 			}
 		}
 	}
@@ -219,9 +219,23 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 	hwm, _, err := h.streamManager.GetHWM(ctx, streamID)
 	if err != nil {
 		if errors.Is(err, index.ErrStreamNotFound) {
-			return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, 0)
+			return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, 0, 0)
 		}
-		return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, 0)
+		return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, 0, 0)
+	}
+
+	earliestOffset, err := h.streamManager.GetEarliestOffset(ctx, streamID)
+	if err != nil {
+		if errors.Is(err, index.ErrStreamNotFound) {
+			return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, hwm, 0)
+		}
+		logging.FromCtx(ctx).Warnf("failed to load earliest offset for fetch", map[string]any{
+			"topic":     topicName,
+			"partition": partReq.Partition,
+			"streamId":  streamID,
+			"error":     err,
+		})
+		earliestOffset = 0
 	}
 
 	fetchOffset := partReq.FetchOffset
@@ -234,7 +248,7 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 		if err != nil {
 			// On error, return current state with HWM
 			h.recordSourceLatency(time.Time{}, fetch.SourceNone) // empty fetch
-			return h.buildEmptyPartitionResponse(version, partReq.Partition, hwm)
+			return h.buildEmptyPartitionResponse(version, partReq.Partition, hwm, earliestOffset)
 		}
 
 		// Update HWM from wait result
@@ -243,7 +257,7 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 		// If still no new data after waiting, return empty response
 		if !waitResult.NewDataAvailable {
 			h.recordSourceLatency(time.Time{}, fetch.SourceNone) // empty fetch
-			return h.buildEmptyPartitionResponse(version, partReq.Partition, hwm)
+			return h.buildEmptyPartitionResponse(version, partReq.Partition, hwm, earliestOffset)
 		}
 	}
 
@@ -262,12 +276,12 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 	})
 	if err != nil {
 		if errors.Is(err, index.ErrStreamNotFound) {
-			return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, hwm)
+			return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, hwm, earliestOffset)
 		}
 		if errors.Is(err, fetch.ErrOffsetNotInChunk) {
-			return h.buildPartitionError(version, partReq.Partition, errOffsetOutOfRange, hwm)
+			return h.buildPartitionError(version, partReq.Partition, errOffsetOutOfRange, hwm, earliestOffset)
 		}
-		return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, hwm)
+		return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, hwm, earliestOffset)
 	}
 
 	// Record source-specific latency
@@ -276,14 +290,14 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 	// If offset is beyond HWM and no watcher configured (or maxWaitMs=0),
 	// just return empty response with current HWM
 	if fetchResp.OffsetBeyondHWM {
-		return h.buildEmptyPartitionResponse(version, partReq.Partition, fetchResp.HighWatermark)
+		return h.buildEmptyPartitionResponse(version, partReq.Partition, fetchResp.HighWatermark, earliestOffset)
 	}
 
 	// Build successful response
 	partResp.ErrorCode = errNoError
 	partResp.HighWatermark = fetchResp.HighWatermark
 	partResp.LastStableOffset = fetchResp.HighWatermark // No transactions, so LSO = HWM
-	partResp.LogStartOffset = 0                         // TODO: Track earliest offset after compaction
+	partResp.LogStartOffset = earliestOffset
 
 	// Set preferred read replica (version >= 11)
 	if version >= 11 {
@@ -319,13 +333,13 @@ func (h *FetchHandler) recordSourceLatency(start time.Time, source string) {
 
 // buildEmptyPartitionResponse builds a successful response with no record batches.
 // Used when fetch offset is at or beyond HWM (consumer is at end of log).
-func (h *FetchHandler) buildEmptyPartitionResponse(version int16, partition int32, hwm int64) kmsg.FetchResponseTopicPartition {
+func (h *FetchHandler) buildEmptyPartitionResponse(version int16, partition int32, hwm int64, logStartOffset int64) kmsg.FetchResponseTopicPartition {
 	partResp := kmsg.NewFetchResponseTopicPartition()
 	partResp.Partition = partition
 	partResp.ErrorCode = errNoError
 	partResp.HighWatermark = hwm
 	partResp.LastStableOffset = hwm
-	partResp.LogStartOffset = 0
+	partResp.LogStartOffset = logStartOffset
 
 	if version >= 11 {
 		partResp.PreferredReadReplica = -1
@@ -335,13 +349,13 @@ func (h *FetchHandler) buildEmptyPartitionResponse(version int16, partition int3
 }
 
 // buildPartitionError builds a partition response with an error code.
-func (h *FetchHandler) buildPartitionError(version int16, partition int32, errorCode int16, hwm int64) kmsg.FetchResponseTopicPartition {
+func (h *FetchHandler) buildPartitionError(version int16, partition int32, errorCode int16, hwm int64, logStartOffset int64) kmsg.FetchResponseTopicPartition {
 	partResp := kmsg.NewFetchResponseTopicPartition()
 	partResp.Partition = partition
 	partResp.ErrorCode = errorCode
 	partResp.HighWatermark = hwm
 	partResp.LastStableOffset = hwm
-	partResp.LogStartOffset = 0
+	partResp.LogStartOffset = logStartOffset
 
 	if version >= 11 {
 		partResp.PreferredReadReplica = -1
