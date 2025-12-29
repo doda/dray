@@ -928,3 +928,12 @@ Start with project-setup, then follow spec phases:
 - Added protocol-level coverage for ControlledShutdown rejection
 - Issues found: missing ControlledShutdown rejection (fixed)
 - Tests: not run (trusted prior run by working agent)
+
+[2025-12-29T05:57:16Z] Reviewed broker-crash-mid-rebalance-test
+- Scope: tests/integration/broker_crash_mid_rebalance_test.go, task_list.json
+- Verified tests cover broker crash after JoinGroup, lease recovery, and SyncGroup completion
+- Verified consumer reconnect scenario with preserved member IDs after crash
+- Verified assignment coverage checks ensure all partitions assigned after recovery
+- Verified lease conflict handling ensures only one broker acquires lease
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)
