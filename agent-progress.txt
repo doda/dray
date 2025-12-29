@@ -1305,3 +1305,12 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass)
 - Challenges: none
 - Follow-ups: none
+[2025-12-30T02:05:00Z] Completed produce-validate-crc-compression: PASS
+- Implemented franz-go record batch parsing in produce validation with CRC and compression checks.
+- Added handler tests for CRC mismatch and invalid compressed payload rejection.
+- Files changed: internal/protocol/produce.go
+- Files changed: internal/protocol/produce_test.go
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol -run "ProduceHandler_(InvalidMagicByte|TruncatedBatch|InvalidCRC|InvalidCompressedPayload)|ParseRecordBatches_Compressed" -count=1 (pass)
+- Challenges: none
+- Resolutions: none
+- Follow-ups: none

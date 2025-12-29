@@ -3101,7 +3101,7 @@
       "Add unit tests with corrupted CRC and compressed payloads",
       "Run produce validation tests"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/protocol/produce.go"

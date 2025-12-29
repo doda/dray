@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"errors"
+	"hash/crc32"
 	"time"
 
 	"github.com/dray-io/dray/internal/auth"
@@ -12,6 +13,7 @@ import (
 	"github.com/dray-io/dray/internal/server"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/dray-io/dray/internal/wal"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
@@ -335,6 +337,12 @@ var errInvalidRecordBatch = errors.New("invalid record batch format")
 
 // kafkaBatchMagicV2 is the magic byte for Kafka record batch format v2.
 const kafkaBatchMagicV2 = 2
+const kafkaBatchMinSize = 61
+
+var (
+	recordBatchCRCTable = crc32.MakeTable(crc32.Castagnoli)
+	batchDecompressor   = kgo.DefaultDecompressor()
+)
 
 // parseRecordBatches extracts batch entries from raw Kafka record batch data.
 // Returns the batches, total record count, min timestamp, and max timestamp.
@@ -359,43 +367,59 @@ func parseRecordBatches(data []byte) ([]wal.BatchEntry, uint32, int64, int64, er
 			return nil, 0, 0, 0, errInvalidRecordBatch
 		}
 
-		batchLength := int(beUint32(data[offset+8:offset+12])) + 12 // +12 for baseOffset and batchLength
+		rawLength := int32(beUint32(data[offset+8 : offset+12]))
+		if rawLength < 0 {
+			return nil, 0, 0, 0, errInvalidRecordBatch
+		}
+		batchLength := int(rawLength) + 12 // +12 for baseOffset and batchLength
 		if offset+batchLength > len(data) {
 			return nil, 0, 0, 0, errInvalidRecordBatch
 		}
 
-		// Validate minimum batch size: must have at least up to recordCount field
-		// Kafka record batch format (after batchLength):
-		// partitionLeaderEpoch: 4 bytes (offset 12)
-		// magic: 1 byte (offset 16)
-		// crc: 4 bytes (offset 17)
-		// attributes: 2 bytes (offset 21)
-		// lastOffsetDelta: 4 bytes (offset 23)
-		// firstTimestamp: 8 bytes (offset 27)
-		// maxTimestamp: 8 bytes (offset 35)
-		// producerId: 8 bytes (offset 43)
-		// producerEpoch: 2 bytes (offset 51)
-		// firstSequence: 4 bytes (offset 53)
-		// recordCount: 4 bytes (offset 57)
-		if batchLength < 61 {
+		if batchLength < kafkaBatchMinSize {
 			return nil, 0, 0, 0, errInvalidRecordBatch
 		}
 
-		// Validate magic byte (must be 2 for v2 record batch format)
-		magic := data[offset+16]
-		if magic != kafkaBatchMagicV2 {
+		batchData := data[offset : offset+batchLength]
+		var recordBatch kmsg.RecordBatch
+		if err := recordBatch.ReadFrom(batchData); err != nil {
+			return nil, 0, 0, 0, errInvalidRecordBatch
+		}
+		if recordBatch.Magic != kafkaBatchMagicV2 {
+			return nil, 0, 0, 0, errInvalidRecordBatch
+		}
+		if recordBatch.Length != int32(len(batchData)-12) {
 			return nil, 0, 0, 0, errInvalidRecordBatch
 		}
 
-		batchData := make([]byte, batchLength)
-		copy(batchData, data[offset:offset+batchLength])
-		batches = append(batches, wal.BatchEntry{Data: batchData})
+		calculatedCRC := crc32.Checksum(batchData[21:], recordBatchCRCTable)
+		if int32(calculatedCRC) != recordBatch.CRC {
+			return nil, 0, 0, 0, errInvalidRecordBatch
+		}
 
-		recordCount := beUint32(data[offset+57 : offset+61])
+		compression := kgo.CompressionCodecType(recordBatch.Attributes & 0x0007)
+		if compression < kgo.CodecNone || compression > kgo.CodecZstd {
+			return nil, 0, 0, 0, errInvalidRecordBatch
+		}
+		if compression != kgo.CodecNone {
+			if _, err := batchDecompressor.Decompress(recordBatch.Records, compression); err != nil {
+				return nil, 0, 0, 0, errInvalidRecordBatch
+			}
+		}
+
+		if recordBatch.NumRecords < 0 {
+			return nil, 0, 0, 0, errInvalidRecordBatch
+		}
+
+		batchCopy := make([]byte, batchLength)
+		copy(batchCopy, batchData)
+		batches = append(batches, wal.BatchEntry{Data: batchCopy})
+
+		recordCount := uint32(recordBatch.NumRecords)
 		totalRecords += recordCount
 
-		batchFirstTs := beInt64(data[offset+27 : offset+35])
-		batchMaxTs := beInt64(data[offset+35 : offset+43])
+		batchFirstTs := recordBatch.FirstTimestamp
+		batchMaxTs := recordBatch.MaxTimestamp
 
 		if firstBatch {
 			minTs = batchFirstTs

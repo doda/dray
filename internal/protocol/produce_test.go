@@ -1148,6 +1148,141 @@ func TestProduceHandler_TruncatedBatch(t *testing.T) {
 	}
 }
 
+// TestProduceHandler_InvalidCRC tests that record batches with invalid CRC are rejected.
+func TestProduceHandler_InvalidCRC(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx := context.Background()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{StartOffset: 0, EndOffset: int64(req.RecordCount)}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer)
+
+	batch := buildRecordBatch(1)
+	corrupted := append([]byte(nil), batch...)
+	corrupted[17] ^= 0x01
+
+	req := kmsg.NewPtrProduceRequest()
+	req.Acks = -1
+	req.SetVersion(9)
+
+	topicReq := kmsg.NewProduceRequestTopic()
+	topicReq.Topic = "test-topic"
+
+	partReq := kmsg.NewProduceRequestTopicPartition()
+	partReq.Partition = 0
+	partReq.Records = corrupted
+
+	topicReq.Partitions = append(topicReq.Partitions, partReq)
+	req.Topics = append(req.Topics, topicReq)
+
+	resp := handler.Handle(ctx, 9, req)
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != errUnsupportedForMessageFormat {
+		t.Errorf("expected UNSUPPORTED_FOR_MESSAGE_FORMAT error (%d), got %d", errUnsupportedForMessageFormat, partResp.ErrorCode)
+	}
+}
+
+// TestProduceHandler_InvalidCompressedPayload tests that invalid compressed record payloads are rejected.
+func TestProduceHandler_InvalidCompressedPayload(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx := context.Background()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{StartOffset: 0, EndOffset: int64(req.RecordCount)}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer)
+
+	batch := buildFranzCompressedBatch(t, 3, compressionGzip, time.Now().UnixMilli())
+	corrupted := append([]byte(nil), batch...)
+
+	var recordBatch kmsg.RecordBatch
+	if err := recordBatch.ReadFrom(corrupted); err != nil {
+		t.Fatalf("failed to parse record batch: %v", err)
+	}
+	if len(recordBatch.Records) < 2 {
+		t.Fatalf("unexpected compressed record payload size %d", len(recordBatch.Records))
+	}
+
+	recordsStart := len(corrupted) - len(recordBatch.Records)
+	corrupted[recordsStart] = 0x00
+	corrupted[recordsStart+1] = 0x00
+
+	table := crc32.MakeTable(crc32.Castagnoli)
+	crcValue := crc32.Checksum(corrupted[21:], table)
+	binary.BigEndian.PutUint32(corrupted[17:21], crcValue)
+
+	req := kmsg.NewPtrProduceRequest()
+	req.Acks = -1
+	req.SetVersion(9)
+
+	topicReq := kmsg.NewProduceRequestTopic()
+	topicReq.Topic = "test-topic"
+
+	partReq := kmsg.NewProduceRequestTopicPartition()
+	partReq.Partition = 0
+	partReq.Records = corrupted
+
+	topicReq.Partitions = append(topicReq.Partitions, partReq)
+	req.Topics = append(req.Topics, topicReq)
+
+	resp := handler.Handle(ctx, 9, req)
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != errUnsupportedForMessageFormat {
+		t.Errorf("expected UNSUPPORTED_FOR_MESSAGE_FORMAT error (%d), got %d", errUnsupportedForMessageFormat, partResp.ErrorCode)
+	}
+}
+
 func TestParseRecordBatches_Compressed(t *testing.T) {
 	compressionTypes := []struct {
 		name string
