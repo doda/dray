@@ -1252,3 +1252,14 @@ Start with project-setup, then follow spec phases:
 - Challenge: none
 - Resolution: none
 - Follow-ups: none
+[2025-12-30T01:30:00Z] Completed fetch-logstartoffset-respects-earliest: PASS
+- Implemented LogStartOffset population from earliest index offset in fetch handler responses (success/empty/error paths).
+- Added retention-based integration test to advance earliest offset and assert LogStartOffset after retention.
+- Files changed: internal/protocol/fetch.go
+- Files changed: tests/integration/fetch_logstartoffset_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol -run FetchHandler -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./tests/integration -run TestFetchLogStartOffset_RespectsRetention -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: none
+- Follow-ups: none
