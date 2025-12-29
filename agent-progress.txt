@@ -1295,3 +1295,13 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass)
 - Challenge: none
 - Follow-ups: none
+[2025-12-29T23:35:53+00:00] Completed produce-unsupported-feature-error-codes: PASS
+- Updated produce rejection errors to return INVALID_REQUEST for idempotent producers and UNSUPPORTED_VERSION for transactional requests per spec.
+- Adjusted produce handler tests to assert new error codes for idempotent and transactional rejection.
+- Files changed: internal/protocol/produce.go
+- Files changed: internal/protocol/produce_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol -run ProduceHandler -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: none
+- Follow-ups: none
