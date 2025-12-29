@@ -2,6 +2,7 @@ package fetch
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -10,12 +11,21 @@ import (
 	"github.com/dray-io/dray/internal/metadata/keys"
 )
 
+const (
+	rangeCacheWALZone = "zone-a"
+	rangeCacheWALDate = "2025/01/02"
+)
+
+func rangeCacheWALPath(domain int, walID string) string {
+	return fmt.Sprintf("wal/v1/zone=%s/domain=%d/date=%s/%s.wo", rangeCacheWALZone, domain, rangeCacheWALDate, walID)
+}
+
 // TestRangeCacheBasicOperations tests basic get/put operations.
 func TestRangeCacheBasicOperations(t *testing.T) {
 	cache := NewObjectRangeCache(nil, DefaultRangeCacheConfig())
 	defer cache.Close()
 
-	walPath := "wal/0/test.wal"
+	walPath := rangeCacheWALPath(0, "test")
 	startByte := int64(100)
 	endByte := int64(199)
 	data := []byte("test chunk data")
@@ -43,7 +53,7 @@ func TestRangeCacheDataIsolation(t *testing.T) {
 	cache := NewObjectRangeCache(nil, DefaultRangeCacheConfig())
 	defer cache.Close()
 
-	walPath := "wal/0/test.wal"
+	walPath := rangeCacheWALPath(0, "test")
 	data := []byte("original data")
 	cache.Put(walPath, 0, 100, data)
 
@@ -74,7 +84,7 @@ func TestRangeCacheExactRangeMatch(t *testing.T) {
 	cache := NewObjectRangeCache(nil, DefaultRangeCacheConfig())
 	defer cache.Close()
 
-	walPath := "wal/0/test.wal"
+	walPath := rangeCacheWALPath(0, "test")
 	cache.Put(walPath, 100, 199, []byte("data"))
 
 	// Exact match should hit
@@ -93,7 +103,7 @@ func TestRangeCacheExactRangeMatch(t *testing.T) {
 	}
 
 	// Different path should miss
-	if _, ok := cache.Get("wal/0/other.wal", 100, 199); ok {
+	if _, ok := cache.Get(rangeCacheWALPath(0, "other"), 100, 199); ok {
 		t.Error("Expected miss for different path")
 	}
 }
@@ -103,7 +113,7 @@ func TestRangeCacheUpdate(t *testing.T) {
 	cache := NewObjectRangeCache(nil, DefaultRangeCacheConfig())
 	defer cache.Close()
 
-	walPath := "wal/0/test.wal"
+	walPath := rangeCacheWALPath(0, "test")
 	cache.Put(walPath, 0, 99, []byte("original"))
 	cache.Put(walPath, 0, 99, []byte("updated"))
 
@@ -127,7 +137,7 @@ func TestRangeCacheMemoryBound(t *testing.T) {
 
 	// Add entries that exceed the memory limit
 	for i := 0; i < 10; i++ {
-		cache.Put("wal/0/test.wal", int64(i*50), int64(i*50+49), make([]byte, 30))
+		cache.Put(rangeCacheWALPath(0, "test"), int64(i*50), int64(i*50+49), make([]byte, 30))
 	}
 
 	stats := cache.Stats()
@@ -146,18 +156,18 @@ func TestRangeCacheLRUEviction(t *testing.T) {
 	defer cache.Close()
 
 	// Add three entries (each ~30 bytes, total ~90 bytes fits)
-	cache.Put("wal/0/test.wal", 0, 29, make([]byte, 30))
-	cache.Put("wal/0/test.wal", 30, 59, make([]byte, 30))
-	cache.Put("wal/0/test.wal", 60, 89, make([]byte, 30))
+	cache.Put(rangeCacheWALPath(0, "test"), 0, 29, make([]byte, 30))
+	cache.Put(rangeCacheWALPath(0, "test"), 30, 59, make([]byte, 30))
+	cache.Put(rangeCacheWALPath(0, "test"), 60, 89, make([]byte, 30))
 
 	// Access the first entry to make it "recently used"
-	cache.Get("wal/0/test.wal", 0, 29)
+	cache.Get(rangeCacheWALPath(0, "test"), 0, 29)
 
 	// Add a new entry that will cause eviction
-	cache.Put("wal/0/test.wal", 90, 119, make([]byte, 30))
+	cache.Put(rangeCacheWALPath(0, "test"), 90, 119, make([]byte, 30))
 
 	// First entry should still be present (was accessed)
-	if _, ok := cache.Get("wal/0/test.wal", 0, 29); !ok {
+	if _, ok := cache.Get(rangeCacheWALPath(0, "test"), 0, 29); !ok {
 		t.Error("Recently accessed entry was evicted")
 	}
 
@@ -178,7 +188,7 @@ func TestRangeCachePerWALLimit(t *testing.T) {
 	cache := NewObjectRangeCache(nil, config)
 	defer cache.Close()
 
-	walPath := "wal/0/test.wal"
+	walPath := rangeCacheWALPath(0, "test")
 
 	// Add more entries than the limit
 	for i := 0; i < 5; i++ {
@@ -197,8 +207,8 @@ func TestRangeCacheInvalidateWAL(t *testing.T) {
 	cache := NewObjectRangeCache(nil, DefaultRangeCacheConfig())
 	defer cache.Close()
 
-	wal1 := "wal/0/test1.wal"
-	wal2 := "wal/0/test2.wal"
+	wal1 := rangeCacheWALPath(0, "test1")
+	wal2 := rangeCacheWALPath(0, "test2")
 
 	cache.Put(wal1, 0, 99, []byte("data1"))
 	cache.Put(wal1, 100, 199, []byte("data2"))
@@ -226,8 +236,8 @@ func TestRangeCacheInvalidateAll(t *testing.T) {
 	cache := NewObjectRangeCache(nil, DefaultRangeCacheConfig())
 	defer cache.Close()
 
-	cache.Put("wal/0/test1.wal", 0, 99, []byte("data1"))
-	cache.Put("wal/0/test2.wal", 0, 99, []byte("data2"))
+	cache.Put(rangeCacheWALPath(0, "test1"), 0, 99, []byte("data1"))
+	cache.Put(rangeCacheWALPath(0, "test2"), 0, 99, []byte("data2"))
 
 	cache.InvalidateAll()
 
@@ -259,9 +269,9 @@ func TestRangeCacheStats(t *testing.T) {
 	}
 
 	// Add some entries
-	cache.Put("wal/0/test1.wal", 0, 99, []byte("data1"))
-	cache.Put("wal/0/test1.wal", 100, 199, []byte("data2"))
-	cache.Put("wal/1/test2.wal", 0, 99, []byte("data3"))
+	cache.Put(rangeCacheWALPath(0, "test1"), 0, 99, []byte("data1"))
+	cache.Put(rangeCacheWALPath(0, "test1"), 100, 199, []byte("data2"))
+	cache.Put(rangeCacheWALPath(1, "test2"), 0, 99, []byte("data3"))
 
 	stats = cache.Stats()
 	if stats.WALCount != 2 {
@@ -289,7 +299,7 @@ func TestRangeCacheConcurrentAccess(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < numOps; j++ {
-				walPath := "wal/0/test.wal"
+				walPath := rangeCacheWALPath(0, "test")
 				start := int64(j * 10)
 				end := start + 9
 				data := make([]byte, 10)
@@ -319,7 +329,7 @@ func TestRangeCacheClose(t *testing.T) {
 	cache := NewObjectRangeCache(nil, DefaultRangeCacheConfig())
 
 	// Add some data
-	cache.Put("wal/0/test.wal", 0, 99, []byte("data"))
+	cache.Put(rangeCacheWALPath(0, "test"), 0, 99, []byte("data"))
 
 	// Close should complete without error
 	if err := cache.Close(); err != nil {
@@ -341,7 +351,7 @@ func TestRangeCacheWithNotifications(t *testing.T) {
 	defer cache.Close()
 
 	// Add data
-	walPath := "wal/5/abc123.wal"
+	walPath := rangeCacheWALPath(5, "abc123")
 	cache.Put(walPath, 0, 99, []byte("data"))
 
 	// Verify it's cached
@@ -373,7 +383,7 @@ func TestRangeCacheGCNotification(t *testing.T) {
 	defer cache.Close()
 
 	// Add data
-	walPath := "wal/3/def456.wal"
+	walPath := rangeCacheWALPath(3, "def456")
 	cache.Put(walPath, 0, 99, []byte("data"))
 
 	// Simulate WAL GC marker deletion (meaning WAL was deleted)
@@ -387,6 +397,20 @@ func TestRangeCacheGCNotification(t *testing.T) {
 	// Cache should be invalidated
 	if _, ok := cache.Get(walPath, 0, 99); ok {
 		t.Error("Cache should have been invalidated by GC notification")
+	}
+}
+
+func TestRangeCacheInvalidateWALIDMatchesRealPath(t *testing.T) {
+	cache := NewObjectRangeCache(nil, DefaultRangeCacheConfig())
+	defer cache.Close()
+
+	walPath := rangeCacheWALPath(2, "real-wal-001")
+	cache.Put(walPath, 0, 99, []byte("data"))
+
+	cache.InvalidateWALID("real-wal-001")
+
+	if _, ok := cache.Get(walPath, 0, 99); ok {
+		t.Error("Cache should have been invalidated by WAL ID")
 	}
 }
 

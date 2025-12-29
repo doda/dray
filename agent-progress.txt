@@ -1158,3 +1158,12 @@ Start with project-setup, then follow spec phases:
 - Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/fetch -count=1 (pass)
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass)
 - Challenges: none
+[2025-12-29T21:16:31Z] Completed fix-wal-range-cache-invalidation-path: PASS
+- Updated range cache tests to use real WAL path format (wal/v1/zone=.../domain=.../date=.../<walId>.wo) and added WAL ID invalidation coverage.
+- Added range-cache-specific WAL path helper to avoid conflicts with WAL reader tests.
+- Files changed: internal/fetch/range_cache_test.go
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/fetch -run RangeCache -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: test helper name collided with existing testWALPath in wal_reader_test.
+- Resolution: renamed helper/constants to rangeCacheWALPath to avoid package-level conflict.
+- Follow-ups: none

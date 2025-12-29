@@ -2919,7 +2919,7 @@
       "Add unit test verifying invalidation matches real WAL paths",
       "Run fetch cache tests"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/fetch/range_cache.go"
