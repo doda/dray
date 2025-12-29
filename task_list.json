@@ -2754,7 +2754,7 @@
       "Add unit coverage for out-of-order timestamps and verify correct earliest offset >= timestamp",
       "Run targeted index tests and fix any regressions"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/index/entry.go"

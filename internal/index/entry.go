@@ -463,25 +463,7 @@ func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID s
 		entries = append(entries, entry)
 	}
 
-	// Binary search to find the first entry where MaxTimestampMs >= timestamp
-	// We want the entry that potentially contains records with timestamp >= requested
-	lo, hi := 0, len(entries)-1
-	candidateIdx := -1
-
-	for lo <= hi {
-		mid := (lo + hi) / 2
-		entry := entries[mid]
-
-		if entry.MaxTimestampMs >= timestamp {
-			// This entry might contain a matching record
-			candidateIdx = mid
-			hi = mid - 1 // Look for earlier entries
-		} else {
-			// All records in this entry are before the timestamp
-			lo = mid + 1
-		}
-	}
-
+	candidateIdx := findEntryByTimestamp(entries, timestamp)
 	if candidateIdx == -1 {
 		// No entry has MaxTimestamp >= requested timestamp
 		return &TimestampLookupResult{
@@ -505,24 +487,7 @@ func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID s
 
 	// The timestamp is within this entry's range. Try to narrow down using batchIndex.
 	if len(entry.BatchIndex) > 0 {
-		// Binary search within the batchIndex
-		batchLo, batchHi := 0, len(entry.BatchIndex)-1
-		batchCandidateIdx := -1
-
-		for batchLo <= batchHi {
-			batchMid := (batchLo + batchHi) / 2
-			batch := entry.BatchIndex[batchMid]
-
-			if batch.MaxTimestampMs >= timestamp {
-				batchCandidateIdx = batchMid
-				batchHi = batchMid - 1
-			} else {
-				batchLo = batchMid + 1
-			}
-		}
-
-		if batchCandidateIdx != -1 {
-			batch := entry.BatchIndex[batchCandidateIdx]
+		if batch, ok := findBatchByTimestamp(entry.BatchIndex, timestamp); ok {
 			// Return the start of this batch
 			offset := entry.StartOffset + int64(batch.BatchStartOffsetDelta)
 			ts := batch.MinTimestampMs
@@ -543,6 +508,88 @@ func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID s
 		Timestamp: entry.MinTimestampMs,
 		Found:     true,
 	}, nil
+}
+
+func findEntryByTimestamp(entries []IndexEntry, timestamp int64) int {
+	if len(entries) == 0 {
+		return -1
+	}
+
+	monotonic := true
+	lastMax := entries[0].MaxTimestampMs
+	for i := 1; i < len(entries); i++ {
+		if entries[i].MaxTimestampMs < lastMax {
+			monotonic = false
+			break
+		}
+		lastMax = entries[i].MaxTimestampMs
+	}
+
+	if !monotonic {
+		for i := range entries {
+			if entries[i].MaxTimestampMs >= timestamp {
+				return i
+			}
+		}
+		return -1
+	}
+
+	lo, hi := 0, len(entries)-1
+	candidateIdx := -1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if entries[mid].MaxTimestampMs >= timestamp {
+			candidateIdx = mid
+			hi = mid - 1
+		} else {
+			lo = mid + 1
+		}
+	}
+
+	return candidateIdx
+}
+
+func findBatchByTimestamp(batchIndex []BatchIndexEntry, timestamp int64) (BatchIndexEntry, bool) {
+	if len(batchIndex) == 0 {
+		return BatchIndexEntry{}, false
+	}
+
+	monotonic := true
+	lastMax := batchIndex[0].MaxTimestampMs
+	for i := 1; i < len(batchIndex); i++ {
+		if batchIndex[i].MaxTimestampMs < lastMax {
+			monotonic = false
+			break
+		}
+		lastMax = batchIndex[i].MaxTimestampMs
+	}
+
+	if !monotonic {
+		for _, batch := range batchIndex {
+			if batch.MaxTimestampMs >= timestamp {
+				return batch, true
+			}
+		}
+		return BatchIndexEntry{}, false
+	}
+
+	lo, hi := 0, len(batchIndex)-1
+	candidateIdx := -1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		if batchIndex[mid].MaxTimestampMs >= timestamp {
+			candidateIdx = mid
+			hi = mid - 1
+		} else {
+			lo = mid + 1
+		}
+	}
+
+	if candidateIdx == -1 {
+		return BatchIndexEntry{}, false
+	}
+
+	return batchIndex[candidateIdx], true
 }
 
 // GetEarliestOffset returns the earliest available offset for a stream.
