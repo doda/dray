@@ -3,6 +3,7 @@ package compaction
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,23 @@ import (
 	"github.com/dray-io/dray/internal/metadata/keys"
 	"github.com/dray-io/dray/internal/produce"
 )
+
+type conflictOnceStore struct {
+	metadata.MetadataStore
+	mu                 sync.Mutex
+	conflictsRemaining int
+}
+
+func (s *conflictOnceStore) Txn(ctx context.Context, scopeKey string, fn func(metadata.Txn) error) error {
+	s.mu.Lock()
+	if s.conflictsRemaining > 0 {
+		s.conflictsRemaining--
+		s.mu.Unlock()
+		return metadata.ErrTxnConflict
+	}
+	s.mu.Unlock()
+	return s.MetadataStore.Txn(ctx, scopeKey, fn)
+}
 
 func TestIndexSwapper_Swap_SingleWALEntry(t *testing.T) {
 	ctx := context.Background()
@@ -127,6 +145,90 @@ func TestIndexSwapper_Swap_SingleWALEntry(t *testing.T) {
 
 	if len(result.WALObjectsReadyForGC) != 1 {
 		t.Errorf("Expected 1 WAL object ready for GC, got %d", len(result.WALObjectsReadyForGC))
+	}
+}
+
+func TestIndexSwapper_Swap_RetryPreservesRefcount(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMockStore()
+	store := &conflictOnceStore{MetadataStore: meta, conflictsRemaining: 1}
+	swapper := NewIndexSwapper(store)
+
+	streamID := "test-stream-retry"
+	metaDomain := 2
+	walID := "wal-retry-001"
+
+	walEntry := index.IndexEntry{
+		StreamID:       streamID,
+		StartOffset:    0,
+		EndOffset:      10,
+		CumulativeSize: 100,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		FileType:       index.FileTypeWAL,
+		RecordCount:    10,
+		MessageCount:   10,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 2000,
+		WalID:          walID,
+		WalPath:        "/wal/domain-2/wal-retry-001.wal",
+		ChunkOffset:    0,
+		ChunkLength:    100,
+	}
+
+	walEntryBytes, _ := json.Marshal(walEntry)
+	walIndexKey, _ := keys.OffsetIndexKeyPath(streamID, walEntry.EndOffset, walEntry.CumulativeSize)
+	meta.Put(ctx, walIndexKey, walEntryBytes)
+
+	walObjectKey := keys.WALObjectKeyPath(metaDomain, walID)
+	walRecord := produce.WALObjectRecord{
+		Path:      walEntry.WalPath,
+		RefCount:  2,
+		CreatedAt: time.Now().UnixMilli(),
+		SizeBytes: 100,
+	}
+	walRecordBytes, _ := json.Marshal(walRecord)
+	meta.Put(ctx, walObjectKey, walRecordBytes)
+
+	parquetEntry := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      0,
+		EndOffset:        10,
+		FileType:         index.FileTypeParquet,
+		RecordCount:      10,
+		MessageCount:     10,
+		MinTimestampMs:   1000,
+		MaxTimestampMs:   2000,
+		CreatedAtMs:      time.Now().UnixMilli(),
+		ParquetPath:      "/parquet/stream-retry/compact-001.parquet",
+		ParquetSizeBytes: 50,
+	}
+
+	_, err := swapper.Swap(ctx, SwapRequest{
+		StreamID:     streamID,
+		WALIndexKeys: []string{walIndexKey},
+		ParquetEntry: parquetEntry,
+		MetaDomain:   metaDomain,
+	})
+	if err != nil {
+		t.Fatalf("Swap failed after retry: %v", err)
+	}
+
+	walResult, _ := meta.Get(ctx, walIndexKey)
+	if walResult.Exists {
+		t.Error("WAL index entry should be deleted after swap")
+	}
+
+	walObjResult, _ := meta.Get(ctx, walObjectKey)
+	if !walObjResult.Exists {
+		t.Fatal("WAL object record should still exist with refcount 1")
+	}
+
+	var record produce.WALObjectRecord
+	if err := json.Unmarshal(walObjResult.Value, &record); err != nil {
+		t.Fatalf("Failed to unmarshal WAL object record: %v", err)
+	}
+	if record.RefCount != 1 {
+		t.Errorf("Expected WAL refcount 1 after retry swap, got %d", record.RefCount)
 	}
 }
 

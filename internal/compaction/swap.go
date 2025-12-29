@@ -184,47 +184,71 @@ func (s *IndexSwapper) Swap(ctx context.Context, req SwapRequest) (*SwapResult, 
 	// We use the stream's offset-index prefix as the scope key
 	scopeKey := keys.OffsetIndexPrefix(req.StreamID)
 
-	err = s.meta.Txn(ctx, scopeKey, func(txn metadata.Txn) error {
-		// Delete all WAL index entries
-		for _, key := range req.WALIndexKeys {
-			txn.Delete(key)
+	walIDs := make([]string, 0, len(walObjectIDs))
+	for walID := range walObjectIDs {
+		walIDs = append(walIDs, walID)
+	}
+	sort.Strings(walIDs)
+
+	const maxTxnRetries = 3
+	var decrementedWALObjects []string
+	var walObjectsReadyForGC []string
+
+	for attempt := 0; attempt < maxTxnRetries; attempt++ {
+		var txnDecremented []string
+		var txnGCReady []string
+
+		err = s.meta.Txn(ctx, scopeKey, func(txn metadata.Txn) error {
+			// Delete all WAL index entries
+			for _, key := range req.WALIndexKeys {
+				txn.Delete(key)
+			}
+
+			// Delete all old Parquet index entries (for re-compaction)
+			for _, key := range req.ParquetIndexKeys {
+				txn.Delete(key)
+			}
+
+			// Insert the new Parquet index entry
+			txn.Put(newIndexKey, parquetEntryBytes)
+
+			// Decrement WAL refcounts within the same transaction
+			for _, walID := range walIDs {
+				decremented, gcReady, err := s.decrementWALRefCountInTxn(txn, req.MetaDomain, walID)
+				if err != nil {
+					return err
+				}
+				if decremented {
+					txnDecremented = append(txnDecremented, walID)
+				}
+				if gcReady {
+					txnGCReady = append(txnGCReady, walID)
+				}
+			}
+
+			return nil
+		})
+
+		if err == nil {
+			decrementedWALObjects = txnDecremented
+			walObjectsReadyForGC = txnGCReady
+			break
 		}
 
-		// Delete all old Parquet index entries (for re-compaction)
-		for _, key := range req.ParquetIndexKeys {
-			txn.Delete(key)
+		if errors.Is(err, metadata.ErrVersionMismatch) || errors.Is(err, metadata.ErrTxnConflict) {
+			if attempt < maxTxnRetries-1 {
+				continue
+			}
 		}
 
-		// Insert the new Parquet index entry
-		txn.Put(newIndexKey, parquetEntryBytes)
-
-		return nil
-	})
-
-	if err != nil {
 		return nil, fmt.Errorf("compaction: index swap transaction: %w", err)
 	}
 
-	// Now decrement WAL object refcounts (outside the main transaction since
-	// WAL objects are in a different key space)
 	result := &SwapResult{
 		NewIndexKey:               newIndexKey,
-		DecrementedWALObjects:     make([]string, 0, len(walObjectIDs)),
-		WALObjectsReadyForGC:      make([]string, 0),
+		DecrementedWALObjects:     decrementedWALObjects,
+		WALObjectsReadyForGC:      walObjectsReadyForGC,
 		ParquetFilesScheduledForGC: make([]string, 0, len(parquetEntries)),
-	}
-
-	for walID := range walObjectIDs {
-		gcReady, err := s.decrementWALRefCount(ctx, req.MetaDomain, walID)
-		if err != nil {
-			// Log error but don't fail - refcount will be cleaned up eventually
-			// by the GC process scanning orphaned WAL objects
-			continue
-		}
-		result.DecrementedWALObjects = append(result.DecrementedWALObjects, walID)
-		if gcReady {
-			result.WALObjectsReadyForGC = append(result.WALObjectsReadyForGC, walID)
-		}
 	}
 
 	// Schedule old Parquet files for GC with grace period
@@ -327,74 +351,47 @@ func (s *IndexSwapper) getPreviousCumulativeSize(ctx context.Context, streamID s
 
 // decrementWALRefCount atomically decrements the refcount for a WAL object.
 // Returns true if the refcount reached zero and the object is ready for GC.
-func (s *IndexSwapper) decrementWALRefCount(ctx context.Context, metaDomain int, walID string) (bool, error) {
+func (s *IndexSwapper) decrementWALRefCountInTxn(txn metadata.Txn, metaDomain int, walID string) (bool, bool, error) {
 	walObjectKey := keys.WALObjectKeyPath(metaDomain, walID)
 
-	// Use a CAS loop to decrement refcount atomically
-	for {
-		result, err := s.meta.Get(ctx, walObjectKey)
-		if err != nil {
-			return false, fmt.Errorf("get WAL object record: %w", err)
+	value, version, err := txn.Get(walObjectKey)
+	if err != nil {
+		if errors.Is(err, metadata.ErrKeyNotFound) {
+			return false, false, nil
 		}
-		if !result.Exists {
-			// WAL object record doesn't exist - already cleaned up or never created
-			return false, nil
-		}
-
-		var record produce.WALObjectRecord
-		if err := json.Unmarshal(result.Value, &record); err != nil {
-			return false, fmt.Errorf("unmarshal WAL object record: %w", err)
-		}
-
-		record.RefCount--
-		if record.RefCount <= 0 {
-			// Move to GC queue instead of deleting
-			gcKey := keys.WALGCKeyPath(metaDomain, walID)
-			gcRecord := gc.WALGCRecord{
-				Path:          record.Path,
-				DeleteAfterMs: time.Now().Add(10 * time.Minute).UnixMilli(), // Grace period
-				CreatedAt:     record.CreatedAt,
-				SizeBytes:     record.SizeBytes,
-			}
-			gcRecordBytes, err := json.Marshal(gcRecord)
-			if err != nil {
-				return false, fmt.Errorf("marshal GC record: %w", err)
-			}
-
-			// Delete WAL object record and create GC record atomically
-			err = s.meta.Txn(ctx, walObjectKey, func(txn metadata.Txn) error {
-				txn.DeleteWithVersion(walObjectKey, result.Version)
-				txn.Put(gcKey, gcRecordBytes)
-				return nil
-			})
-			if err != nil {
-				if errors.Is(err, metadata.ErrVersionMismatch) || errors.Is(err, metadata.ErrTxnConflict) {
-					// Concurrent modification - retry
-					continue
-				}
-				return false, fmt.Errorf("move WAL to GC queue: %w", err)
-			}
-			return true, nil
-		}
-
-		// Update the record with decremented refcount
-		recordBytes, err := json.Marshal(record)
-		if err != nil {
-			return false, fmt.Errorf("marshal updated record: %w", err)
-		}
-
-		_, err = s.meta.Put(ctx, walObjectKey, recordBytes, metadata.WithExpectedVersion(result.Version))
-		if err != nil {
-			if errors.Is(err, metadata.ErrVersionMismatch) {
-				// Concurrent modification - retry
-				continue
-			}
-			return false, fmt.Errorf("update WAL refcount: %w", err)
-		}
-		return false, nil
+		return false, false, fmt.Errorf("get WAL object record: %w", err)
 	}
-}
 
+	var record produce.WALObjectRecord
+	if err := json.Unmarshal(value, &record); err != nil {
+		return false, false, fmt.Errorf("unmarshal WAL object record: %w", err)
+	}
+
+	if record.RefCount <= 1 {
+		gcKey := keys.WALGCKeyPath(metaDomain, walID)
+		gcRecord := gc.WALGCRecord{
+			Path:          record.Path,
+			DeleteAfterMs: time.Now().Add(10 * time.Minute).UnixMilli(),
+			CreatedAt:     record.CreatedAt,
+			SizeBytes:     record.SizeBytes,
+		}
+		gcRecordBytes, err := json.Marshal(gcRecord)
+		if err != nil {
+			return false, false, fmt.Errorf("marshal GC record: %w", err)
+		}
+		txn.DeleteWithVersion(walObjectKey, version)
+		txn.Put(gcKey, gcRecordBytes)
+		return true, true, nil
+	}
+
+	record.RefCount--
+	recordBytes, err := json.Marshal(record)
+	if err != nil {
+		return false, false, fmt.Errorf("marshal updated record: %w", err)
+	}
+	txn.PutWithVersion(walObjectKey, recordBytes, version)
+	return true, false, nil
+}
 
 // SwapFromJob performs an index swap using information from a compaction job.
 // This is a convenience method for the compaction worker.

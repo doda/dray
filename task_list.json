@@ -2949,7 +2949,7 @@
       "Ensure idempotent handling on retries and conflicts",
       "Add unit test for refcount consistency after swap"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/compaction/swap.go"
