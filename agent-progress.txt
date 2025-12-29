@@ -1263,3 +1263,24 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass)
 - Challenges: none
 - Follow-ups: none
+- Task autocreate-topic-partitions-hwm: PASS.
+- Implemented metadata auto-create to initialize partition streams and HWM via StreamManager during Metadata auto-create.
+- Added metadata handler test to assert auto-created partitions have stream meta and HWM=0; added integration test for produce/fetch after auto-create.
+- Updated MetadataHandler constructor usage across broker, compatibility, and integration tests to pass StreamManager.
+- Files changed: internal/protocol/metadata.go
+- Files changed: internal/protocol/metadata_test.go
+- Files changed: tests/integration/produce_fetch_client_test.go
+- Files changed: tests/integration/zone_filtering_test.go
+- Files changed: tests/integration/invariant_i6_test.go
+- Files changed: tests/integration/multi_zone_deployment_test.go
+- Files changed: tests/integration/tls_kafka_client_test.go
+- Files changed: tests/integration/invariant_i1_test.go
+- Files changed: tests/compatibility/harness.go
+- Files changed: cmd/drayd/broker.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol -run MetadataHandler -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./tests/integration -run AutoCreateTopic -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: init.sh failed due to new NewMetadataHandler signature mismatch in cmd/drayd/broker.go.
+- Resolution: wired StreamManager into broker metadata handler and reran init.sh successfully.
+- Follow-ups: none.

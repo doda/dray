@@ -3056,7 +3056,7 @@
       "Add test verifying produce/fetch works after auto-create",
       "Run metadata handler tests"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/protocol/metadata.go"
