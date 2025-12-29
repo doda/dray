@@ -905,3 +905,10 @@ Start with project-setup, then follow spec phases:
 - Verified concurrent append property checks contiguous ranges and final HWM
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+
+[2025-12-29T00:22:10Z] Reviewed property-test-groups
+- Scope: tests/property/groups_test.go
+- Verified property tests cover state transitions, generation monotonicity, member count consistency, heartbeats, assignments, leases, deletion cleanup, offsets, and random op sequences
+- Verified concurrent tests cover member ops and lease acquisition exclusivity
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)

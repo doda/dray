@@ -2570,7 +2570,7 @@
     "scope": [
       "tests/property/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "transaction-api-rejection",
