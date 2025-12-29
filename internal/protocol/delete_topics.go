@@ -20,6 +20,9 @@ const (
 type DeleteTopicsHandlerConfig struct {
 	// IcebergEnabled enables Iceberg table deletion for topics.
 	IcebergEnabled bool
+	// IcebergNamespace is the Iceberg namespace for tables.
+	// Defaults to ["dray"] if not specified.
+	IcebergNamespace []string
 }
 
 // DeleteTopicsHandler handles DeleteTopics (key 20) requests.
@@ -192,8 +195,12 @@ func (h *DeleteTopicsHandler) handleTopic(ctx context.Context, version int16, na
 
 	// Drop Iceberg table if enabled
 	if h.cfg.IcebergEnabled && h.icebergCatalog != nil {
+		namespace := h.cfg.IcebergNamespace
+		if len(namespace) == 0 {
+			namespace = []string{"dray"}
+		}
 		tableID := catalog.TableIdentifier{
-			Namespace: []string{"dray"},
+			Namespace: namespace,
 			Name:      topicName,
 		}
 		_ = h.icebergCatalog.DropTable(ctx, tableID)

@@ -224,6 +224,60 @@ func TestDeleteTopicsHandler_WithIceberg(t *testing.T) {
 	}
 }
 
+func TestDeleteTopicsHandler_WithIcebergCustomNamespace(t *testing.T) {
+	ctx := context.Background()
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	icebergCatalog := newMockIcebergCatalog()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "iceberg-ns-topic",
+		PartitionCount: 2,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	customNamespace := []string{"prod", "dray"}
+	tableID := catalog.TableIdentifier{
+		Namespace: customNamespace,
+		Name:      "iceberg-ns-topic",
+	}
+	_, err = icebergCatalog.CreateTableIfMissing(ctx, tableID, catalog.CreateTableOptions{})
+	if err != nil {
+		t.Fatalf("failed to create Iceberg table: %v", err)
+	}
+
+	handler := NewDeleteTopicsHandler(
+		DeleteTopicsHandlerConfig{
+			IcebergEnabled:   true,
+			IcebergNamespace: customNamespace,
+		},
+		topicStore,
+		streamManager,
+		icebergCatalog,
+	)
+
+	req := kmsg.NewPtrDeleteTopicsRequest()
+	req.TopicNames = []string{"iceberg-ns-topic"}
+
+	resp := handler.Handle(ctx, 3, req)
+
+	if resp.Topics[0].ErrorCode != 0 {
+		t.Errorf("expected no error, got error code %d", resp.Topics[0].ErrorCode)
+	}
+
+	exists, err := icebergCatalog.TableExists(ctx, tableID)
+	if err != nil {
+		t.Fatalf("failed to check table existence: %v", err)
+	}
+	if exists {
+		t.Error("expected Iceberg table to be dropped in custom namespace")
+	}
+}
+
 func TestDeleteTopicsHandler_V6WithTopicID(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()

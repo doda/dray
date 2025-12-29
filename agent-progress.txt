@@ -1284,3 +1284,14 @@ Start with project-setup, then follow spec phases:
 - Challenge: init.sh failed due to new NewMetadataHandler signature mismatch in cmd/drayd/broker.go.
 - Resolution: wired StreamManager into broker metadata handler and reran init.sh successfully.
 - Follow-ups: none.
+
+[2025-12-29T23:27:21Z] Completed delete-topics-use-configured-iceberg-namespace: PASS
+- Implemented configurable Iceberg namespace usage when dropping tables in DeleteTopics.
+- Added delete-topics test for non-default Iceberg namespace deletion.
+- Files changed: internal/protocol/delete_topics.go
+- Files changed: internal/protocol/delete_topics_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol -run DeleteTopics -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: none
+- Follow-ups: none
