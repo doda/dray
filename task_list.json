@@ -2814,7 +2814,7 @@
       "Assert lookup returns first record >= requested timestamp",
       "Run index test suite and fix failures"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/index/entry_test.go"

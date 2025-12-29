@@ -1063,3 +1063,11 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh (pass)
 - Challenge: gofmt unavailable in PATH.
 - Resolution: left formatting as-is and verified compilation/tests.
+[2025-12-29T19:36:35Z] Completed test-timestamp-lookup-nonmonotonic: PASS
+- Added overlapping/out-of-order timestamp lookup test to ensure earliest offset selection.
+- Files changed: internal/index/entry_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/index (pass)
+- Tests: ./init.sh (pass)
+- Challenges: none
+- Follow-ups: none

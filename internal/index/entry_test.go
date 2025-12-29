@@ -1905,6 +1905,111 @@ func TestLookupOffsetByTimestamp_NonMonotonicEntries(t *testing.T) {
 	}
 }
 
+func TestLookupOffsetByTimestamp_NonMonotonicOverlappingRanges(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, _ := sm.CreateStream(ctx, "test-topic", 0)
+
+	_, err := sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    5,
+		ChunkSizeBytes: 100,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 2000,
+		WalID:          "wal-1",
+		WalPath:        "wal/1.wal",
+		ChunkOffset:    0,
+		ChunkLength:    100,
+	})
+	if err != nil {
+		t.Fatalf("failed to append: %v", err)
+	}
+
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    5,
+		ChunkSizeBytes: 100,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		MinTimestampMs: 1500,
+		MaxTimestampMs: 2500,
+		WalID:          "wal-2",
+		WalPath:        "wal/2.wal",
+		ChunkOffset:    0,
+		ChunkLength:    100,
+	})
+	if err != nil {
+		t.Fatalf("failed to append: %v", err)
+	}
+
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    5,
+		ChunkSizeBytes: 100,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		MinTimestampMs: 900,
+		MaxTimestampMs: 1100,
+		WalID:          "wal-3",
+		WalPath:        "wal/3.wal",
+		ChunkOffset:    0,
+		ChunkLength:    100,
+	})
+	if err != nil {
+		t.Fatalf("failed to append: %v", err)
+	}
+
+	tests := []struct {
+		name           string
+		timestamp      int64
+		expectedOffset int64
+		expectedFound  bool
+	}{
+		{
+			name:           "overlapping ranges select earliest offset",
+			timestamp:      1550,
+			expectedOffset: 0,
+			expectedFound:  true,
+		},
+		{
+			name:           "later range when earlier ranges end",
+			timestamp:      2100,
+			expectedOffset: 5,
+			expectedFound:  true,
+		},
+		{
+			name:           "out-of-order early range does not override earliest offset",
+			timestamp:      950,
+			expectedOffset: 0,
+			expectedFound:  true,
+		},
+		{
+			name:           "after all entries",
+			timestamp:      2600,
+			expectedOffset: -1,
+			expectedFound:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := sm.LookupOffsetByTimestamp(ctx, streamID, tt.timestamp)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.Found != tt.expectedFound {
+				t.Errorf("Found = %v, expected %v", result.Found, tt.expectedFound)
+			}
+
+			if result.Offset != tt.expectedOffset {
+				t.Errorf("Offset = %d, expected %d", result.Offset, tt.expectedOffset)
+			}
+		})
+	}
+}
+
 // TestLookupOffsetByTimestamp_EmptyStream tests lookup on empty stream.
 func TestLookupOffsetByTimestamp_EmptyStream(t *testing.T) {
 	store := newIndexTestStore()
