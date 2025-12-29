@@ -898,3 +898,10 @@ Start with project-setup, then follow spec phases:
 - Added helper for JoinGroup response capture and SyncGroup request wrapper
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+
+[2025-12-29T00:00:16Z] Reviewed property-test-offset-index
+- Scope: tests/property/offset_index_test.go, task_list.json
+- Verified property-based tests cover monotonic offsets, correct lookups, HWM consistency, ordering, cumulative sizes, and no-gaps behavior
+- Verified concurrent append property checks contiguous ranges and final HWM
+- Issues found: none
+- Tests: not run (trusted prior run by working agent)

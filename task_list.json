@@ -2552,7 +2552,7 @@
     "scope": [
       "tests/property/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "property-test-groups",
