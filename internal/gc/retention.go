@@ -30,6 +30,10 @@ type RetentionWorkerConfig struct {
 	// GracePeriodMs is the grace period before deleted data is actually removed.
 	// Default: 600000 (10 minutes)
 	GracePeriodMs int64
+
+	// IcebergEnabled is the global default for table.iceberg.enabled.
+	// Default: false
+	IcebergEnabled bool
 }
 
 // DefaultRetentionWorkerConfig returns default configuration.
@@ -38,6 +42,7 @@ func DefaultRetentionWorkerConfig() RetentionWorkerConfig {
 		ScanIntervalMs: 300000,
 		NumDomains:     16,
 		GracePeriodMs:  600000,
+		IcebergEnabled: false,
 	}
 }
 
@@ -181,13 +186,15 @@ func (w *RetentionWorker) enforceTopicRetention(ctx context.Context, topic topic
 		return err
 	}
 
+	icebergEnabled := topics.GetIcebergEnabled(config, w.config.IcebergEnabled)
+
 	partitions, err := w.topicStore.ListPartitions(ctx, topic.Name)
 	if err != nil {
 		return err
 	}
 
 	for _, partition := range partitions {
-		if err := w.enforceStreamRetention(ctx, partition.StreamID, topic.Name, retentionMs, retentionBytes); err != nil {
+		if err := w.enforceStreamRetention(ctx, partition.StreamID, topic.Name, retentionMs, retentionBytes, icebergEnabled); err != nil {
 			continue
 		}
 	}
@@ -202,6 +209,7 @@ func (w *RetentionWorker) enforceStreamRetention(
 	topicName string,
 	retentionMs int64,
 	retentionBytes int64,
+	icebergEnabled bool,
 ) error {
 	prefix := keys.OffsetIndexPrefix(streamID)
 	kvs, err := w.meta.List(ctx, prefix, "", 0)
@@ -254,7 +262,7 @@ func (w *RetentionWorker) enforceStreamRetention(
 	}
 
 	for _, e := range toDelete {
-		if err := w.deleteIndexEntry(ctx, e.key, e.entry, deleteAfterMs); err != nil {
+		if err := w.deleteIndexEntry(ctx, e.key, e.entry, deleteAfterMs, icebergEnabled); err != nil {
 			continue
 		}
 	}
@@ -329,6 +337,7 @@ func (w *RetentionWorker) deleteIndexEntry(
 	key string,
 	entry index.IndexEntry,
 	deleteAfterMs int64,
+	icebergEnabled bool,
 ) error {
 	// Delete the index entry
 	if err := w.meta.Delete(ctx, key); err != nil {
@@ -350,11 +359,13 @@ func (w *RetentionWorker) deleteIndexEntry(
 	} else if entry.FileType == index.FileTypeParquet {
 		// For Parquet entries, schedule direct GC
 		gcRecord := ParquetGCRecord{
-			Path:          entry.ParquetPath,
-			DeleteAfterMs: deleteAfterMs,
-			CreatedAt:     entry.CreatedAtMs,
-			SizeBytes:     int64(entry.ParquetSizeBytes),
-			StreamID:      entry.StreamID,
+			Path:                     entry.ParquetPath,
+			DeleteAfterMs:            deleteAfterMs,
+			CreatedAt:                entry.CreatedAtMs,
+			SizeBytes:                int64(entry.ParquetSizeBytes),
+			StreamID:                 entry.StreamID,
+			IcebergEnabled:           icebergEnabled,
+			IcebergRemovalConfirmed:  !icebergEnabled,
 		}
 		if err := ScheduleParquetGC(ctx, w.meta, gcRecord); err != nil {
 			return fmt.Errorf("schedule Parquet GC: %w", err)
@@ -495,5 +506,5 @@ func (w *RetentionWorker) GetStreamRetentionStats(ctx context.Context, streamID 
 
 // EnforceStream allows manual retention enforcement on a specific stream.
 func (w *RetentionWorker) EnforceStream(ctx context.Context, streamID string, retentionMs, retentionBytes int64) error {
-	return w.enforceStreamRetention(ctx, streamID, "", retentionMs, retentionBytes)
+	return w.enforceStreamRetention(ctx, streamID, "", retentionMs, retentionBytes, w.config.IcebergEnabled)
 }

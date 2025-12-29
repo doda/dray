@@ -34,6 +34,12 @@ type ParquetGCRecord struct {
 
 	// JobID is the compaction job ID that replaced this Parquet file.
 	JobID string `json:"jobId,omitempty"`
+
+	// IcebergEnabled indicates the Parquet file is tracked in Iceberg metadata.
+	IcebergEnabled bool `json:"icebergEnabled,omitempty"`
+
+	// IcebergRemovalConfirmed indicates the file has been removed from Iceberg metadata.
+	IcebergRemovalConfirmed bool `json:"icebergRemovalConfirmed,omitempty"`
 }
 
 // ParquetGCWorkerConfig configures the Parquet GC worker.
@@ -200,6 +206,10 @@ func (w *ParquetGCWorker) processGCRecord(ctx context.Context, gcKey string, val
 		return false, fmt.Errorf("unmarshal Parquet GC record: %w", err)
 	}
 
+	if record.IcebergEnabled && !record.IcebergRemovalConfirmed {
+		return false, nil
+	}
+
 	if nowMs < record.DeleteAfterMs {
 		return false, nil
 	}
@@ -287,6 +297,9 @@ func (w *ParquetGCWorker) GetEligibleCount(ctx context.Context) (int, error) {
 		if err := json.Unmarshal(kv.Value, &record); err != nil {
 			continue
 		}
+		if record.IcebergEnabled && !record.IcebergRemovalConfirmed {
+			continue
+		}
 		if now >= record.DeleteAfterMs {
 			eligible++
 		}
@@ -312,6 +325,45 @@ func ScheduleParquetGC(ctx context.Context, meta metadata.MetadataStore, record 
 	_, err = meta.Put(ctx, gcKey, recordBytes)
 	if err != nil {
 		return fmt.Errorf("write Parquet GC marker: %w", err)
+	}
+
+	return nil
+}
+
+// ConfirmParquetIcebergRemoval marks a Parquet GC record as removed from Iceberg metadata.
+func ConfirmParquetIcebergRemoval(ctx context.Context, meta metadata.MetadataStore, streamID, parquetPath string) error {
+	parquetID := extractParquetID(parquetPath)
+	if parquetID == "" {
+		return fmt.Errorf("could not extract parquet ID from path: %s", parquetPath)
+	}
+
+	gcKey := keys.ParquetGCKeyPath(streamID, parquetID)
+	result, err := meta.Get(ctx, gcKey)
+	if err != nil {
+		return fmt.Errorf("get Parquet GC marker: %w", err)
+	}
+	if !result.Exists {
+		return fmt.Errorf("parquet GC marker not found for %s", parquetID)
+	}
+
+	var record ParquetGCRecord
+	if err := json.Unmarshal(result.Value, &record); err != nil {
+		return fmt.Errorf("unmarshal Parquet GC record: %w", err)
+	}
+	if record.IcebergRemovalConfirmed {
+		return nil
+	}
+
+	record.IcebergEnabled = true
+	record.IcebergRemovalConfirmed = true
+	recordBytes, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal Parquet GC record: %w", err)
+	}
+
+	_, err = meta.Put(ctx, gcKey, recordBytes, metadata.WithExpectedVersion(result.Version))
+	if err != nil {
+		return fmt.Errorf("update Parquet GC marker: %w", err)
 	}
 
 	return nil

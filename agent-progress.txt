@@ -1188,3 +1188,18 @@ Start with project-setup, then follow spec phases:
 - Challenges: python not available for task_list update.
 - Resolution: used python3 to update task_list.json.
 - Follow-ups: none
+[2025-12-29T21:47:49Z] Completed iceberg-aware-parquet-gc: PASS
+- Added Iceberg-aware fields to Parquet GC markers and gated deletion on confirmed Iceberg removal.
+- Added helper to confirm Iceberg removal and integrated retention/compaction scheduling flags.
+- Updated Parquet GC worker eligibility checks and documented Iceberg gating behavior.
+- Added integration-style GC test to ensure Iceberg-referenced files are not deleted prematurely.
+- Files changed: internal/gc/parquet_gc.go
+- Files changed: internal/gc/retention.go
+- Files changed: internal/compaction/swap.go
+- Files changed: internal/gc/parquet_gc_test.go
+- Files changed: internal/gc/doc.go
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/gc -run ParquetGCWorker_SkipsIcebergReferencedFile -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: Iceberg removal not previously tracked in GC markers.
+- Resolution: Added IcebergEnabled/IcebergRemovalConfirmed fields with explicit confirmation helper.
+- Follow-ups: Wire compaction/Iceberg commit flow to call ConfirmParquetIcebergRemoval when removal is implemented.

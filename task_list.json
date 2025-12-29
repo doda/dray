@@ -2964,7 +2964,7 @@
       "Gate Parquet deletion on confirmed Iceberg removal when duality mode is enabled",
       "Add integration test that fails if GC deletes files still referenced by Iceberg"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/gc/parquet_gc.go",

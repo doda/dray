@@ -478,6 +478,62 @@ func TestParquetGCWorker_IntegrationWithCompaction(t *testing.T) {
 	}
 }
 
+func TestParquetGCWorker_SkipsIcebergReferencedFile(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	streamID := "stream-iceberg"
+	parquetPath := "streams/" + streamID + "/parquet/iceberg-file.parquet"
+
+	objStore.Put(ctx, parquetPath, bytes.NewReader([]byte("iceberg-data")), 12, "application/octet-stream")
+
+	gcRecord := ParquetGCRecord{
+		Path:          parquetPath,
+		DeleteAfterMs: time.Now().Add(-1 * time.Second).UnixMilli(),
+		CreatedAt:     time.Now().Add(-1 * time.Hour).UnixMilli(),
+		SizeBytes:     12,
+		StreamID:      streamID,
+		IcebergEnabled: true,
+	}
+
+	if err := ScheduleParquetGC(ctx, metaStore, gcRecord); err != nil {
+		t.Fatalf("ScheduleParquetGC failed: %v", err)
+	}
+
+	worker := NewParquetGCWorker(metaStore, objStore, ParquetGCWorkerConfig{BatchSize: 100})
+	if err := worker.ScanOnce(ctx); err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	if !objStore.hasObject(parquetPath) {
+		t.Error("Parquet object should NOT be deleted before Iceberg removal")
+	}
+
+	gcKey := keys.ParquetGCKeyPath(streamID, "iceberg-file")
+	result, _ := metaStore.Get(ctx, gcKey)
+	if !result.Exists {
+		t.Error("GC marker should still exist before Iceberg removal")
+	}
+
+	if err := ConfirmParquetIcebergRemoval(ctx, metaStore, streamID, parquetPath); err != nil {
+		t.Fatalf("ConfirmParquetIcebergRemoval failed: %v", err)
+	}
+
+	if err := worker.ScanOnce(ctx); err != nil {
+		t.Fatalf("ScanOnce failed after confirm: %v", err)
+	}
+
+	if objStore.hasObject(parquetPath) {
+		t.Error("Parquet object should be deleted after Iceberg removal")
+	}
+
+	result, _ = metaStore.Get(ctx, gcKey)
+	if result.Exists {
+		t.Error("GC marker should be deleted after Iceberg removal")
+	}
+}
+
 func TestParquetGCWorker_GracePeriodRespected(t *testing.T) {
 	metaStore := metadata.NewMockStore()
 	objStore := newMockObjectStore()
