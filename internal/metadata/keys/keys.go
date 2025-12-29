@@ -367,6 +367,12 @@ func GroupMembersPrefix(groupID string) string {
 	return fmt.Sprintf("%s/%s/members/", GroupsPrefix, groupID)
 }
 
+// GroupMembersCountKeyPath returns the key for tracking member count in a group.
+// Format: /dray/v1/groups/<groupId>/members-count
+func GroupMembersCountKeyPath(groupID string) string {
+	return fmt.Sprintf("%s/%s/members-count", GroupsPrefix, groupID)
+}
+
 // ParseGroupMemberKey parses a group member key.
 func ParseGroupMemberKey(key string) (groupID, memberID string, err error) {
 	prefix := GroupsPrefix + "/"

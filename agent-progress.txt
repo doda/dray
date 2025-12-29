@@ -1214,3 +1214,16 @@ Start with project-setup, then follow spec phases:
 - Challenge: init.sh timed out at default 120s.
 - Resolution: reran init.sh with a longer timeout.
 - Follow-ups: none
+[2025-12-29T22:31:25Z] Completed group-type-conversion-transactional: PASS
+- Implemented member count tracking for groups and used it to make ConvertGroupType atomic with transactional emptiness checks.
+- Added retry handling for group member add/remove on version conflicts to keep counts consistent under concurrency.
+- Added concurrent conversion/join test using MockStore txn commit hook.
+- Files changed: internal/groups/store.go
+- Files changed: internal/groups/store_test.go
+- Files changed: internal/metadata/keys/keys.go
+- Files changed: internal/metadata/keys/keys_test.go
+- Files changed: internal/metadata/mock.go
+- Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./internal/groups -run "ConvertGroupType" -count=1 -timeout 40s (pass)
+- Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./tests/property -run TestPropertyConcurrentMemberOperations -count=1 -timeout 60s (pass)
+- Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./internal/metadata/keys -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass; initial run failed due to property test before retries)

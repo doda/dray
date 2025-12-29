@@ -922,6 +922,14 @@ func TestGroupMembersPrefix(t *testing.T) {
 	}
 }
 
+func TestGroupMembersCountKeyPath(t *testing.T) {
+	got := GroupMembersCountKeyPath("my-group")
+	want := "/dray/v1/groups/my-group/members-count"
+	if got != want {
+		t.Errorf("GroupMembersCountKeyPath() = %q, want %q", got, want)
+	}
+}
+
 func TestParseGroupMemberKey(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1139,11 +1147,11 @@ func TestParseGroupLeaseKey(t *testing.T) {
 		{"/dray/v1/groups/my-group/lease", "my-group", false},
 		{"/dray/v1/groups/group-123/lease", "group-123", false},
 		{"/dray/v1/groups/test-consumer-group/lease", "test-consumer-group", false},
-		{"/dray/v1/groups//lease", "", true},                   // empty groupID
-		{"/dray/v1/groups/my-group/state", "", true},           // wrong suffix
-		{"/dray/v1/groups/my-group", "", true},                 // no /lease suffix
-		{"/other/prefix/my-group/lease", "", true},             // wrong prefix
-		{"/dray/v1/groups/lease", "", true},                    // missing groupID
+		{"/dray/v1/groups//lease", "", true},         // empty groupID
+		{"/dray/v1/groups/my-group/state", "", true}, // wrong suffix
+		{"/dray/v1/groups/my-group", "", true},       // no /lease suffix
+		{"/other/prefix/my-group/lease", "", true},   // wrong prefix
+		{"/dray/v1/groups/lease", "", true},          // missing groupID
 	}
 
 	for _, tc := range tests {
@@ -1543,14 +1551,14 @@ func TestParseIcebergLockKey(t *testing.T) {
 
 func TestACLKeyPath(t *testing.T) {
 	tests := []struct {
-		resType   string
-		resName   string
-		pattern   string
-		princip   string
-		operation string
+		resType    string
+		resName    string
+		pattern    string
+		princip    string
+		operation  string
 		permission string
-		host      string
-		want      string
+		host       string
+		want       string
 	}{
 		{"topic", "my-topic", "literal", "User:alice", "READ", "ALLOW", "*", "/dray/v1/acls/topic/my-topic/literal/User:alice/READ/ALLOW/*"},
 		{"group", "consumer-group", "literal", "User:bob", "WRITE", "DENY", "*", "/dray/v1/acls/group/consumer-group/literal/User:bob/WRITE/DENY/*"},
@@ -1584,38 +1592,38 @@ func TestACLTypePrefix(t *testing.T) {
 
 func TestParseACLKey(t *testing.T) {
 	tests := []struct {
-		name         string
-		key          string
-		wantType     string
-		wantName     string
-		wantPattern  string
-		wantPrincip  string
-		wantOperation string
+		name           string
+		key            string
+		wantType       string
+		wantName       string
+		wantPattern    string
+		wantPrincip    string
+		wantOperation  string
 		wantPermission string
-		wantHost     string
-		wantErr      bool
+		wantHost       string
+		wantErr        bool
 	}{
 		{
-			name:          "valid",
-			key:           "/dray/v1/acls/topic/my-topic/literal/User:alice/READ/ALLOW/*",
-			wantType:      "topic",
-			wantName:      "my-topic",
-			wantPattern:   "literal",
-			wantPrincip:   "User:alice",
-			wantOperation: "READ",
+			name:           "valid",
+			key:            "/dray/v1/acls/topic/my-topic/literal/User:alice/READ/ALLOW/*",
+			wantType:       "topic",
+			wantName:       "my-topic",
+			wantPattern:    "literal",
+			wantPrincip:    "User:alice",
+			wantOperation:  "READ",
 			wantPermission: "ALLOW",
-			wantHost:      "*",
+			wantHost:       "*",
 		},
 		{
-			name:          "cluster_wildcard",
-			key:           "/dray/v1/acls/cluster/*/literal/User:admin/ALL/ALLOW/*",
-			wantType:      "cluster",
-			wantName:      "*",
-			wantPattern:   "literal",
-			wantPrincip:   "User:admin",
-			wantOperation: "ALL",
+			name:           "cluster_wildcard",
+			key:            "/dray/v1/acls/cluster/*/literal/User:admin/ALL/ALLOW/*",
+			wantType:       "cluster",
+			wantName:       "*",
+			wantPattern:    "literal",
+			wantPrincip:    "User:admin",
+			wantOperation:  "ALL",
 			wantPermission: "ALLOW",
-			wantHost:      "*",
+			wantHost:       "*",
 		},
 		{
 			name:    "wrong_prefix",

@@ -11,13 +11,14 @@ import (
 // MockStore implements MetadataStore for testing.
 // It is exported so that tests in other packages can use it.
 type MockStore struct {
-	mu       sync.RWMutex
-	data     map[string]KV
-	closed   bool
-	nextVer  Version
-	txnCalls int
-	notifyCh chan Notification
-	closeErr error
+	mu            sync.RWMutex
+	data          map[string]KV
+	closed        bool
+	nextVer       Version
+	txnCalls      int
+	txnCommitHook func(scopeKey string)
+	notifyCh      chan Notification
+	closeErr      error
 }
 
 // NewMockStore creates a new MockStore for testing.
@@ -140,7 +141,7 @@ func (m *MockStore) List(_ context.Context, startKey, endKey string, limit int) 
 	return result, nil
 }
 
-func (m *MockStore) Txn(_ context.Context, _ string, fn func(Txn) error) error {
+func (m *MockStore) Txn(_ context.Context, scopeKey string, fn func(Txn) error) error {
 	// Note: We don't hold the lock during the callback to avoid deadlocks
 	// when the callback calls other MockStore methods.
 	// This differs slightly from a real transactional store but is sufficient for testing.
@@ -155,6 +156,13 @@ func (m *MockStore) Txn(_ context.Context, _ string, fn func(Txn) error) error {
 	txn := &mockTxnPublic{store: m, pending: make(map[string]txnOpPublic)}
 	if err := fn(txn); err != nil {
 		return err
+	}
+
+	m.mu.RLock()
+	hook := m.txnCommitHook
+	m.mu.RUnlock()
+	if hook != nil {
+		hook(scopeKey)
 	}
 
 	m.mu.Lock()
@@ -258,6 +266,14 @@ func (m *MockStore) TxnCallCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.txnCalls
+}
+
+// SetTxnCommitHook registers a hook that runs before a transaction is committed.
+// The hook runs without holding the store lock.
+func (m *MockStore) SetTxnCommitHook(hook func(scopeKey string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.txnCommitHook = hook
 }
 
 // GetAllKeys returns all keys currently in the store (for testing).

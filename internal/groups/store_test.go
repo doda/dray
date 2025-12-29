@@ -3,6 +3,7 @@ package groups
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1266,6 +1267,68 @@ func TestStore_ConvertGroupTypeNotEmpty(t *testing.T) {
 	}
 }
 
+func TestStore_ConvertGroupTypeConcurrentJoin(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMockStore()
+	store := NewStore(meta)
+
+	_, err := store.CreateGroup(ctx, CreateGroupRequest{
+		GroupID: "concurrent-convert-group",
+		Type:    GroupTypeClassic,
+		NowMs:   time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+
+	ready := make(chan struct{})
+	release := make(chan struct{})
+	var hookArmed atomic.Bool
+	meta.SetTxnCommitHook(func(scopeKey string) {
+		if hookArmed.CompareAndSwap(false, true) {
+			close(ready)
+			<-release
+		}
+	})
+	defer meta.SetTxnCommitHook(nil)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- store.ConvertGroupType(ctx, "concurrent-convert-group", GroupTypeConsumer)
+	}()
+
+	<-ready
+
+	_, err = store.AddMember(ctx, AddMemberRequest{
+		GroupID:  "concurrent-convert-group",
+		MemberID: "member-1",
+		NowMs:    time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to add member: %v", err)
+	}
+
+	close(release)
+
+	err = <-errCh
+	if err == nil {
+		t.Fatal("expected conversion to fail during concurrent join")
+	}
+	if !errors.Is(err, ErrGroupNotEmpty) &&
+		!errors.Is(err, metadata.ErrTxnConflict) &&
+		!errors.Is(err, metadata.ErrVersionMismatch) {
+		t.Fatalf("expected conversion conflict, got %v", err)
+	}
+
+	groupType, err := store.GetGroupType(ctx, "concurrent-convert-group")
+	if err != nil {
+		t.Fatalf("failed to get group type: %v", err)
+	}
+	if groupType != GroupTypeClassic {
+		t.Errorf("expected classic type after failed conversion, got %s", groupType)
+	}
+}
+
 // TestStore_ConvertGroupTypeNotFound tests that conversion fails for nonexistent groups.
 func TestStore_ConvertGroupTypeNotFound(t *testing.T) {
 	ctx := context.Background()
@@ -1463,7 +1526,10 @@ func TestStore_ListCommittedOffsets(t *testing.T) {
 	nowMs := time.Now().UnixMilli()
 
 	// Commit multiple offsets
-	for _, tp := range []struct{ topic string; partition int32 }{
+	for _, tp := range []struct {
+		topic     string
+		partition int32
+	}{
 		{"topic-a", 0},
 		{"topic-a", 1},
 		{"topic-b", 0},
@@ -1496,7 +1562,10 @@ func TestStore_ListCommittedOffsetsForTopic(t *testing.T) {
 	nowMs := time.Now().UnixMilli()
 
 	// Commit offsets for different topics
-	for _, tp := range []struct{ topic string; partition int32 }{
+	for _, tp := range []struct {
+		topic     string
+		partition int32
+	}{
 		{"topic-a", 0},
 		{"topic-a", 1},
 		{"topic-a", 2},

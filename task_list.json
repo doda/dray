@@ -2995,7 +2995,7 @@
       "Add a concurrency test simulating join during type conversion",
       "Verify conversion only succeeds when group is empty"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/groups/store.go"

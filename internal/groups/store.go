@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
@@ -78,9 +79,9 @@ type GroupMember struct {
 	JoinedAtMs         int64    `json:"joinedAtMs"`
 	Metadata           []byte   `json:"metadata,omitempty"`
 	SupportedProtocols []byte   `json:"supportedProtocols,omitempty"`
-	MemberEpoch        int32    `json:"memberEpoch,omitempty"`        // KIP-848: member epoch
-	RackID             string   `json:"rackId,omitempty"`             // KIP-848: rack for zone-aware assignment
-	SubscribedTopics   []string `json:"subscribedTopics,omitempty"`   // KIP-848: topic subscriptions
+	MemberEpoch        int32    `json:"memberEpoch,omitempty"`      // KIP-848: member epoch
+	RackID             string   `json:"rackId,omitempty"`           // KIP-848: rack for zone-aware assignment
+	SubscribedTopics   []string `json:"subscribedTopics,omitempty"` // KIP-848: topic subscriptions
 }
 
 // Assignment represents the partition assignment for a member.
@@ -126,6 +127,27 @@ func (s *Store) GetGroupType(ctx context.Context, groupID string) (GroupType, er
 // ErrGroupNotEmpty is returned when trying to convert a group with active members.
 var ErrGroupNotEmpty = errors.New("groups: group is not empty")
 
+func formatMemberCount(count int) []byte {
+	return []byte(strconv.Itoa(count))
+}
+
+func parseMemberCount(data []byte) (int, error) {
+	count, err := strconv.Atoi(string(data))
+	if err != nil {
+		return 0, fmt.Errorf("groups: parse member count: %w", err)
+	}
+	if count < 0 {
+		return 0, fmt.Errorf("groups: invalid member count: %d", count)
+	}
+	return count, nil
+}
+
+const maxGroupTxnAttempts = 5
+
+func shouldRetryGroupTxn(err error) bool {
+	return errors.Is(err, metadata.ErrVersionMismatch) || errors.Is(err, metadata.ErrTxnConflict)
+}
+
 // ConvertGroupType converts a group from one protocol type to another.
 // This is only allowed when the group has no active members.
 func (s *Store) ConvertGroupType(ctx context.Context, groupID string, newType GroupType) error {
@@ -137,6 +159,7 @@ func (s *Store) ConvertGroupType(ctx context.Context, groupID string, newType Gr
 	}
 
 	typeKey := keys.GroupTypeKeyPath(groupID)
+	countKey := keys.GroupMembersCountKeyPath(groupID)
 
 	return s.meta.Txn(ctx, typeKey, func(txn metadata.Txn) error {
 		// Check current type exists
@@ -148,17 +171,24 @@ func (s *Store) ConvertGroupType(ctx context.Context, groupID string, newType Gr
 			return err
 		}
 
-		// Verify group has no members
-		membersPrefix := keys.GroupMembersPrefix(groupID)
-		members, err := s.meta.List(ctx, membersPrefix, "", 1)
+		countData, countVersion, err := txn.Get(countKey)
 		if err != nil {
-			return fmt.Errorf("groups: list members: %w", err)
+			if errors.Is(err, metadata.ErrKeyNotFound) {
+				return ErrGroupNotFound
+			}
+			return err
 		}
-		if len(members) > 0 {
+
+		count, err := parseMemberCount(countData)
+		if err != nil {
+			return err
+		}
+		if count > 0 {
 			return ErrGroupNotEmpty
 		}
 
 		// Update type
+		txn.PutWithVersion(countKey, formatMemberCount(count), countVersion)
 		txn.PutWithVersion(typeKey, []byte(newType), version)
 		return nil
 	})
@@ -244,6 +274,7 @@ func (s *Store) CreateGroup(ctx context.Context, req CreateGroupRequest) (*Group
 
 	typeKey := keys.GroupTypeKeyPath(req.GroupID)
 	stateKey := keys.GroupStateKeyPath(req.GroupID)
+	countKey := keys.GroupMembersCountKeyPath(req.GroupID)
 
 	err = s.meta.Txn(ctx, typeKey, func(txn metadata.Txn) error {
 		// Check if group already exists
@@ -260,6 +291,7 @@ func (s *Store) CreateGroup(ctx context.Context, req CreateGroupRequest) (*Group
 
 		// Create state key
 		txn.Put(stateKey, stateData)
+		txn.Put(countKey, formatMemberCount(0))
 
 		return nil
 	})
@@ -392,6 +424,7 @@ func (s *Store) DeleteGroup(ctx context.Context, groupID string) error {
 
 	typeKey := keys.GroupTypeKeyPath(groupID)
 	stateKey := keys.GroupStateKeyPath(groupID)
+	countKey := keys.GroupMembersCountKeyPath(groupID)
 
 	return s.meta.Txn(ctx, typeKey, func(txn metadata.Txn) error {
 		// Delete all member keys
@@ -406,6 +439,7 @@ func (s *Store) DeleteGroup(ctx context.Context, groupID string) error {
 		// Delete type and state
 		txn.Delete(typeKey)
 		txn.Delete(stateKey)
+		txn.Delete(countKey)
 
 		return nil
 	})
@@ -525,26 +559,45 @@ func (s *Store) AddMember(ctx context.Context, req AddMemberRequest) (*GroupMemb
 
 	typeKey := keys.GroupTypeKeyPath(req.GroupID)
 	memberKey := keys.GroupMemberKeyPath(req.GroupID, req.MemberID)
+	countKey := keys.GroupMembersCountKeyPath(req.GroupID)
 
-	err = s.meta.Txn(ctx, typeKey, func(txn metadata.Txn) error {
-		// Verify group exists
-		_, _, err := txn.Get(typeKey)
-		if err != nil {
-			if errors.Is(err, metadata.ErrKeyNotFound) {
-				return ErrGroupNotFound
+	var lastErr error
+	for attempt := 0; attempt < maxGroupTxnAttempts; attempt++ {
+		lastErr = s.meta.Txn(ctx, typeKey, func(txn metadata.Txn) error {
+			// Verify group exists
+			_, _, err := txn.Get(typeKey)
+			if err != nil {
+				if errors.Is(err, metadata.ErrKeyNotFound) {
+					return ErrGroupNotFound
+				}
+				return err
 			}
-			return err
+
+			countData, countVersion, err := txn.Get(countKey)
+			if err != nil {
+				if errors.Is(err, metadata.ErrKeyNotFound) {
+					return ErrGroupNotFound
+				}
+				return err
+			}
+			count, err := parseMemberCount(countData)
+			if err != nil {
+				return err
+			}
+
+			txn.PutWithVersion(countKey, formatMemberCount(count+1), countVersion)
+			txn.Put(memberKey, memberData)
+			return nil
+		})
+		if lastErr == nil {
+			return &member, nil
 		}
-
-		txn.Put(memberKey, memberData)
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
+		if !shouldRetryGroupTxn(lastErr) {
+			return nil, lastErr
+		}
 	}
 
-	return &member, nil
+	return nil, lastErr
 }
 
 // UpdateMemberRequest holds parameters for updating a member.
@@ -720,13 +773,53 @@ func (s *Store) RemoveMember(ctx context.Context, groupID, memberID string) erro
 
 	memberKey := keys.GroupMemberKeyPath(groupID, memberID)
 	assignmentKey := keys.GroupAssignmentKeyPath(groupID, memberID)
+	typeKey := keys.GroupTypeKeyPath(groupID)
+	countKey := keys.GroupMembersCountKeyPath(groupID)
 
-	return s.meta.Txn(ctx, memberKey, func(txn metadata.Txn) error {
-		// Delete both member and assignment
-		txn.Delete(memberKey)
-		txn.Delete(assignmentKey)
-		return nil
-	})
+	var lastErr error
+	for attempt := 0; attempt < maxGroupTxnAttempts; attempt++ {
+		lastErr = s.meta.Txn(ctx, typeKey, func(txn metadata.Txn) error {
+			// Delete both member and assignment
+			memberExists := true
+			if _, _, err := txn.Get(memberKey); err != nil {
+				if errors.Is(err, metadata.ErrKeyNotFound) {
+					memberExists = false
+				} else {
+					return err
+				}
+			}
+
+			if memberExists {
+				countData, countVersion, err := txn.Get(countKey)
+				if err != nil {
+					if errors.Is(err, metadata.ErrKeyNotFound) {
+						return ErrGroupNotFound
+					}
+					return err
+				}
+				count, err := parseMemberCount(countData)
+				if err != nil {
+					return err
+				}
+				if count == 0 {
+					return fmt.Errorf("groups: member count underflow")
+				}
+				txn.PutWithVersion(countKey, formatMemberCount(count-1), countVersion)
+			}
+
+			txn.Delete(memberKey)
+			txn.Delete(assignmentKey)
+			return nil
+		})
+		if lastErr == nil {
+			return nil
+		}
+		if !shouldRetryGroupTxn(lastErr) {
+			return lastErr
+		}
+	}
+
+	return lastErr
 }
 
 // GetAssignment retrieves a member's assignment.
@@ -930,15 +1023,15 @@ func (s *Store) ClearAllAssignments(ctx context.Context, groupID string) error {
 
 // TransitionStateRequest holds parameters for a state transition.
 type TransitionStateRequest struct {
-	GroupID           string
-	FromState         GroupStateName
-	ToState           GroupStateName
-	IncrementGen      bool
-	Leader            string
-	Protocol          string
-	ClearAssignments  bool
+	GroupID            string
+	FromState          GroupStateName
+	ToState            GroupStateName
+	IncrementGen       bool
+	Leader             string
+	Protocol           string
+	ClearAssignments   bool
 	ExpectedGeneration int32
-	NowMs             int64
+	NowMs              int64
 }
 
 // TransitionState atomically transitions the group to a new state.
