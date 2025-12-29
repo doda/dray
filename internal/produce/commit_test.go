@@ -13,6 +13,7 @@ import (
 
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/metadata"
+	"github.com/dray-io/dray/internal/metadata/keys"
 	"github.com/dray-io/dray/internal/objectstore"
 	"github.com/dray-io/dray/internal/wal"
 )
@@ -619,12 +620,12 @@ func TestCommitter_FullProduceCommitFlow(t *testing.T) {
 	}
 
 	// Step 7: Verify WAL object record was created with correct refCount
-	// The WAL object record should be at /wal/objects/<domain>/<walId>
+	// The WAL object record should be at /dray/v1/wal/objects/<domain>/<walId>
 	// We need to find it by scanning the keys
 	var walObjectRecord *WALObjectRecord
 	allKeys := metaStore.GetAllKeys()
 	for _, key := range allKeys {
-		if len(key) > 12 && key[:12] == "/wal/objects" {
+		if strings.HasPrefix(key, keys.WALObjectsPrefix+"/") {
 			result, err := metaStore.Get(ctx, key)
 			if err != nil || !result.Exists {
 				continue
@@ -653,10 +654,10 @@ func TestCommitter_FullProduceCommitFlow(t *testing.T) {
 	}
 
 	// Step 2 & 8: Verify staging marker was deleted
-	// Staging markers are at /wal/staging/<domain>/<walId>
+	// Staging markers are at /dray/v1/wal/staging/<domain>/<walId>
 	foundStaging := false
 	for _, key := range allKeys {
-		if len(key) > 12 && key[:12] == "/wal/staging" {
+		if strings.HasPrefix(key, keys.WALStagingPrefix+"/") {
 			foundStaging = true
 			break
 		}
@@ -926,7 +927,7 @@ func TestCommitter_WALWriteFailure_NoMetadataCommit(t *testing.T) {
 	allKeysBefore := metaStore.GetAllKeys()
 	walRecordCountBefore := 0
 	for _, key := range allKeysBefore {
-		if len(key) > 12 && key[:12] == "/wal/objects" {
+		if strings.HasPrefix(key, keys.WALObjectsPrefix+"/") {
 			walRecordCountBefore++
 		}
 	}
@@ -983,7 +984,7 @@ func TestCommitter_WALWriteFailure_NoMetadataCommit(t *testing.T) {
 	allKeysAfter := metaStore.GetAllKeys()
 	walRecordCountAfter := 0
 	for _, key := range allKeysAfter {
-		if len(key) > 12 && key[:12] == "/wal/objects" {
+		if strings.HasPrefix(key, keys.WALObjectsPrefix+"/") {
 			walRecordCountAfter++
 		}
 	}
@@ -1041,7 +1042,7 @@ func TestCommitter_WALWriteFailure_StagingMarkerRemains(t *testing.T) {
 	allKeys := metaStore.GetAllKeys()
 	foundStaging := false
 	for _, key := range allKeys {
-		if len(key) > 12 && key[:12] == "/wal/staging" {
+		if strings.HasPrefix(key, keys.WALStagingPrefix+"/") {
 			foundStaging = true
 			break
 		}
@@ -1550,7 +1551,7 @@ func TestCommitter_MetadataCommitFailure_StagingMarkerRemains(t *testing.T) {
 	allKeys := metaStore.MockStore.GetAllKeys()
 	foundStaging := false
 	for _, key := range allKeys {
-		if len(key) > 12 && key[:12] == "/wal/staging" {
+		if strings.HasPrefix(key, keys.WALStagingPrefix+"/") {
 			foundStaging = true
 			break
 		}
@@ -1697,7 +1698,7 @@ func TestCommitter_MetadataCommitFailure_NoWALObjectRecord(t *testing.T) {
 	allKeysBefore := metaStore.MockStore.GetAllKeys()
 	walRecordCountBefore := 0
 	for _, key := range allKeysBefore {
-		if len(key) > 12 && key[:12] == "/wal/objects" {
+		if strings.HasPrefix(key, keys.WALObjectsPrefix+"/") {
 			walRecordCountBefore++
 		}
 	}
@@ -1727,7 +1728,7 @@ func TestCommitter_MetadataCommitFailure_NoWALObjectRecord(t *testing.T) {
 	allKeysAfter := metaStore.MockStore.GetAllKeys()
 	walRecordCountAfter := 0
 	for _, key := range allKeysAfter {
-		if len(key) > 12 && key[:12] == "/wal/objects" {
+		if strings.HasPrefix(key, keys.WALObjectsPrefix+"/") {
 			walRecordCountAfter++
 		}
 	}

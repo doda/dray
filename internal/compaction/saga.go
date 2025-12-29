@@ -5,7 +5,7 @@
 // from any intermediate state after a crash. Each state transition is persisted
 // atomically using CAS operations before proceeding to the next step.
 //
-// Key format: /compaction/<streamId>/jobs/<jobId>
+// Key format: /dray/v1/compaction/<streamId>/jobs/<jobId>
 //
 // State machine:
 //

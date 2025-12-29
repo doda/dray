@@ -16,7 +16,7 @@ import (
 	"github.com/dray-io/dray/internal/objectstore"
 )
 
-// WALGCRecord is stored at /wal/gc/<metaDomain>/<walId> when a WAL object
+// WALGCRecord is stored at /dray/v1/wal/gc/<metaDomain>/<walId> when a WAL object
 // is ready for garbage collection.
 type WALGCRecord struct {
 	Path          string `json:"path"`

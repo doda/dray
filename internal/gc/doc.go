@@ -7,7 +7,7 @@
 // refcount reaches zero (after all streams referencing it have been
 // compacted), the compaction process creates a GC marker at:
 //
-//	/wal/gc/<metaDomain>/<walId>
+//	/dray/v1/wal/gc/<metaDomain>/<walId>
 //
 // The GC worker periodically scans these markers and deletes the objects
 // once their deleteAfterMs grace period has passed.
@@ -28,7 +28,7 @@
 // written but never committed due to broker crashes. Per spec section 9.7,
 // orphaned WALs are detected via staging markers at:
 //
-//	/wal/staging/<metaDomain>/<walId>
+//	/dray/v1/wal/staging/<metaDomain>/<walId>
 //
 // When a WAL object is written, a staging marker is created first. On successful
 // commit, the staging marker is deleted in the same transaction. If the broker
@@ -55,7 +55,7 @@
 // existing Parquet files with a new consolidated Parquet file, the old files
 // are scheduled for deletion via GC markers at:
 //
-//	/parquet/gc/<streamId>/<parquetId>
+//	/dray/v1/parquet/gc/<streamId>/<parquetId>
 //
 // The GC worker periodically scans these markers and deletes the objects
 // once their grace period has passed, allowing in-flight reads to complete.

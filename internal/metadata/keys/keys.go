@@ -48,32 +48,32 @@ const (
 	ACLsPrefix = Prefix + "/acls"
 
 	// WALStagingPrefix is the prefix for WAL staging markers.
-	// Format: /wal/staging/<metaDomain>/<walId>
-	WALStagingPrefix = "/wal/staging"
+	// Format: /dray/v1/wal/staging/<metaDomain>/<walId>
+	WALStagingPrefix = Prefix + "/wal/staging"
 
 	// WALObjectsPrefix is the prefix for WAL object records.
-	// Format: /wal/objects/<metaDomain>/<walId>
-	WALObjectsPrefix = "/wal/objects"
+	// Format: /dray/v1/wal/objects/<metaDomain>/<walId>
+	WALObjectsPrefix = Prefix + "/wal/objects"
 
 	// WALGCPrefix is the prefix for WAL GC markers.
-	// Format: /wal/gc/<metaDomain>/<walId>
-	WALGCPrefix = "/wal/gc"
+	// Format: /dray/v1/wal/gc/<metaDomain>/<walId>
+	WALGCPrefix = Prefix + "/wal/gc"
 
 	// ParquetGCPrefix is the prefix for Parquet GC markers.
-	// Format: /parquet/gc/<streamId>/<parquetId>
-	ParquetGCPrefix = "/parquet/gc"
+	// Format: /dray/v1/parquet/gc/<streamId>/<parquetId>
+	ParquetGCPrefix = Prefix + "/parquet/gc"
 
 	// CompactionLocksPrefix is the prefix for compaction stream locks (ephemeral).
-	// Format: /compaction/locks/<streamId>
-	CompactionLocksPrefix = "/compaction/locks"
+	// Format: /dray/v1/compaction/locks/<streamId>
+	CompactionLocksPrefix = Prefix + "/compaction/locks"
 
 	// CompactionJobsPrefix is the prefix for compaction job state.
-	// Format: /compaction/<streamId>/jobs/<jobId>
-	CompactionJobsPrefix = "/compaction"
+	// Format: /dray/v1/compaction/<streamId>/jobs/<jobId>
+	CompactionJobsPrefix = Prefix + "/compaction"
 
 	// IcebergLocksPrefix is the prefix for Iceberg commit locks (ephemeral).
-	// Format: /iceberg/<topic>/lock
-	IcebergLocksPrefix = "/iceberg"
+	// Format: /dray/v1/iceberg/<topic>/lock
+	IcebergLocksPrefix = Prefix + "/iceberg"
 )
 
 // Common errors.
@@ -485,7 +485,7 @@ func ParseGroupLeaseKey(key string) (groupID string, err error) {
 // =============================================================================
 
 // WALStagingKeyPath returns the key for a WAL staging marker.
-// Format: /wal/staging/<metaDomain>/<walId>
+// Format: /dray/v1/wal/staging/<metaDomain>/<walId>
 func WALStagingKeyPath(metaDomain int, walID string) string {
 	return fmt.Sprintf("%s/%d/%s", WALStagingPrefix, metaDomain, walID)
 }
@@ -517,7 +517,7 @@ func ParseWALStagingKey(key string) (metaDomain int, walID string, err error) {
 }
 
 // WALObjectKeyPath returns the key for a WAL object record.
-// Format: /wal/objects/<metaDomain>/<walId>
+// Format: /dray/v1/wal/objects/<metaDomain>/<walId>
 func WALObjectKeyPath(metaDomain int, walID string) string {
 	return fmt.Sprintf("%s/%d/%s", WALObjectsPrefix, metaDomain, walID)
 }
@@ -549,7 +549,7 @@ func ParseWALObjectKey(key string) (metaDomain int, walID string, err error) {
 }
 
 // WALGCKeyPath returns the key for a WAL GC marker.
-// Format: /wal/gc/<metaDomain>/<walId>
+// Format: /dray/v1/wal/gc/<metaDomain>/<walId>
 func WALGCKeyPath(metaDomain int, walID string) string {
 	return fmt.Sprintf("%s/%d/%s", WALGCPrefix, metaDomain, walID)
 }
@@ -585,7 +585,7 @@ func ParseWALGCKey(key string) (metaDomain int, walID string, err error) {
 // =============================================================================
 
 // ParquetGCKeyPath returns the key for a Parquet GC marker.
-// Format: /parquet/gc/<streamId>/<parquetId>
+// Format: /dray/v1/parquet/gc/<streamId>/<parquetId>
 func ParquetGCKeyPath(streamID, parquetID string) string {
 	return fmt.Sprintf("%s/%s/%s", ParquetGCPrefix, streamID, parquetID)
 }
@@ -621,13 +621,13 @@ func ParseParquetGCKey(key string) (streamID, parquetID string, err error) {
 // =============================================================================
 
 // CompactionLockKeyPath returns the key for a compaction stream lock (ephemeral).
-// Format: /compaction/locks/<streamId>
+// Format: /dray/v1/compaction/locks/<streamId>
 func CompactionLockKeyPath(streamID string) string {
 	return fmt.Sprintf("%s/%s", CompactionLocksPrefix, streamID)
 }
 
 // CompactionJobKeyPath returns the key for a compaction job state.
-// Format: /compaction/<streamId>/jobs/<jobId>
+// Format: /dray/v1/compaction/<streamId>/jobs/<jobId>
 func CompactionJobKeyPath(streamID, jobID string) string {
 	return fmt.Sprintf("%s/%s/jobs/%s", CompactionJobsPrefix, streamID, jobID)
 }
@@ -658,7 +658,7 @@ func ParseCompactionJobKey(key string) (streamID, jobID string, err error) {
 // =============================================================================
 
 // IcebergLockKeyPath returns the key for an Iceberg commit lock (ephemeral).
-// Format: /iceberg/<topic>/lock
+// Format: /dray/v1/iceberg/<topic>/lock
 func IcebergLockKeyPath(topic string) string {
 	return fmt.Sprintf("%s/%s/lock", IcebergLocksPrefix, topic)
 }

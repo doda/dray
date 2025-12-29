@@ -5,7 +5,7 @@
 // at any time. Locks are implemented using Oxia ephemeral keys, which are
 // automatically deleted when the compactor's session ends (crash or disconnect).
 //
-// Key format: /iceberg/<topic>/lock
+// Key format: /dray/v1/iceberg/<topic>/lock
 package catalog
 
 import (
@@ -35,7 +35,7 @@ var (
 )
 
 // IcebergLock represents the ephemeral lock for Iceberg commits.
-// The lock is stored at /iceberg/<topic>/lock.
+// The lock is stored at /dray/v1/iceberg/<topic>/lock.
 type IcebergLock struct {
 	// Topic is the topic/table this lock is for.
 	Topic string `json:"topic"`

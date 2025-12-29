@@ -52,7 +52,7 @@ type StreamResult struct {
 	EndOffset int64
 }
 
-// WALObjectRecord is stored at /wal/objects/<metaDomain>/<walId>
+// WALObjectRecord is stored at /dray/v1/wal/objects/<metaDomain>/<walId>
 // per spec section 9.7.
 type WALObjectRecord struct {
 	Path      string `json:"path"`

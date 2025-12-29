@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/dray-io/dray/internal/fetch"
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/metadata"
+	"github.com/dray-io/dray/internal/metadata/keys"
 	"github.com/dray-io/dray/internal/produce"
 	"github.com/dray-io/dray/internal/protocol"
 	"github.com/dray-io/dray/internal/topics"
@@ -331,7 +333,7 @@ func TestInvariantI3_StagingMarkerRemains(t *testing.T) {
 	allKeys := metaStore.MockStore.GetAllKeys()
 	foundStaging := false
 	for _, key := range allKeys {
-		if len(key) > 12 && key[:12] == "/wal/staging" {
+		if strings.HasPrefix(key, keys.WALStagingPrefix+"/") {
 			foundStaging = true
 			t.Logf("Staging marker found: %s", key)
 			break
@@ -345,7 +347,7 @@ func TestInvariantI3_StagingMarkerRemains(t *testing.T) {
 	// Verify NO WAL object record exists (metadata commit failed)
 	foundWALRecord := false
 	for _, key := range allKeys {
-		if len(key) > 12 && key[:12] == "/wal/objects" {
+		if strings.HasPrefix(key, keys.WALObjectsPrefix+"/") {
 			foundWALRecord = true
 			break
 		}

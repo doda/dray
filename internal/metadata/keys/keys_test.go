@@ -595,23 +595,23 @@ func TestPrefixes(t *testing.T) {
 	if ACLsPrefix != "/dray/v1/acls" {
 		t.Errorf("ACLsPrefix = %q, want %q", ACLsPrefix, "/dray/v1/acls")
 	}
-	if WALStagingPrefix != "/wal/staging" {
-		t.Errorf("WALStagingPrefix = %q, want %q", WALStagingPrefix, "/wal/staging")
+	if WALStagingPrefix != "/dray/v1/wal/staging" {
+		t.Errorf("WALStagingPrefix = %q, want %q", WALStagingPrefix, "/dray/v1/wal/staging")
 	}
-	if WALObjectsPrefix != "/wal/objects" {
-		t.Errorf("WALObjectsPrefix = %q, want %q", WALObjectsPrefix, "/wal/objects")
+	if WALObjectsPrefix != "/dray/v1/wal/objects" {
+		t.Errorf("WALObjectsPrefix = %q, want %q", WALObjectsPrefix, "/dray/v1/wal/objects")
 	}
-	if WALGCPrefix != "/wal/gc" {
-		t.Errorf("WALGCPrefix = %q, want %q", WALGCPrefix, "/wal/gc")
+	if WALGCPrefix != "/dray/v1/wal/gc" {
+		t.Errorf("WALGCPrefix = %q, want %q", WALGCPrefix, "/dray/v1/wal/gc")
 	}
-	if CompactionLocksPrefix != "/compaction/locks" {
-		t.Errorf("CompactionLocksPrefix = %q, want %q", CompactionLocksPrefix, "/compaction/locks")
+	if CompactionLocksPrefix != "/dray/v1/compaction/locks" {
+		t.Errorf("CompactionLocksPrefix = %q, want %q", CompactionLocksPrefix, "/dray/v1/compaction/locks")
 	}
-	if CompactionJobsPrefix != "/compaction" {
-		t.Errorf("CompactionJobsPrefix = %q, want %q", CompactionJobsPrefix, "/compaction")
+	if CompactionJobsPrefix != "/dray/v1/compaction" {
+		t.Errorf("CompactionJobsPrefix = %q, want %q", CompactionJobsPrefix, "/dray/v1/compaction")
 	}
-	if IcebergLocksPrefix != "/iceberg" {
-		t.Errorf("IcebergLocksPrefix = %q, want %q", IcebergLocksPrefix, "/iceberg")
+	if IcebergLocksPrefix != "/dray/v1/iceberg" {
+		t.Errorf("IcebergLocksPrefix = %q, want %q", IcebergLocksPrefix, "/dray/v1/iceberg")
 	}
 }
 
@@ -1176,9 +1176,9 @@ func TestWALStagingKeyPath(t *testing.T) {
 		walID  string
 		want   string
 	}{
-		{0, "wal-123", "/wal/staging/0/wal-123"},
-		{5, "abc-def-ghi", "/wal/staging/5/abc-def-ghi"},
-		{100, "uuid-1234", "/wal/staging/100/uuid-1234"},
+		{0, "wal-123", "/dray/v1/wal/staging/0/wal-123"},
+		{5, "abc-def-ghi", "/dray/v1/wal/staging/5/abc-def-ghi"},
+		{100, "uuid-1234", "/dray/v1/wal/staging/100/uuid-1234"},
 	}
 
 	for _, tc := range tests {
@@ -1191,7 +1191,7 @@ func TestWALStagingKeyPath(t *testing.T) {
 
 func TestWALStagingDomainPrefix(t *testing.T) {
 	got := WALStagingDomainPrefix(5)
-	want := "/wal/staging/5/"
+	want := "/dray/v1/wal/staging/5/"
 	if got != want {
 		t.Errorf("WALStagingDomainPrefix() = %q, want %q", got, want)
 	}
@@ -1207,13 +1207,13 @@ func TestParseWALStagingKey(t *testing.T) {
 	}{
 		{
 			name:       "valid",
-			key:        "/wal/staging/5/wal-123",
+			key:        "/dray/v1/wal/staging/5/wal-123",
 			wantDomain: 5,
 			wantWAL:    "wal-123",
 		},
 		{
 			name:       "domain_zero",
-			key:        "/wal/staging/0/abc",
+			key:        "/dray/v1/wal/staging/0/abc",
 			wantDomain: 0,
 			wantWAL:    "abc",
 		},
@@ -1224,17 +1224,17 @@ func TestParseWALStagingKey(t *testing.T) {
 		},
 		{
 			name:    "invalid_domain",
-			key:     "/wal/staging/abc/wal-123",
+			key:     "/dray/v1/wal/staging/abc/wal-123",
 			wantErr: true,
 		},
 		{
 			name:    "negative_domain",
-			key:     "/wal/staging/-1/wal-123",
+			key:     "/dray/v1/wal/staging/-1/wal-123",
 			wantErr: true,
 		},
 		{
 			name:    "empty_wal",
-			key:     "/wal/staging/5/",
+			key:     "/dray/v1/wal/staging/5/",
 			wantErr: true,
 		},
 	}
@@ -1262,7 +1262,7 @@ func TestParseWALStagingKey(t *testing.T) {
 
 func TestWALObjectKeyPath(t *testing.T) {
 	got := WALObjectKeyPath(3, "wal-uuid")
-	want := "/wal/objects/3/wal-uuid"
+	want := "/dray/v1/wal/objects/3/wal-uuid"
 	if got != want {
 		t.Errorf("WALObjectKeyPath() = %q, want %q", got, want)
 	}
@@ -1270,7 +1270,7 @@ func TestWALObjectKeyPath(t *testing.T) {
 
 func TestWALObjectsDomainPrefix(t *testing.T) {
 	got := WALObjectsDomainPrefix(3)
-	want := "/wal/objects/3/"
+	want := "/dray/v1/wal/objects/3/"
 	if got != want {
 		t.Errorf("WALObjectsDomainPrefix() = %q, want %q", got, want)
 	}
@@ -1286,18 +1286,18 @@ func TestParseWALObjectKey(t *testing.T) {
 	}{
 		{
 			name:       "valid",
-			key:        "/wal/objects/3/wal-uuid",
+			key:        "/dray/v1/wal/objects/3/wal-uuid",
 			wantDomain: 3,
 			wantWAL:    "wal-uuid",
 		},
 		{
 			name:    "wrong_prefix",
-			key:     "/wal/staging/3/wal-uuid",
+			key:     "/dray/v1/wal/staging/3/wal-uuid",
 			wantErr: true,
 		},
 		{
 			name:    "invalid_domain",
-			key:     "/wal/objects/abc/wal-uuid",
+			key:     "/dray/v1/wal/objects/abc/wal-uuid",
 			wantErr: true,
 		},
 	}
@@ -1325,7 +1325,7 @@ func TestParseWALObjectKey(t *testing.T) {
 
 func TestWALGCKeyPath(t *testing.T) {
 	got := WALGCKeyPath(7, "wal-gc-id")
-	want := "/wal/gc/7/wal-gc-id"
+	want := "/dray/v1/wal/gc/7/wal-gc-id"
 	if got != want {
 		t.Errorf("WALGCKeyPath() = %q, want %q", got, want)
 	}
@@ -1333,7 +1333,7 @@ func TestWALGCKeyPath(t *testing.T) {
 
 func TestWALGCDomainPrefix(t *testing.T) {
 	got := WALGCDomainPrefix(7)
-	want := "/wal/gc/7/"
+	want := "/dray/v1/wal/gc/7/"
 	if got != want {
 		t.Errorf("WALGCDomainPrefix() = %q, want %q", got, want)
 	}
@@ -1349,13 +1349,13 @@ func TestParseWALGCKey(t *testing.T) {
 	}{
 		{
 			name:       "valid",
-			key:        "/wal/gc/7/wal-gc-id",
+			key:        "/dray/v1/wal/gc/7/wal-gc-id",
 			wantDomain: 7,
 			wantWAL:    "wal-gc-id",
 		},
 		{
 			name:    "wrong_prefix",
-			key:     "/wal/objects/7/wal-gc-id",
+			key:     "/dray/v1/wal/objects/7/wal-gc-id",
 			wantErr: true,
 		},
 	}
@@ -1387,7 +1387,7 @@ func TestParseWALGCKey(t *testing.T) {
 
 func TestCompactionLockKeyPath(t *testing.T) {
 	got := CompactionLockKeyPath("stream-123")
-	want := "/compaction/locks/stream-123"
+	want := "/dray/v1/compaction/locks/stream-123"
 	if got != want {
 		t.Errorf("CompactionLockKeyPath() = %q, want %q", got, want)
 	}
@@ -1395,7 +1395,7 @@ func TestCompactionLockKeyPath(t *testing.T) {
 
 func TestCompactionJobKeyPath(t *testing.T) {
 	got := CompactionJobKeyPath("stream-123", "job-456")
-	want := "/compaction/stream-123/jobs/job-456"
+	want := "/dray/v1/compaction/stream-123/jobs/job-456"
 	if got != want {
 		t.Errorf("CompactionJobKeyPath() = %q, want %q", got, want)
 	}
@@ -1403,7 +1403,7 @@ func TestCompactionJobKeyPath(t *testing.T) {
 
 func TestCompactionJobsForStreamPrefix(t *testing.T) {
 	got := CompactionJobsForStreamPrefix("stream-123")
-	want := "/compaction/stream-123/jobs/"
+	want := "/dray/v1/compaction/stream-123/jobs/"
 	if got != want {
 		t.Errorf("CompactionJobsForStreamPrefix() = %q, want %q", got, want)
 	}
@@ -1419,7 +1419,7 @@ func TestParseCompactionJobKey(t *testing.T) {
 	}{
 		{
 			name:       "valid",
-			key:        "/compaction/stream-123/jobs/job-456",
+			key:        "/dray/v1/compaction/stream-123/jobs/job-456",
 			wantStream: "stream-123",
 			wantJob:    "job-456",
 		},
@@ -1430,17 +1430,17 @@ func TestParseCompactionJobKey(t *testing.T) {
 		},
 		{
 			name:    "missing_jobs",
-			key:     "/compaction/stream-123/job-456",
+			key:     "/dray/v1/compaction/stream-123/job-456",
 			wantErr: true,
 		},
 		{
 			name:    "empty_stream",
-			key:     "/compaction//jobs/job-456",
+			key:     "/dray/v1/compaction//jobs/job-456",
 			wantErr: true,
 		},
 		{
 			name:    "empty_job",
-			key:     "/compaction/stream-123/jobs/",
+			key:     "/dray/v1/compaction/stream-123/jobs/",
 			wantErr: true,
 		},
 	}
@@ -1472,7 +1472,7 @@ func TestParseCompactionJobKey(t *testing.T) {
 
 func TestIcebergLockKeyPath(t *testing.T) {
 	got := IcebergLockKeyPath("my-topic")
-	want := "/iceberg/my-topic/lock"
+	want := "/dray/v1/iceberg/my-topic/lock"
 	if got != want {
 		t.Errorf("IcebergLockKeyPath() = %q, want %q", got, want)
 	}
@@ -1487,12 +1487,12 @@ func TestParseIcebergLockKey(t *testing.T) {
 	}{
 		{
 			name:      "valid",
-			key:       "/iceberg/my-topic/lock",
+			key:       "/dray/v1/iceberg/my-topic/lock",
 			wantTopic: "my-topic",
 		},
 		{
 			name:      "topic_with_dash",
-			key:       "/iceberg/orders-v2/lock",
+			key:       "/dray/v1/iceberg/orders-v2/lock",
 			wantTopic: "orders-v2",
 		},
 		{
@@ -1502,17 +1502,17 @@ func TestParseIcebergLockKey(t *testing.T) {
 		},
 		{
 			name:    "missing_lock",
-			key:     "/iceberg/my-topic",
+			key:     "/dray/v1/iceberg/my-topic",
 			wantErr: true,
 		},
 		{
 			name:    "wrong_suffix",
-			key:     "/iceberg/my-topic/locks",
+			key:     "/dray/v1/iceberg/my-topic/locks",
 			wantErr: true,
 		},
 		{
 			name:    "empty_topic",
-			key:     "/iceberg//lock",
+			key:     "/dray/v1/iceberg//lock",
 			wantErr: true,
 		},
 	}

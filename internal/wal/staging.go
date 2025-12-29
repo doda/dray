@@ -15,7 +15,7 @@ import (
 )
 
 // StagingMarker contains metadata about a WAL object that is being written.
-// It is stored at /wal/staging/<metaDomain>/<walId> before the WAL object
+// It is stored at /dray/v1/wal/staging/<metaDomain>/<walId> before the WAL object
 // is fully committed. Per spec section 9.7, orphaned WAL objects (where
 // staging marker exists but no commit) can be safely garbage collected
 // after wal.orphan_ttl (default 24h).

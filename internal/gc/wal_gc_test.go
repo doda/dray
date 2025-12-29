@@ -468,7 +468,7 @@ func TestWALGCWorker_IntegrationWithWALRefCount(t *testing.T) {
 	ctx := context.Background()
 
 	// Simulate what happens when compaction decrements a WAL refcount to 0
-	// The compaction process creates a GC marker at /wal/gc/<metaDomain>/<walId>
+	// The compaction process creates a GC marker at /dray/v1/wal/gc/<metaDomain>/<walId>
 	walID := "wal-compacted-001"
 	walPath := "wal/domain=0/" + walID + ".wo"
 

@@ -2784,7 +2784,7 @@
       "Adjust any callers or tests relying on old prefixes",
       "Run keyspace tests and update snapshots/fixtures as needed"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/metadata/keys/keys.go"

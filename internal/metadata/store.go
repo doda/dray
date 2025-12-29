@@ -336,8 +336,8 @@ type MetadataStore interface {
 	//
 	// Use this for:
 	//   - Broker registration (/dray/v1/cluster/<id>/brokers/<brokerId>)
-	//   - Group coordinator leases (/groups/<groupId>/lease)
-	//   - Compaction locks (/compaction/locks/<streamId>)
+	//   - Group coordinator leases (/dray/v1/groups/<groupId>/lease)
+	//   - Compaction locks (/dray/v1/compaction/locks/<streamId>)
 	PutEphemeral(ctx context.Context, key string, value []byte, opts ...EphemeralOption) (Version, error)
 
 	// Close releases resources held by the store.

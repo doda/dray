@@ -399,12 +399,12 @@ func TestExtractWALPathFromNotification(t *testing.T) {
 	}{
 		{
 			name:     "WAL object key",
-			key:      "/wal/objects/5/abc123",
+			key:      keys.WALObjectsPrefix + "/5/abc123",
 			expected: "wal/5/abc123.wal",
 		},
 		{
 			name:     "WAL GC key",
-			key:      "/wal/gc/3/def456",
+			key:      keys.WALGCPrefix + "/3/def456",
 			expected: "wal/3/def456.wal",
 		},
 		{
@@ -414,7 +414,7 @@ func TestExtractWALPathFromNotification(t *testing.T) {
 		},
 		{
 			name:     "partial WAL key",
-			key:      "/wal/objects/5",
+			key:      keys.WALObjectsPrefix + "/5",
 			expected: "",
 		},
 	}

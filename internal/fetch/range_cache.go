@@ -363,8 +363,8 @@ func (c *ObjectRangeCache) processNotifications(stream metadata.NotificationStre
 		}
 
 		// Check if this is a WAL GC notification (WAL object being deleted)
-		// GC keys: /wal/gc/<metaDomain>/<walId>
-		// WAL object keys: /wal/objects/<metaDomain>/<walId>
+		// GC keys: /dray/v1/wal/gc/<metaDomain>/<walId>
+		// WAL object keys: /dray/v1/wal/objects/<metaDomain>/<walId>
 		if notification.Deleted {
 			walPath := extractWALPathFromNotification(notification.Key)
 			if walPath != "" {
@@ -378,7 +378,7 @@ func (c *ObjectRangeCache) processNotifications(stream metadata.NotificationStre
 // Returns empty string if the key is not a WAL-related key.
 func extractWALPathFromNotification(key string) string {
 	// Handle WAL object deletion notifications
-	// Key format: /wal/objects/<metaDomain>/<walId>
+	// Key format: /dray/v1/wal/objects/<metaDomain>/<walId>
 	// The actual object path in S3 would be: wal/<metaDomain>/<walId>.wal
 	if strings.HasPrefix(key, keys.WALObjectsPrefix+"/") {
 		suffix := strings.TrimPrefix(key, keys.WALObjectsPrefix+"/")
@@ -391,7 +391,7 @@ func extractWALPathFromNotification(key string) string {
 	}
 
 	// Handle WAL GC marker notifications
-	// Key format: /wal/gc/<metaDomain>/<walId>
+	// Key format: /dray/v1/wal/gc/<metaDomain>/<walId>
 	if strings.HasPrefix(key, keys.WALGCPrefix+"/") {
 		suffix := strings.TrimPrefix(key, keys.WALGCPrefix+"/")
 		parts := strings.SplitN(suffix, "/", 2)

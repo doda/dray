@@ -1041,3 +1041,14 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh (pass)
 - Challenge: ./init.sh timed out at 120s on first run.
 - Resolution: reran ./init.sh with 600s timeout to completion.
+[2025-12-29T19:19:56Z] Completed enforce-dray-v1-keyspace-prefix: PASS
+- Updated WAL/GC/compaction/iceberg metadata key prefixes to include /dray/v1 and refreshed related comments.
+- Adjusted keyspace tests and prefix-based checks to use new roots and keys constants.
+- Key files changed: internal/metadata/keys/keys.go
+- Key files changed: internal/metadata/keys/keys_test.go
+- Key files changed: internal/produce/commit_test.go
+- Key files changed: tests/integration/invariant_i3_test.go
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/metadata/keys -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/produce -run Committer -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./tests/integration -run TestInvariantI3_CrashAfterWALBeforeMetadata -count=1 (pass)
+- Challenges: none

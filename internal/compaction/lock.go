@@ -5,7 +5,7 @@
 // at any time. Locks are implemented using Oxia ephemeral keys, which are
 // automatically deleted when the compactor's session ends (crash or disconnect).
 //
-// Key format: /compaction/locks/<streamId>
+// Key format: /dray/v1/compaction/locks/<streamId>
 package compaction
 
 import (
@@ -34,7 +34,7 @@ var (
 )
 
 // Lock represents the ephemeral lock for stream compaction.
-// The lock is stored at /compaction/locks/<streamId>.
+// The lock is stored at /dray/v1/compaction/locks/<streamId>.
 type Lock struct {
 	// StreamID is the stream this lock is for.
 	StreamID string `json:"streamId"`

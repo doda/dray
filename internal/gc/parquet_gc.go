@@ -13,7 +13,7 @@ import (
 	"github.com/dray-io/dray/internal/objectstore"
 )
 
-// ParquetGCRecord is stored at /parquet/gc/<streamId>/<parquetId> when a
+// ParquetGCRecord is stored at /dray/v1/parquet/gc/<streamId>/<parquetId> when a
 // Parquet file is ready for garbage collection (after compaction rewrite).
 type ParquetGCRecord struct {
 	// Path is the object storage path of the Parquet file.
