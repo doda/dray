@@ -3,10 +3,12 @@ package integration
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/dray-io/dray/internal/groups"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/protocol"
+	"github.com/dray-io/dray/internal/topics"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
@@ -465,6 +467,102 @@ func TestOffsetRoundtrip_MultipleGroups(t *testing.T) {
 	}
 
 	t.Log("Multiple groups have independent offsets")
+}
+
+// TestOffsetRoundtrip_KIP848MemberEpochCommit tests that KIP-848 consumer
+// groups can commit offsets using the member epoch in generation_id_or_member_epoch.
+func TestOffsetRoundtrip_KIP848MemberEpochCommit(t *testing.T) {
+	ctx := context.Background()
+
+	metaStore := metadata.NewMockStore()
+	groupStore := groups.NewStore(metaStore)
+	topicStore := topics.NewStore(metaStore)
+
+	heartbeatHandler := protocol.NewConsumerGroupHeartbeatHandler(groupStore, nil, topicStore)
+	commitHandler := protocol.NewOffsetCommitHandler(groupStore, nil)
+	fetchHandler := protocol.NewOffsetFetchHandler(groupStore, nil)
+
+	groupID := "kip848-offset-commit-group"
+	topicName := "kip848-offset-commit-topic"
+	partition := int32(0)
+	offset := int64(4242)
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           topicName,
+		PartitionCount: 3,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	// Step 1: Create consumer group via KIP-848 heartbeat and obtain member epoch.
+	heartbeatReq := kmsg.NewPtrConsumerGroupHeartbeatRequest()
+	heartbeatReq.Group = groupID
+	heartbeatReq.MemberID = ""
+	heartbeatReq.MemberEpoch = 0
+	heartbeatReq.SubscribedTopicNames = []string{topicName}
+
+	heartbeatResp := heartbeatHandler.Handle(ctx, 0, heartbeatReq)
+	if heartbeatResp.ErrorCode != 0 {
+		t.Fatalf("heartbeat failed with error code %d", heartbeatResp.ErrorCode)
+	}
+	if heartbeatResp.MemberID == nil || *heartbeatResp.MemberID == "" {
+		t.Fatal("expected non-empty member ID")
+	}
+
+	memberID := *heartbeatResp.MemberID
+	memberEpoch := heartbeatResp.MemberEpoch
+	t.Logf("joined consumer group: memberID=%s epoch=%d", memberID, memberEpoch)
+
+	// Step 2: Commit offsets using member epoch semantics.
+	commitReq := kmsg.NewPtrOffsetCommitRequest()
+	commitReq.SetVersion(9)
+	commitReq.Group = groupID
+	commitReq.Generation = memberEpoch
+	commitReq.MemberID = memberID
+
+	commitTopic := kmsg.NewOffsetCommitRequestTopic()
+	commitTopic.Topic = topicName
+
+	commitPartition := kmsg.NewOffsetCommitRequestTopicPartition()
+	commitPartition.Partition = partition
+	commitPartition.Offset = offset
+	commitTopic.Partitions = append(commitTopic.Partitions, commitPartition)
+	commitReq.Topics = append(commitReq.Topics, commitTopic)
+
+	commitResp := commitHandler.Handle(ctx, 9, commitReq)
+	if len(commitResp.Topics) == 0 || len(commitResp.Topics[0].Partitions) == 0 {
+		t.Fatal("expected partitions in commit response")
+	}
+	if commitResp.Topics[0].Partitions[0].ErrorCode != 0 {
+		t.Fatalf("commit failed with error code %d", commitResp.Topics[0].Partitions[0].ErrorCode)
+	}
+
+	// Step 3: Fetch offsets and assert commit behavior.
+	fetchReq := kmsg.NewPtrOffsetFetchRequest()
+	fetchReq.SetVersion(9)
+	fetchReq.Group = groupID
+
+	fetchTopic := kmsg.NewOffsetFetchRequestTopic()
+	fetchTopic.Topic = topicName
+	fetchTopic.Partitions = []int32{partition}
+	fetchReq.Topics = append(fetchReq.Topics, fetchTopic)
+
+	fetchResp := fetchHandler.Handle(ctx, 9, fetchReq)
+	if len(fetchResp.Topics) == 0 || len(fetchResp.Topics[0].Partitions) == 0 {
+		t.Fatal("expected partitions in fetch response")
+	}
+
+	fetchedPartition := fetchResp.Topics[0].Partitions[0]
+	if fetchedPartition.ErrorCode != 0 {
+		t.Fatalf("fetch failed with error code %d", fetchedPartition.ErrorCode)
+	}
+	if fetchedPartition.Offset != offset {
+		t.Fatalf("expected offset %d, got %d", offset, fetchedPartition.Offset)
+	}
+
+	t.Logf("offset commit roundtrip succeeded with epoch %d", memberEpoch)
 }
 
 // TestOffsetRoundtrip_LeaderEpochV5Plus tests that leader epoch is preserved

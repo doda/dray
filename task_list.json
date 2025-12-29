@@ -3026,7 +3026,7 @@
       "Commit offsets using generation_id_or_member_epoch set to member epoch",
       "Fetch offsets and assert commit behavior; rerun after fixes"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "tests/integration/offset_roundtrip_test.go"

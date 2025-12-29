@@ -1243,3 +1243,12 @@ Start with project-setup, then follow spec phases:
 - Challenge: init.sh failed with concurrent map read/write in compaction integration test.
 - Resolution: added RWMutex to compactionTestObjectStore map access.
 - Follow-ups: none
+[2025-12-29T22:50:18Z] Completed test-kip848-offset-commit: PASS
+- Added KIP-848 offset commit roundtrip integration test using ConsumerGroupHeartbeat member epoch semantics.
+- Files changed: tests/integration/offset_roundtrip_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./tests/integration -run TestOffsetRoundtrip_KIP848MemberEpochCommit -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: none
+- Resolution: none
+- Follow-ups: none
