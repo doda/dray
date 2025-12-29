@@ -170,35 +170,25 @@ func (c *Committer) commitMetadata(ctx context.Context, domain metadata.MetaDoma
 		StreamResults: make(map[uint64]*StreamResult),
 	}
 
-	// We need to execute a transaction for each stream in the chunks.
-	// Per spec 9.2, all streams in the same MetaDomain should be committed atomically.
-	// However, Oxia transactions are scoped to a single partition key.
-	// For now, we process each stream in its own transaction.
-	// TODO: If Oxia supports multi-key transactions within a domain, use that.
+	scopeKey := keys.WALObjectsDomainPrefix(int(domain))
+	err := c.metaStore.Txn(ctx, scopeKey, func(txn metadata.Txn) error {
+		for _, chunkOffset := range writeResult.ChunkOffsets {
+			streamID := chunkOffset.StreamID
 
-	// Process each stream
-	for _, chunkOffset := range writeResult.ChunkOffsets {
-		streamID := chunkOffset.StreamID
+			pc := chunks[streamID]
+			if pc == nil {
+				continue
+			}
 
-		pc := chunks[streamID]
-		if pc == nil {
-			continue
-		}
+			streamIDStr := pc.streamIDStr
 
-		// Use the original string stream ID for metadata lookups
-		streamIDStr := pc.streamIDStr
+			var chunkSize int64
+			for _, batch := range pc.batches {
+				chunkSize += int64(len(batch.Data))
+			}
 
-		var chunkSize int64
-		for _, batch := range pc.batches {
-			chunkSize += int64(len(batch.Data))
-		}
+			hwmKey := keys.HwmKeyPath(streamIDStr)
 
-		// Execute transaction for this stream
-		hwmKey := keys.HwmKeyPath(streamIDStr)
-		var sr StreamResult
-
-		err := c.metaStore.Txn(ctx, hwmKey, func(txn metadata.Txn) error {
-			// Step 1: Read current HWM with version
 			hwmValue, hwmVersion, err := txn.Get(hwmKey)
 			if err != nil {
 				if errors.Is(err, metadata.ErrKeyNotFound) {
@@ -212,21 +202,21 @@ func (c *Committer) commitMetadata(ctx context.Context, domain metadata.MetaDoma
 				return err
 			}
 
-			// Step 2: Allocate offset range
 			startOffset := currentHWM
 			endOffset := currentHWM + int64(chunkOffset.RecordCount)
 
-			// Step 3: Calculate cumulative size
 			prevCumulativeSize := int64(0)
-			prefix := keys.OffsetIndexPrefix(streamIDStr)
-			entries, err := c.metaStore.List(ctx, prefix, "", 0)
+			startKey, err := keys.OffsetIndexStartKey(streamIDStr, currentHWM)
+			if err != nil {
+				return err
+			}
+			entries, err := c.metaStore.List(ctx, startKey, "", 1)
 			if err != nil {
 				return err
 			}
 			if len(entries) > 0 {
-				lastEntry := entries[len(entries)-1]
 				var lastIndexEntry index.IndexEntry
-				if err := json.Unmarshal(lastEntry.Value, &lastIndexEntry); err != nil {
+				if err := json.Unmarshal(entries[0].Value, &lastIndexEntry); err != nil {
 					return err
 				}
 				prevCumulativeSize = lastIndexEntry.CumulativeSize
@@ -234,13 +224,11 @@ func (c *Committer) commitMetadata(ctx context.Context, domain metadata.MetaDoma
 
 			cumulativeSize := prevCumulativeSize + chunkSize
 
-			// Step 4: Create index key with zero-padded offsetEnd
 			indexKey, err := keys.OffsetIndexKeyPath(streamIDStr, endOffset, cumulativeSize)
 			if err != nil {
 				return err
 			}
 
-			// Step 5: Create IndexEntry value
 			entry := index.IndexEntry{
 				StreamID:       streamIDStr,
 				StartOffset:    startOffset,
@@ -270,50 +258,34 @@ func (c *Committer) commitMetadata(ctx context.Context, domain metadata.MetaDoma
 				return err
 			}
 
-			// Step 6: Atomically update hwm and create index entry
 			txn.PutWithVersion(hwmKey, index.EncodeHWM(endOffset), hwmVersion)
 			txn.Put(indexKey, entryBytes)
 
-			sr = StreamResult{
+			result.StreamResults[streamID] = &StreamResult{
 				StartOffset: startOffset,
 				EndOffset:   endOffset,
 			}
-
-			return nil
-		})
-
-		if err != nil {
-			return nil, fmt.Errorf("commit stream %d: %w", streamID, err)
 		}
 
-		result.StreamResults[streamID] = &sr
-	}
+		walObjectKey := keys.WALObjectKeyPath(int(domain), writeResult.WalID.String())
+		walRecord := WALObjectRecord{
+			Path:      writeResult.Path,
+			RefCount:  int32(len(chunks)),
+			CreatedAt: writeResult.CreatedAtUnixMs,
+			SizeBytes: writeResult.Size,
+		}
+		walRecordBytes, err := json.Marshal(walRecord)
+		if err != nil {
+			return fmt.Errorf("marshal WAL record: %w", err)
+		}
 
-	// Create WAL object record and delete staging marker
-	// This is done after all stream commits to ensure we only record the WAL
-	// if at least one stream commit succeeded.
-	walObjectKey := keys.WALObjectKeyPath(int(domain), writeResult.WalID.String())
-	walRecord := WALObjectRecord{
-		Path:      writeResult.Path,
-		RefCount:  int32(len(chunks)),
-		CreatedAt: writeResult.CreatedAtUnixMs,
-		SizeBytes: writeResult.Size,
-	}
-	walRecordBytes, err := json.Marshal(walRecord)
-	if err != nil {
-		return nil, fmt.Errorf("marshal WAL record: %w", err)
-	}
+		txn.Put(walObjectKey, walRecordBytes)
+		txn.Delete(writeResult.StagingKey)
 
-	// Write WAL object record
-	_, err = c.metaStore.Put(ctx, walObjectKey, walRecordBytes)
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("write WAL object record: %w", err)
-	}
-
-	// Delete staging marker
-	err = c.metaStore.Delete(ctx, writeResult.StagingKey)
-	if err != nil {
-		// Log but don't fail - staging marker will be cleaned up by GC
+		return nil, err
 	}
 
 	return result, nil

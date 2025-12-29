@@ -667,6 +667,60 @@ func TestCommitter_FullProduceCommitFlow(t *testing.T) {
 	}
 }
 
+func TestCommitter_MultiStream_UsesSingleTransaction(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	streamMgr := index.NewStreamManager(metaStore)
+	stream1ID := "test-stream-txn-1"
+	stream2ID := "test-stream-txn-2"
+
+	if err := streamMgr.CreateStreamWithID(ctx, stream1ID, "test-topic", 0); err != nil {
+		t.Fatalf("failed to create stream1: %v", err)
+	}
+	if err := streamMgr.CreateStreamWithID(ctx, stream2ID, "test-topic", 1); err != nil {
+		t.Fatalf("failed to create stream2: %v", err)
+	}
+
+	stream1Hash := parseStreamID(stream1ID)
+	stream2Hash := parseStreamID(stream2ID)
+
+	requests := []*PendingRequest{
+		{
+			StreamID:       stream1Hash,
+			StreamIDStr:    stream1ID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    5,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           50,
+			Done:           make(chan struct{}),
+		},
+		{
+			StreamID:       stream2Hash,
+			StreamIDStr:    stream2ID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch2")}},
+			RecordCount:    7,
+			MinTimestampMs: 1500,
+			MaxTimestampMs: 2500,
+			Size:           70,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	beforeTxns := metaStore.TxnCallCount()
+	if err := committer.Commit(ctx, 0, requests); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+	afterTxns := metaStore.TxnCallCount()
+	if afterTxns-beforeTxns != 1 {
+		t.Errorf("expected 1 metadata transaction for commit, got %d", afterTxns-beforeTxns)
+	}
+}
+
 // TestCommitter_MultiStreamOffsetAllocation tests that offsets are allocated
 // correctly when multiple requests for the same stream are committed together.
 func TestCommitter_MultiStreamOffsetAllocation(t *testing.T) {
@@ -1818,6 +1872,86 @@ func TestCommitter_MetadataCommitFailure_MultipleStreams(t *testing.T) {
 	}
 	if requests[1].Result != nil {
 		t.Error("request 1 Result should be nil on metadata failure")
+	}
+}
+
+func TestCommitter_MetadataCommitFailure_MultipleStreams_NoPartialVisibility(t *testing.T) {
+	metaStore := newFailingMetadataStore(0)
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	committer := NewCommitter(objStore, metaStore, CommitterConfig{NumDomains: 4})
+
+	streamMgr := index.NewStreamManager(metaStore.MockStore)
+	stream1ID := "test-stream-no-partial-1"
+	stream2ID := "test-stream-no-partial-2"
+
+	if err := streamMgr.CreateStreamWithID(ctx, stream1ID, "test-topic", 0); err != nil {
+		t.Fatalf("failed to create stream1: %v", err)
+	}
+	if err := streamMgr.CreateStreamWithID(ctx, stream2ID, "test-topic", 1); err != nil {
+		t.Fatalf("failed to create stream2: %v", err)
+	}
+
+	stream1Hash := parseStreamID(stream1ID)
+	stream2Hash := parseStreamID(stream2ID)
+
+	requests := []*PendingRequest{
+		{
+			StreamID:       stream1Hash,
+			StreamIDStr:    stream1ID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch1")}},
+			RecordCount:    10,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 2000,
+			Size:           100,
+			Done:           make(chan struct{}),
+		},
+		{
+			StreamID:       stream2Hash,
+			StreamIDStr:    stream2ID,
+			Batches:        []wal.BatchEntry{{Data: []byte("batch2")}},
+			RecordCount:    5,
+			MinTimestampMs: 1500,
+			MaxTimestampMs: 2500,
+			Size:           80,
+			Done:           make(chan struct{}),
+		},
+	}
+
+	err := committer.Commit(ctx, 0, requests)
+	if err == nil {
+		t.Fatal("expected commit to fail")
+	}
+
+	entries1, err := streamMgr.ListIndexEntries(ctx, stream1ID, 10)
+	if err != nil {
+		t.Fatalf("failed to list index entries for stream1: %v", err)
+	}
+	if len(entries1) != 0 {
+		t.Errorf("expected no index entries for stream1, got %d", len(entries1))
+	}
+
+	entries2, err := streamMgr.ListIndexEntries(ctx, stream2ID, 10)
+	if err != nil {
+		t.Fatalf("failed to list index entries for stream2: %v", err)
+	}
+	if len(entries2) != 0 {
+		t.Errorf("expected no index entries for stream2, got %d", len(entries2))
+	}
+
+	allKeys := metaStore.MockStore.GetAllKeys()
+	foundStaging := false
+	for _, key := range allKeys {
+		if strings.HasPrefix(key, keys.WALStagingPrefix+"/") {
+			foundStaging = true
+		}
+		if strings.HasPrefix(key, keys.WALObjectsPrefix+"/") {
+			t.Errorf("unexpected WAL object record after failed commit: %s", key)
+		}
+	}
+	if !foundStaging {
+		t.Error("expected staging marker to remain after failed commit")
 	}
 }
 

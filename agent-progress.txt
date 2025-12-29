@@ -1071,3 +1071,15 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh (pass)
 - Challenges: none
 - Follow-ups: none
+[2025-12-29T19:50:12Z] Completed atomic-wal-commit-metadomain: PASS
+- Implemented MetaDomain-scoped single transaction for commit metadata, including WAL object record creation and staging deletion.
+- Updated commit flow to allocate offsets and write index entries inside one txn for all streams in a WAL.
+- Added tests for single-transaction usage and multi-stream failure visibility/staging behavior.
+- Files changed: internal/produce/commit.go
+- Files changed: internal/produce/commit_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/produce -run "TestCommitter_MultiStream_UsesSingleTransaction|TestCommitter_MetadataCommitFailure_MultipleStreams_NoPartialVisibility" -count=1 (pass)
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: init.sh timed out at default 10s on first quick run.
+- Resolution: reran ./init.sh --quick with longer timeout to completion.

@@ -2829,7 +2829,7 @@
       "Move WAL object record creation and staging deletion inside the txn",
       "Add failure-path tests to ensure no partial visibility or orphaned staging for committed WALs"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/produce/commit.go"
