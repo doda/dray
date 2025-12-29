@@ -82,6 +82,8 @@ observability:
   metricsAddr: ":9091"
   logLevel: "debug"
   logFormat: "text"
+routing:
+  enforceOwner: true
 `
 	if err := os.WriteFile(configPath, []byte(yamlContent), 0644); err != nil {
 		t.Fatalf("failed to write test config file: %v", err)
@@ -115,6 +117,9 @@ observability:
 	}
 	if cfg.Observability.LogFormat != "text" {
 		t.Errorf("expected log format text, got %s", cfg.Observability.LogFormat)
+	}
+	if !cfg.Routing.EnforceOwner {
+		t.Error("expected enforceOwner to be enabled")
 	}
 }
 
@@ -174,12 +179,14 @@ metadata:
 	os.Setenv("DRAY_WAL_FLUSH_SIZE", "33554432")
 	os.Setenv("DRAY_COMPACTION_ENABLED", "false")
 	os.Setenv("DRAY_LOG_LEVEL", "warn")
+	os.Setenv("DRAY_ROUTING_ENFORCE_OWNER", "true")
 	defer func() {
 		os.Unsetenv("DRAY_LISTEN_ADDR")
 		os.Unsetenv("DRAY_ZONE_ID")
 		os.Unsetenv("DRAY_WAL_FLUSH_SIZE")
 		os.Unsetenv("DRAY_COMPACTION_ENABLED")
 		os.Unsetenv("DRAY_LOG_LEVEL")
+		os.Unsetenv("DRAY_ROUTING_ENFORCE_OWNER")
 	}()
 
 	cfg, err := LoadFromPath(configPath)
@@ -202,6 +209,9 @@ metadata:
 	}
 	if cfg.Observability.LogLevel != "warn" {
 		t.Errorf("expected log level warn, got %s", cfg.Observability.LogLevel)
+	}
+	if !cfg.Routing.EnforceOwner {
+		t.Error("expected routing enforceOwner to be enabled via env")
 	}
 }
 

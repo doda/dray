@@ -115,6 +115,77 @@ func TestFetchHandler_ValidateTopicAndPartition(t *testing.T) {
 	}
 }
 
+func TestFetchHandler_NonOwnerServeAnyway(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx, buf := newLogContext()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	if err := streamManager.CreateStreamWithID(ctx, result.Partitions[0].StreamID, "test-topic", 0); err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	fetcher := fetch.NewFetcher(NewMockObjectStore(), streamManager)
+	handler := NewFetchHandler(FetchHandlerConfig{
+		MaxBytes:       1024 * 1024,
+		LocalNodeID:    1,
+		EnforceOwner:   false,
+		LeaderSelector: staticLeaderSelector{leader: 2},
+	}, topicStore, fetcher, streamManager)
+
+	resp := handler.Handle(ctx, 12, buildFetchRequest("test-topic", 0, 0))
+	if resp.Topics[0].Partitions[0].ErrorCode != errNoError {
+		t.Fatalf("expected success, got error code %d", resp.Topics[0].Partitions[0].ErrorCode)
+	}
+
+	assertLogContains(t, buf, "affinity violation: fetch request handled by non-owner broker")
+}
+
+func TestFetchHandler_NonOwnerEnforced(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx, buf := newLogContext()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	if err := streamManager.CreateStreamWithID(ctx, result.Partitions[0].StreamID, "test-topic", 0); err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	fetcher := fetch.NewFetcher(NewMockObjectStore(), streamManager)
+	handler := NewFetchHandler(FetchHandlerConfig{
+		MaxBytes:       1024 * 1024,
+		LocalNodeID:    1,
+		EnforceOwner:   true,
+		LeaderSelector: staticLeaderSelector{leader: 2},
+	}, topicStore, fetcher, streamManager)
+
+	resp := handler.Handle(ctx, 12, buildFetchRequest("test-topic", 0, 0))
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != errNotLeaderOrFollower {
+		t.Fatalf("expected not leader error %d, got %d", errNotLeaderOrFollower, partResp.ErrorCode)
+	}
+
+	assertLogContains(t, buf, "affinity violation: fetch request handled by non-owner broker")
+}
+
 // TestFetchHandler_EmptyStream tests that fetch from an empty stream returns HWM=0.
 func TestFetchHandler_EmptyStream(t *testing.T) {
 	store := metadata.NewMockStore()

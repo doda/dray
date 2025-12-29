@@ -10,7 +10,9 @@ import (
 	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/fetch"
 	"github.com/dray-io/dray/internal/index"
+	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metrics"
+	"github.com/dray-io/dray/internal/server"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -25,6 +27,15 @@ const (
 type FetchHandlerConfig struct {
 	// MaxBytes is the default maximum bytes to return per partition.
 	MaxBytes int32
+
+	// LocalNodeID is the node ID of this broker.
+	LocalNodeID int32
+
+	// EnforceOwner rejects fetch requests routed to a non-affinity broker.
+	EnforceOwner bool
+
+	// LeaderSelector provides affinity routing for ownership checks.
+	LeaderSelector PartitionLeaderSelector
 }
 
 // FetchHandler handles Fetch (key 1) requests.
@@ -182,6 +193,24 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 	// Check partition state
 	if partMeta.State != "active" {
 		return h.buildPartitionError(version, partReq.Partition, errLeaderNotAvailable, 0)
+	}
+
+	if h.cfg.LeaderSelector != nil {
+		zoneID := server.ZoneIDFromContext(ctx)
+		leader, err := h.cfg.LeaderSelector.GetPartitionLeader(ctx, zoneID, topicName, partReq.Partition)
+		if err == nil && leader != -1 && leader != h.cfg.LocalNodeID {
+			logging.FromCtx(ctx).Warnf("affinity violation: fetch request handled by non-owner broker", map[string]any{
+				"topic":       topicName,
+				"partition":   partReq.Partition,
+				"streamId":    partMeta.StreamID,
+				"leaderNode":  leader,
+				"localNodeId": h.cfg.LocalNodeID,
+				"zoneId":      zoneID,
+			})
+			if h.cfg.EnforceOwner {
+				return h.buildPartitionError(version, partReq.Partition, errNotLeaderOrFollower, 0)
+			}
+		}
 	}
 
 	streamID := partMeta.StreamID

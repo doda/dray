@@ -291,6 +291,11 @@ func (b *Broker) createHandler() server.Handler {
 	// Create join group handler first since leave group depends on it
 	joinGroupHandler := protocol.NewJoinGroupHandler(protocol.JoinGroupHandlerConfig{}, b.groupStore, b.leaseManager)
 
+	var adapter *routing.AffinityListerAdapter
+	if b.registry != nil {
+		adapter = routing.NewAffinityListerAdapter(b.registry)
+	}
+
 	return &brokerHandler{
 		decoder: protocol.NewDecoder(),
 		encoder: protocol.NewEncoder(),
@@ -311,18 +316,29 @@ func (b *Broker) createHandler() server.Handler {
 					Port:   int32(port),
 					Rack:   cfg.Broker.ZoneID,
 				},
+				BrokerLister:   adapter,
+				LeaderSelector: adapter,
 			},
 			b.topicStore,
 		),
 
 		produce: protocol.NewProduceHandler(
-			protocol.ProduceHandlerConfig{},
+			protocol.ProduceHandlerConfig{
+				LocalNodeID:    b.opts.NodeID,
+				EnforceOwner:   cfg.Routing.EnforceOwner,
+				LeaderSelector: adapter,
+			},
 			b.topicStore,
 			b.buffer,
 		).WithEnforcer(enforcer),
 
 		fetch: protocol.NewFetchHandler(
-			protocol.FetchHandlerConfig{MaxBytes: 100 * 1024 * 1024},
+			protocol.FetchHandlerConfig{
+				MaxBytes:       100 * 1024 * 1024,
+				LocalNodeID:    b.opts.NodeID,
+				EnforceOwner:   cfg.Routing.EnforceOwner,
+				LeaderSelector: adapter,
+			},
 			b.topicStore,
 			fetcher,
 			b.streamManager,

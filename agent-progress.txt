@@ -996,3 +996,22 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh (pass)
 - Challenge: init.sh timed out at 120s and 240s while running go test ./...
 - Resolution: reran ./init.sh with a 600s timeout to completion.
+[2025-12-29T18:20:00Z] Completed non-owner-request-handling: PASS
+- Implemented routing.enforceOwner config and wired broker handlers to use affinity leader selection for ownership checks.
+- Added non-owner enforcement in produce/fetch handlers with not-leader errors and affinity violation logs.
+- Added protocol tests for non-owner serve-anyway vs enforce behavior with log assertions.
+- Files changed: internal/config/config.go
+- Files changed: internal/config/config_test.go
+- Files changed: cmd/drayd/broker.go
+- Files changed: internal/protocol/produce.go
+- Files changed: internal/protocol/fetch.go
+- Files changed: internal/protocol/produce_test.go
+- Files changed: internal/protocol/fetch_test.go
+- Files changed: internal/protocol/owner_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/config -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol -run NonOwner -count=1 (pass)
+- Tests: ./init.sh (pass)
+- Challenge: gofmt unavailable in PATH in this environment.
+- Resolution: verified gofmt absence; left formatting consistent with gofmt defaults.
+- Follow-ups: none

@@ -9,6 +9,7 @@ import (
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metrics"
 	"github.com/dray-io/dray/internal/produce"
+	"github.com/dray-io/dray/internal/server"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/dray-io/dray/internal/wal"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -26,6 +27,7 @@ const (
 	errInvalidProducerIDMapping    int16 = 49
 	errInvalidTransactionalState   int16 = 73
 	errTransactionalIDNotFound     int16 = 90
+	errNotLeaderOrFollower         int16 = 6
 )
 
 // ProduceHandlerConfig configures the produce handler.
@@ -36,6 +38,15 @@ type ProduceHandlerConfig struct {
 
 	// TimeoutMs is the default timeout for produce requests.
 	TimeoutMs int32
+
+	// LocalNodeID is the node ID of this broker.
+	LocalNodeID int32
+
+	// EnforceOwner rejects produce requests routed to a non-affinity broker.
+	EnforceOwner bool
+
+	// LeaderSelector provides affinity routing for ownership checks.
+	LeaderSelector PartitionLeaderSelector
 }
 
 // ProduceHandler handles Produce (key 0) requests.
@@ -179,6 +190,26 @@ func (h *ProduceHandler) processPartition(ctx context.Context, version int16, to
 		resp.ErrorCode = errLeaderNotAvailable
 		resp.BaseOffset = -1
 		return resp
+	}
+
+	if h.cfg.LeaderSelector != nil {
+		zoneID := server.ZoneIDFromContext(ctx)
+		leader, err := h.cfg.LeaderSelector.GetPartitionLeader(ctx, zoneID, topicMeta.Name, partData.Partition)
+		if err == nil && leader != -1 && leader != h.cfg.LocalNodeID {
+			logging.FromCtx(ctx).Warnf("affinity violation: produce request handled by non-owner broker", map[string]any{
+				"topic":       topicMeta.Name,
+				"partition":   partData.Partition,
+				"streamId":    partMeta.StreamID,
+				"leaderNode":  leader,
+				"localNodeId": h.cfg.LocalNodeID,
+				"zoneId":      zoneID,
+			})
+			if h.cfg.EnforceOwner {
+				resp.ErrorCode = errNotLeaderOrFollower
+				resp.BaseOffset = -1
+				return resp
+			}
+		}
 	}
 
 	// Parse record batches from the partition data

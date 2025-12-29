@@ -25,6 +25,7 @@ type Config struct {
 	WAL           WALConfig           `yaml:"wal"`
 	Compaction    CompactionConfig    `yaml:"compaction"`
 	Iceberg       IcebergConfig       `yaml:"iceberg"`
+	Routing       RoutingConfig       `yaml:"routing"`
 	Observability ObservabilityConfig `yaml:"observability"`
 }
 
@@ -88,6 +89,10 @@ type IcebergConfig struct {
 	Warehouse   string `yaml:"warehouse" env:"DRAY_ICEBERG_WAREHOUSE"`
 }
 
+type RoutingConfig struct {
+	EnforceOwner bool `yaml:"enforceOwner" env:"DRAY_ROUTING_ENFORCE_OWNER"`
+}
+
 type ObservabilityConfig struct {
 	MetricsAddr string `yaml:"metricsAddr" env:"DRAY_METRICS_ADDR"`
 	LogLevel    string `yaml:"logLevel" env:"DRAY_LOG_LEVEL"`
@@ -126,6 +131,9 @@ func Default() *Config {
 		Iceberg: IcebergConfig{
 			Enabled:     true,
 			CatalogType: "rest",
+		},
+		Routing: RoutingConfig{
+			EnforceOwner: false,
 		},
 		Observability: ObservabilityConfig{
 			MetricsAddr: ":9090",

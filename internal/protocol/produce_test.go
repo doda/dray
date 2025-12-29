@@ -162,6 +162,98 @@ func TestProduceHandler_RejectIdempotent(t *testing.T) {
 	}
 }
 
+func TestProduceHandler_NonOwnerServeAnyway(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx, buf := newLogContext()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{
+					StartOffset: 0,
+					EndOffset:   int64(req.RecordCount),
+				}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{
+		LocalNodeID:    1,
+		EnforceOwner:   false,
+		LeaderSelector: staticLeaderSelector{leader: 2},
+	}, topicStore, buffer)
+
+	resp := handler.Handle(ctx, 9, buildProduceRequest("test-topic", 0))
+	if resp.Topics[0].Partitions[0].ErrorCode != errNoError {
+		t.Fatalf("expected success, got error code %d", resp.Topics[0].Partitions[0].ErrorCode)
+	}
+
+	assertLogContains(t, buf, "affinity violation: produce request handled by non-owner broker")
+}
+
+func TestProduceHandler_NonOwnerEnforced(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx, buf := newLogContext()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{
+					StartOffset: 0,
+					EndOffset:   int64(req.RecordCount),
+				}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{
+		LocalNodeID:    1,
+		EnforceOwner:   true,
+		LeaderSelector: staticLeaderSelector{leader: 2},
+	}, topicStore, buffer)
+
+	resp := handler.Handle(ctx, 9, buildProduceRequest("test-topic", 0))
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != errNotLeaderOrFollower {
+		t.Fatalf("expected not leader error %d, got %d", errNotLeaderOrFollower, partResp.ErrorCode)
+	}
+	if partResp.BaseOffset != -1 {
+		t.Fatalf("expected BaseOffset -1, got %d", partResp.BaseOffset)
+	}
+
+	assertLogContains(t, buf, "affinity violation: produce request handled by non-owner broker")
+}
+
 // TestProduceHandler_RejectIdempotentVariousProducerIds tests rejection with various producer IDs.
 func TestProduceHandler_RejectIdempotentVariousProducerIds(t *testing.T) {
 	store := metadata.NewMockStore()
