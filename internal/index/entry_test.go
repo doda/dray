@@ -1,8 +1,11 @@
 package index
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dray-io/dray/internal/metadata"
+	"github.com/dray-io/dray/internal/objectstore"
 	"github.com/google/uuid"
 )
 
@@ -1908,6 +1912,58 @@ func TestLookupOffsetByTimestamp_WithBatchIndex(t *testing.T) {
 	}
 }
 
+func TestLookupOffsetByTimestamp_ScanFallback(t *testing.T) {
+	store := newIndexTestStore()
+	objStore := newMockObjectStore()
+	sm := NewStreamManager(store)
+	sm.SetTimestampScanner(&testTimestampScanner{store: objStore})
+	ctx := context.Background()
+
+	streamID, _ := sm.CreateStream(ctx, "test-topic", 0)
+
+	batch1 := buildBatchWithTimestamps([]int64{1000, 1100, 1200})
+	batch2 := buildBatchWithTimestamps([]int64{2000, 2100, 2200})
+	chunkData := buildChunkData(batch1, batch2)
+
+	walPath := "wal/test.wal"
+	if err := objStore.Put(ctx, walPath, bytes.NewReader(chunkData), int64(len(chunkData)), "application/octet-stream"); err != nil {
+		t.Fatalf("failed to write WAL data: %v", err)
+	}
+
+	_, err := sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    6,
+		ChunkSizeBytes: int64(len(chunkData)),
+		CreatedAtMs:    time.Now().UnixMilli(),
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 2200,
+		WalID:          "wal-1",
+		WalPath:        walPath,
+		ChunkOffset:    0,
+		ChunkLength:    uint32(len(chunkData)),
+	})
+	if err != nil {
+		t.Fatalf("failed to append entry: %v", err)
+	}
+
+	result, err := sm.LookupOffsetByTimestamp(ctx, streamID, 2100)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Found {
+		t.Fatal("expected to find offset")
+	}
+
+	if result.Offset != 4 {
+		t.Errorf("Offset = %d, expected %d", result.Offset, 4)
+	}
+
+	if result.Timestamp != 2100 {
+		t.Errorf("Timestamp = %d, expected %d", result.Timestamp, 2100)
+	}
+}
+
 // TestLookupOffsetByTimestamp_StreamNotFound tests error handling.
 func TestLookupOffsetByTimestamp_StreamNotFound(t *testing.T) {
 	store := newIndexTestStore()
@@ -1974,4 +2030,327 @@ func TestGetEarliestOffset_StreamNotFound(t *testing.T) {
 	if !errors.Is(err, ErrStreamNotFound) {
 		t.Errorf("expected ErrStreamNotFound, got %v", err)
 	}
+}
+
+type mockObjectStore struct {
+	objects map[string][]byte
+}
+
+func newMockObjectStore() *mockObjectStore {
+	return &mockObjectStore{
+		objects: make(map[string][]byte),
+	}
+}
+
+func (m *mockObjectStore) Put(_ context.Context, key string, reader io.Reader, _ int64, _ string) error {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return err
+	}
+	m.objects[key] = data
+	return nil
+}
+
+func (m *mockObjectStore) PutWithOptions(ctx context.Context, key string, reader io.Reader, size int64, contentType string, opts objectstore.PutOptions) error {
+	return m.Put(ctx, key, reader, size, contentType)
+}
+
+func (m *mockObjectStore) Get(_ context.Context, key string) (io.ReadCloser, error) {
+	data, ok := m.objects[key]
+	if !ok {
+		return nil, objectstore.ErrNotFound
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (m *mockObjectStore) GetRange(_ context.Context, key string, start, end int64) (io.ReadCloser, error) {
+	data, ok := m.objects[key]
+	if !ok {
+		return nil, objectstore.ErrNotFound
+	}
+	if start < 0 || start >= int64(len(data)) {
+		return nil, objectstore.ErrInvalidRange
+	}
+	if end < 0 || end >= int64(len(data)) {
+		end = int64(len(data)) - 1
+	}
+	return io.NopCloser(bytes.NewReader(data[start : end+1])), nil
+}
+
+func (m *mockObjectStore) Head(_ context.Context, key string) (objectstore.ObjectMeta, error) {
+	data, ok := m.objects[key]
+	if !ok {
+		return objectstore.ObjectMeta{}, objectstore.ErrNotFound
+	}
+	return objectstore.ObjectMeta{
+		Key:  key,
+		Size: int64(len(data)),
+	}, nil
+}
+
+func (m *mockObjectStore) Delete(_ context.Context, key string) error {
+	delete(m.objects, key)
+	return nil
+}
+
+func (m *mockObjectStore) List(_ context.Context, prefix string) ([]objectstore.ObjectMeta, error) {
+	var result []objectstore.ObjectMeta
+	for key, data := range m.objects {
+		if strings.HasPrefix(key, prefix) {
+			result = append(result, objectstore.ObjectMeta{
+				Key:  key,
+				Size: int64(len(data)),
+			})
+		}
+	}
+	return result, nil
+}
+
+func (m *mockObjectStore) Close() error {
+	return nil
+}
+
+type testTimestampScanner struct {
+	store objectstore.Store
+}
+
+func (s *testTimestampScanner) ScanOffsetByTimestamp(ctx context.Context, entry *IndexEntry, timestamp int64) (int64, int64, bool, error) {
+	if entry.FileType != FileTypeWAL {
+		return -1, -1, false, nil
+	}
+
+	start := int64(entry.ChunkOffset)
+	end := start + int64(entry.ChunkLength) - 1
+	rc, err := s.store.GetRange(ctx, entry.WalPath, start, end)
+	if err != nil {
+		return -1, -1, false, err
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return -1, -1, false, err
+	}
+
+	return scanChunkForTimestamp(data, entry.StartOffset, timestamp)
+}
+
+func buildChunkData(batches ...[]byte) []byte {
+	var buf bytes.Buffer
+	var lenBuf [4]byte
+	for _, batch := range batches {
+		binary.BigEndian.PutUint32(lenBuf[:], uint32(len(batch)))
+		buf.Write(lenBuf[:])
+		buf.Write(batch)
+	}
+	return buf.Bytes()
+}
+
+func buildBatchWithTimestamps(timestamps []int64) []byte {
+	firstTimestamp := timestamps[0]
+	maxTimestamp := timestamps[0]
+	var records bytes.Buffer
+
+	for i, ts := range timestamps {
+		if ts > maxTimestamp {
+			maxTimestamp = ts
+		}
+		writeTestRecord(&records, ts-firstTimestamp, int64(i))
+	}
+
+	recordsBytes := records.Bytes()
+	batchLength := 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4 + len(recordsBytes)
+	totalSize := 8 + 4 + batchLength
+
+	batch := make([]byte, totalSize)
+	offset := 0
+
+	binary.BigEndian.PutUint64(batch[offset:], 0)
+	offset += 8
+
+	binary.BigEndian.PutUint32(batch[offset:], uint32(batchLength))
+	offset += 4
+
+	binary.BigEndian.PutUint32(batch[offset:], 0)
+	offset += 4
+
+	batch[offset] = 2
+	offset++
+
+	binary.BigEndian.PutUint32(batch[offset:], 0)
+	offset += 4
+
+	binary.BigEndian.PutUint16(batch[offset:], 0)
+	offset += 2
+
+	binary.BigEndian.PutUint32(batch[offset:], uint32(len(timestamps)-1))
+	offset += 4
+
+	binary.BigEndian.PutUint64(batch[offset:], uint64(firstTimestamp))
+	offset += 8
+
+	binary.BigEndian.PutUint64(batch[offset:], uint64(maxTimestamp))
+	offset += 8
+
+	binary.BigEndian.PutUint64(batch[offset:], 0xFFFFFFFFFFFFFFFF)
+	offset += 8
+
+	binary.BigEndian.PutUint16(batch[offset:], 0xFFFF)
+	offset += 2
+
+	binary.BigEndian.PutUint32(batch[offset:], 0xFFFFFFFF)
+	offset += 4
+
+	binary.BigEndian.PutUint32(batch[offset:], uint32(len(timestamps)))
+	offset += 4
+
+	copy(batch[offset:], recordsBytes)
+
+	return batch
+}
+
+func writeTestRecord(buf *bytes.Buffer, timestampDelta int64, offsetDelta int64) {
+	var record bytes.Buffer
+	record.WriteByte(0)
+	record.Write(encodeVarint(timestampDelta))
+	record.Write(encodeVarint(offsetDelta))
+	record.Write(encodeVarint(-1))
+	record.Write(encodeVarint(-1))
+	record.Write(encodeVarint(0))
+
+	recordBytes := record.Bytes()
+	buf.Write(encodeVarint(int64(len(recordBytes))))
+	buf.Write(recordBytes)
+}
+
+func encodeVarint(v int64) []byte {
+	uv := uint64((v << 1) ^ (v >> 63))
+	var out []byte
+	for {
+		b := byte(uv & 0x7F)
+		uv >>= 7
+		if uv == 0 {
+			out = append(out, b)
+			break
+		}
+		out = append(out, b|0x80)
+	}
+	return out
+}
+
+func scanChunkForTimestamp(chunkData []byte, baseOffset int64, timestamp int64) (int64, int64, bool, error) {
+	offset := 0
+	currentOffset := baseOffset
+
+	for offset < len(chunkData) {
+		if offset+4 > len(chunkData) {
+			return -1, -1, false, errors.New("missing batch length")
+		}
+		batchLen := int(binary.BigEndian.Uint32(chunkData[offset : offset+4]))
+		offset += 4
+		if batchLen <= 0 || offset+batchLen > len(chunkData) {
+			return -1, -1, false, errors.New("invalid batch length")
+		}
+
+		batchData := chunkData[offset : offset+batchLen]
+		recordCount := int(binary.BigEndian.Uint32(batchData[57:61]))
+		recOffset, recTs, found, err := scanBatchForTimestamp(batchData, currentOffset, timestamp)
+		if err != nil {
+			return -1, -1, false, err
+		}
+		if found {
+			return recOffset, recTs, true, nil
+		}
+
+		currentOffset += int64(recordCount)
+		offset += batchLen
+	}
+
+	return -1, -1, false, nil
+}
+
+func scanBatchForTimestamp(batchData []byte, baseOffset int64, timestamp int64) (int64, int64, bool, error) {
+	if len(batchData) < 61 {
+		return -1, -1, false, errors.New("batch too small")
+	}
+	firstTimestamp := int64(binary.BigEndian.Uint64(batchData[27:35]))
+	maxTimestamp := int64(binary.BigEndian.Uint64(batchData[35:43]))
+	if timestamp <= firstTimestamp {
+		return baseOffset, firstTimestamp, true, nil
+	}
+	if timestamp > maxTimestamp {
+		return -1, -1, false, nil
+	}
+
+	recordsData := batchData[61:]
+	recordCount := int(binary.BigEndian.Uint32(batchData[57:61]))
+	pos := 0
+
+	for i := 0; i < recordCount; i++ {
+		if pos >= len(recordsData) {
+			return -1, -1, false, errors.New("records truncated")
+		}
+
+		recordLen, bytesRead := readVarint(recordsData[pos:])
+		if bytesRead <= 0 {
+			return -1, -1, false, errors.New("failed to read record length")
+		}
+		pos += bytesRead
+		if recordLen < 0 {
+			return -1, -1, false, errors.New("negative record length")
+		}
+		recordStart := pos
+
+		pos++
+		tsDelta, bytesRead := readVarint(recordsData[pos:])
+		if bytesRead <= 0 {
+			return -1, -1, false, errors.New("failed to read timestamp delta")
+		}
+		pos += bytesRead
+		offsetDelta, bytesRead := readVarint(recordsData[pos:])
+		if bytesRead <= 0 {
+			return -1, -1, false, errors.New("failed to read offset delta")
+		}
+		pos += bytesRead
+
+		recTimestamp := firstTimestamp + tsDelta
+		if recTimestamp >= timestamp {
+			return baseOffset + offsetDelta, recTimestamp, true, nil
+		}
+
+		remaining := int(recordLen) - (pos - recordStart)
+		if remaining < 0 || pos+remaining > len(recordsData) {
+			return -1, -1, false, errors.New("record length mismatch")
+		}
+		pos += remaining
+	}
+
+	return -1, -1, false, nil
+}
+
+func readVarint(data []byte) (int64, int) {
+	if len(data) == 0 {
+		return 0, 0
+	}
+
+	var uv uint64
+	var shift uint
+	var bytesRead int
+
+	for i := 0; i < len(data) && i < 10; i++ {
+		b := data[i]
+		uv |= uint64(b&0x7F) << shift
+		bytesRead++
+		if b&0x80 == 0 {
+			break
+		}
+		shift += 7
+	}
+
+	if bytesRead == 0 {
+		return 0, 0
+	}
+
+	v := int64((uv >> 1) ^ -(uv & 1))
+	return v, bytesRead
 }

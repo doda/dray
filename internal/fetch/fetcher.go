@@ -25,6 +25,9 @@ type Fetcher struct {
 
 // NewFetcher creates a new Fetcher.
 func NewFetcher(store objectstore.Store, streamManager *index.StreamManager) *Fetcher {
+	if store != nil && streamManager != nil {
+		streamManager.SetTimestampScanner(NewTimestampScanner(store))
+	}
 	return &Fetcher{
 		walReader:     NewWALReader(store),
 		parquetReader: NewParquetReader(store),
@@ -35,6 +38,9 @@ func NewFetcher(store objectstore.Store, streamManager *index.StreamManager) *Fe
 // NewFetcherWithCache creates a new Fetcher with an optional range cache for WAL reads.
 // If cache is non-nil, WAL chunk reads will be cached for faster subsequent access.
 func NewFetcherWithCache(store objectstore.Store, streamManager *index.StreamManager, cache *ObjectRangeCache) *Fetcher {
+	if store != nil && streamManager != nil {
+		streamManager.SetTimestampScanner(NewTimestampScanner(store))
+	}
 	return &Fetcher{
 		walReader:     NewWALReaderWithCache(store, cache),
 		parquetReader: NewParquetReader(store),

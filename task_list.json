@@ -2769,7 +2769,7 @@
       "Add unit test that demonstrates offset selection when timestamps are within an entry",
       "Run index tests for timestamp lookup"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/index/entry.go"

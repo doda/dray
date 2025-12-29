@@ -37,12 +37,19 @@ type StreamMeta struct {
 
 // StreamManager handles stream creation and management.
 type StreamManager struct {
-	store metadata.MetadataStore
+	store             metadata.MetadataStore
+	timestampScanner TimestampScanner
 }
 
 // NewStreamManager creates a new StreamManager with the given metadata store.
 func NewStreamManager(store metadata.MetadataStore) *StreamManager {
 	return &StreamManager{store: store}
+}
+
+// SetTimestampScanner configures a scanner used for timestamp-based offset lookups
+// when batch index data is unavailable.
+func (sm *StreamManager) SetTimestampScanner(scanner TimestampScanner) {
+	sm.timestampScanner = scanner
 }
 
 // CreateStream creates a new stream with a generated UUID.

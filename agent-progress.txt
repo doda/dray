@@ -1027,3 +1027,17 @@ Start with project-setup, then follow spec phases:
 - Challenge: go not in PATH for direct go test invocation.
 - Resolution: prefixed PATH with /usr/local/go/bin.
 - Follow-ups: none
+[2025-12-29T19:55:00Z] Completed fix-listoffsets-timestamp-scan-fallback: PASS
+- Implemented timestamp scanner interface on StreamManager and wired fetcher to set scanner when object store is available.
+- Added WAL/Parquet timestamp scan support in fetch package and fallback lookup logic for entries without batchIndex.
+- Added unit test to verify timestamp lookup selects offset inside entry when batchIndex is absent.
+- Files changed: internal/index/entry.go
+- Files changed: internal/index/stream.go
+- Files changed: internal/fetch/fetcher.go
+- Files changed: internal/fetch/timestamp_scan.go
+- Files changed: internal/fetch/timestamp_scanner.go
+- Files changed: internal/index/entry_test.go
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/index -run LookupOffsetByTimestamp -count=1 (pass)
+- Tests: ./init.sh (pass)
+- Challenge: ./init.sh timed out at 120s on first run.
+- Resolution: reran ./init.sh with 600s timeout to completion.

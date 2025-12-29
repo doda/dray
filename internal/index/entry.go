@@ -411,6 +411,12 @@ type TimestampLookupResult struct {
 	Found bool
 }
 
+// TimestampScanner scans storage entries to locate the first offset with
+// timestamp >= the requested timestamp when batch index data is unavailable.
+type TimestampScanner interface {
+	ScanOffsetByTimestamp(ctx context.Context, entry *IndexEntry, timestamp int64) (int64, int64, bool, error)
+}
+
 // LookupOffsetByTimestamp finds the first offset whose record timestamp >= the requested timestamp.
 // It uses a binary search over index entries using their min/max timestamps.
 //
@@ -502,7 +508,21 @@ func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID s
 		}
 	}
 
-	// Fallback: return start of entry if no batchIndex
+	if sm.timestampScanner != nil {
+		offset, ts, found, err := sm.timestampScanner.ScanOffsetByTimestamp(ctx, &entry, timestamp)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return &TimestampLookupResult{
+				Offset:    offset,
+				Timestamp: ts,
+				Found:     true,
+			}, nil
+		}
+	}
+
+	// Fallback: return start of entry if no batchIndex scanner available
 	return &TimestampLookupResult{
 		Offset:    entry.StartOffset,
 		Timestamp: entry.MinTimestampMs,
