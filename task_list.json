@@ -2744,5 +2744,412 @@
       "internal/routing/"
     ],
     "passes": true
+  },
+  {
+    "id": "fix-listoffsets-timestamp-nonmonotonic",
+    "category": "bug",
+    "description": "Correct timestamp-based offset lookup to handle non-monotonic timestamps across index entries by scanning or using per-entry min/max bounds safely.",
+    "steps": [
+      "Update lookup to use entry min/max timestamps and fall back to batchIndex or scan when non-monotonic ordering is possible",
+      "Add unit coverage for out-of-order timestamps and verify correct earliest offset >= timestamp",
+      "Run targeted index tests and fix any regressions"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/index/entry.go"
+    ]
+  },
+  {
+    "id": "fix-listoffsets-timestamp-scan-fallback",
+    "category": "bug",
+    "description": "When batchIndex is unavailable, scan records/batches to find the first offset >= timestamp instead of returning StartOffset unconditionally.",
+    "steps": [
+      "Implement scan fallback for WAL/Parquet entry without batchIndex to locate first matching record",
+      "Add unit test that demonstrates offset selection when timestamps are within an entry",
+      "Run index tests for timestamp lookup"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/index/entry.go"
+    ]
+  },
+  {
+    "id": "enforce-dray-v1-keyspace-prefix",
+    "category": "bug",
+    "description": "Prefix all metadata keys with /dray/v1 to match the declared keyspace root and avoid collisions.",
+    "steps": [
+      "Update key builders to include /dray/v1 for wal/gc/compaction/iceberg paths",
+      "Adjust any callers or tests relying on old prefixes",
+      "Run keyspace tests and update snapshots/fixtures as needed"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/metadata/keys/keys.go"
+    ]
+  },
+  {
+    "id": "optimize-index-append-cumulative-size",
+    "category": "performance",
+    "description": "Avoid listing all offset-index entries on each append by tracking cumulative size via last-entry read or stored hwm metadata.",
+    "steps": [
+      "Replace O(n) list with a single last-entry lookup or cached cumulative size value",
+      "Add benchmark or unit test asserting no full list on append",
+      "Run index append tests to confirm correctness"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/index/entry.go"
+    ]
+  },
+  {
+    "id": "test-timestamp-lookup-nonmonotonic",
+    "category": "test",
+    "description": "Add a test for LookupOffsetByTimestamp with non-monotonic timestamp ranges to validate earliest offset selection.",
+    "steps": [
+      "Create index entries with overlapping/out-of-order timestamps",
+      "Assert lookup returns first record >= requested timestamp",
+      "Run index test suite and fix failures"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/index/entry_test.go"
+    ]
+  },
+  {
+    "id": "atomic-wal-commit-metadomain",
+    "category": "bug",
+    "description": "Make WAL commit atomic per MetaDomain: allocate offsets, write index entries, create WAL object record, and delete staging marker in a single transaction.",
+    "steps": [
+      "Refactor commit path to use one MetaDomain-scoped transaction for all streams in a WAL",
+      "Move WAL object record creation and staging deletion inside the txn",
+      "Add failure-path tests to ensure no partial visibility or orphaned staging for committed WALs"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/produce/commit.go"
+    ]
+  },
+  {
+    "id": "wal-staging-after-object-write",
+    "category": "bug",
+    "description": "Write WAL staging markers only after the WAL object is durably written to object storage.",
+    "steps": [
+      "Reorder staging creation to follow successful WAL write",
+      "Add test that ensures staging is not created when WAL write fails",
+      "Run WAL staging tests"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/wal/staging.go"
+    ]
+  },
+  {
+    "id": "fix-wal-cumulative-size-chunklength",
+    "category": "bug",
+    "description": "Compute WAL cumulativeSize using exact chunkLength bytes, including batch length prefixes, per spec.",
+    "steps": [
+      "Update cumulative size calculation to include 4-byte length prefixes per batch and any chunk overhead",
+      "Add unit test validating cumulativeSize equals chunkLength",
+      "Run produce/commit tests"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/produce/commit.go"
+    ]
+  },
+  {
+    "id": "fix-wal-path-format",
+    "category": "bug",
+    "description": "Use the spec WAL path layout with wal/v1/zone=.../domain=.../date=YYYY/MM/DD/<walId>.wo.",
+    "steps": [
+      "Update WAL path builder to include zone, domain, date, and .wo extension",
+      "Adjust any downstream code that assumes old path format",
+      "Add test for path format correctness"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/wal/writer.go"
+    ]
+  },
+  {
+    "id": "validate-compression-and-deltas-fetch",
+    "category": "bug",
+    "description": "Validate record batch compression correctness and per-record offset deltas (0..n-1) during fetch patching.",
+    "steps": [
+      "Use franz-go batch parsing utilities to validate compression and record deltas",
+      "Update validation logic to reject malformed batches with correct errors/logs",
+      "Add unit tests with malformed offset deltas and corrupted compressed payloads"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/fetch/patching.go"
+    ]
+  },
+  {
+    "id": "parquet-rowgroup-range-read",
+    "category": "performance",
+    "description": "Read only Parquet row groups covering the requested offset range instead of loading full files into memory.",
+    "steps": [
+      "Implement row-group selection by offset min/max statistics",
+      "Stream-read only selected row groups from object storage",
+      "Add perf/regression test to validate bounded memory usage on large files"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/fetch/parquet_reader.go"
+    ]
+  },
+  {
+    "id": "fix-wal-range-cache-invalidation-path",
+    "category": "bug",
+    "description": "Align WAL cache invalidation paths with the real WAL object path format to ensure cache entries are invalidated on GC.",
+    "steps": [
+      "Update invalidation path construction to match wal/v1/zone=.../domain=.../date=.../<walId>.wo",
+      "Add unit test verifying invalidation matches real WAL paths",
+      "Run fetch cache tests"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/fetch/range_cache.go"
+    ]
+  },
+  {
+    "id": "test-compressed-batch-validation",
+    "category": "test",
+    "description": "Add tests with real compressed Kafka batches to verify compression validation in fetch patching and produce parsing.",
+    "steps": [
+      "Generate real compressed batches (gzip/snappy/lz4/zstd) with franz-go",
+      "Corrupt payload to ensure validation detects errors",
+      "Run fetch/protocol tests and fix any failures"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/fetch/patching_test.go"
+    ]
+  },
+  {
+    "id": "compaction-refcount-decrement-atomic",
+    "category": "bug",
+    "description": "Decrement WAL refcount in the same transaction as index entry deletion during compaction swap.",
+    "steps": [
+      "Move refcount decrement into the index swap transaction",
+      "Ensure idempotent handling on retries and conflicts",
+      "Add unit test for refcount consistency after swap"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/compaction/swap.go"
+    ]
+  },
+  {
+    "id": "iceberg-aware-parquet-gc",
+    "category": "bug",
+    "description": "Prevent Parquet GC unless files are removed from Iceberg metadata when Iceberg is enabled.",
+    "steps": [
+      "Track Iceberg removal status in compaction job state or GC markers",
+      "Gate Parquet deletion on confirmed Iceberg removal when duality mode is enabled",
+      "Add integration test that fails if GC deletes files still referenced by Iceberg"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/gc/parquet_gc.go",
+      "internal/gc/retention.go"
+    ]
+  },
+  {
+    "id": "kip848-offset-commit-epoch-validation",
+    "category": "bug",
+    "description": "Handle generation_id_or_member_epoch correctly for consumer groups by validating member epoch and returning KIP-848 errors.",
+    "steps": [
+      "Differentiate classic vs consumer group in OffsetCommit handler",
+      "Validate member epoch for consumer groups and return protocol-appropriate errors",
+      "Add tests for consumer-group epoch validation and error codes"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/protocol/offset_commit.go"
+    ]
+  },
+  {
+    "id": "group-type-conversion-transactional",
+    "category": "reliability",
+    "description": "Make group type conversion check and update atomic to prevent races with concurrent joins.",
+    "steps": [
+      "Move emptiness check and type update into a single metadata transaction",
+      "Add a concurrency test simulating join during type conversion",
+      "Verify conversion only succeeds when group is empty"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/groups/store.go"
+    ]
+  },
+  {
+    "id": "enforce-offset-acls",
+    "category": "security",
+    "description": "Enforce ACL checks for OffsetCommit and OffsetFetch requests.",
+    "steps": [
+      "Wire ACL enforcer into offset handlers",
+      "Return GROUP_AUTHORIZATION_FAILED on denied access",
+      "Add tests for allowed/denied offset operations"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/protocol/offset_commit.go",
+      "internal/protocol/offset_fetch.go"
+    ]
+  },
+  {
+    "id": "test-kip848-offset-commit",
+    "category": "test",
+    "description": "Add integration tests for KIP-848 offset commit using member epoch semantics.",
+    "steps": [
+      "Create consumer-group via KIP-848 heartbeat and obtain member epoch",
+      "Commit offsets using generation_id_or_member_epoch set to member epoch",
+      "Fetch offsets and assert commit behavior; rerun after fixes"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "tests/integration/offset_roundtrip_test.go"
+    ]
+  },
+  {
+    "id": "fetch-logstartoffset-respects-earliest",
+    "category": "bug",
+    "description": "Return LogStartOffset based on earliest available offset, not always zero.",
+    "steps": [
+      "Compute earliest offset from index or retention state and set LogStartOffset accordingly",
+      "Add integration test that advances earliest offset via retention/compaction and asserts response",
+      "Run fetch handler tests"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/protocol/fetch.go"
+    ]
+  },
+  {
+    "id": "autocreate-topic-partitions-hwm",
+    "category": "bug",
+    "description": "Ensure auto-created topics also create partition stream entries and initialize hwm.",
+    "steps": [
+      "Create partition metadata and /streams/<streamId>/hwm on auto-create path",
+      "Add test verifying produce/fetch works after auto-create",
+      "Run metadata handler tests"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/protocol/metadata.go"
+    ]
+  },
+  {
+    "id": "delete-topics-use-configured-iceberg-namespace",
+    "category": "bug",
+    "description": "DeleteTopics must use configured Iceberg namespace instead of hardcoded [\"dray\"].",
+    "steps": [
+      "Read configured namespace when deleting Iceberg tables",
+      "Add test covering non-default namespace deletion",
+      "Run delete topics tests"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/protocol/delete_topics.go"
+    ]
+  },
+  {
+    "id": "produce-unsupported-feature-error-codes",
+    "category": "bug",
+    "description": "Return INVALID_REQUEST or UNSUPPORTED_VERSION when rejecting idempotent/transactional produce requests, per spec.",
+    "steps": [
+      "Update error code mapping for idempotent/transactional rejection",
+      "Add tests asserting correct error codes for rejected requests",
+      "Run produce handler tests"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/protocol/produce.go"
+    ]
+  },
+  {
+    "id": "produce-validate-crc-compression",
+    "category": "bug",
+    "description": "Validate record batch CRC and compression correctness in Produce parsing using franz-go utilities.",
+    "steps": [
+      "Integrate franz-go batch parsing for CRC and compression validation",
+      "Add unit tests with corrupted CRC and compressed payloads",
+      "Run produce validation tests"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/protocol/produce.go"
+    ]
+  },
+  {
+    "id": "test-fetch-logstartoffset",
+    "category": "test",
+    "description": "Add tests covering Fetch LogStartOffset after retention/compaction updates earliest offset.",
+    "steps": [
+      "Create data and simulate retention/compaction advancing earliest offset",
+      "Fetch and assert LogStartOffset equals earliest offset",
+      "Run fetch tests and fix failures"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/protocol"
+    ]
+  },
+  {
+    "id": "routing-affinity-uses-streamid",
+    "category": "bug",
+    "description": "Use streamId (not topic-partition) for affinity leader selection to match spec.",
+    "steps": [
+      "Update rendezvous hash input to streamId",
+      "Add test demonstrating stable affinity when streamId differs from topic/partition mapping",
+      "Run routing tests"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/routing/adapter.go"
+    ]
+  },
+  {
+    "id": "fix-routing-registry-race",
+    "category": "reliability",
+    "description": "Fix data race in routing registry publication/usage detected by the race detector.",
+    "steps": [
+      "Add synchronization around registry access or use atomic publication pattern",
+      "Add a race-focused test or rerun existing tests with -race to verify",
+      "Run routing tests with -race and confirm no data races"
+    ],
+    "passes": false,
+    "depends_on": [],
+    "scope": [
+      "internal/routing/broker.go"
+    ]
   }
 ]
