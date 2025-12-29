@@ -1227,3 +1227,19 @@ Start with project-setup, then follow spec phases:
 - Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./tests/property -run TestPropertyConcurrentMemberOperations -count=1 -timeout 60s (pass)
 - Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./internal/metadata/keys -count=1 (pass)
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass; initial run failed due to property test before retries)
+[2025-12-29T22:45:11Z] Completed enforce-offset-acls: PASS
+- Implemented ACL enforcement for OffsetCommit/OffsetFetch with group READ checks and broker wiring.
+- Added ACL allow/deny tests for offset commit/fetch and shared test enforcer helper.
+- Fixed compaction test object store map concurrency with RWMutex after init.sh panic.
+- Files changed: internal/protocol/offset_commit.go
+- Files changed: internal/protocol/offset_fetch.go
+- Files changed: internal/protocol/offset_commit_test.go
+- Files changed: internal/protocol/offset_fetch_test.go
+- Files changed: internal/protocol/acl_test.go
+- Files changed: cmd/drayd/broker.go
+- Files changed: tests/integration/compaction_fetch_consistency_test.go
+- Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./internal/protocol -run 'Offset(Commit|Fetch)Handler_ACLEnforcement' -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: init.sh failed with concurrent map read/write in compaction integration test.
+- Resolution: added RWMutex to compactionTestObjectStore map access.
+- Follow-ups: none

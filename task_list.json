@@ -3010,7 +3010,7 @@
       "Return GROUP_AUTHORIZATION_FAILED on denied access",
       "Add tests for allowed/denied offset operations"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/protocol/offset_commit.go",

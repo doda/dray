@@ -395,8 +395,8 @@ func (b *Broker) createHandler() server.Handler {
 		listGroups:    protocol.NewListGroupsHandler(b.groupStore),
 		deleteGroups:  protocol.NewDeleteGroupsHandler(b.groupStore, b.leaseManager, b.metaStore),
 
-		offsetCommit: protocol.NewOffsetCommitHandler(b.groupStore, b.leaseManager),
-		offsetFetch:  protocol.NewOffsetFetchHandler(b.groupStore, b.leaseManager),
+		offsetCommit: protocol.NewOffsetCommitHandler(b.groupStore, b.leaseManager).WithEnforcer(enforcer),
+		offsetFetch:  protocol.NewOffsetFetchHandler(b.groupStore, b.leaseManager).WithEnforcer(enforcer),
 
 		consumerGroupHeartbeat: protocol.NewConsumerGroupHeartbeatHandler(b.groupStore, b.leaseManager, b.topicStore),
 		consumerGroupDescribe:  protocol.NewConsumerGroupDescribeHandler(b.groupStore, b.leaseManager),

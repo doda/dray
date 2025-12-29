@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/groups"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -29,6 +30,7 @@ const (
 type OffsetCommitHandler struct {
 	store        *groups.Store
 	leaseManager *groups.LeaseManager
+	enforcer     *auth.Enforcer
 }
 
 // NewOffsetCommitHandler creates a new OffsetCommit handler.
@@ -37,6 +39,12 @@ func NewOffsetCommitHandler(store *groups.Store, leaseManager *groups.LeaseManag
 		store:        store,
 		leaseManager: leaseManager,
 	}
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *OffsetCommitHandler) WithEnforcer(enforcer *auth.Enforcer) *OffsetCommitHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // Handle processes an OffsetCommit request.
@@ -49,6 +57,13 @@ func (h *OffsetCommitHandler) Handle(ctx context.Context, version int16, req *km
 	// Validate group ID
 	if req.Group == "" {
 		return h.buildErrorResponse(version, req, errOffsetCommitInvalidGroupID)
+	}
+
+	// Check ACL before processing - need READ permission on group
+	if h.enforcer != nil {
+		if errCode := h.enforcer.AuthorizeGroupFromCtx(ctx, req.Group, auth.OperationRead); errCode != nil {
+			return h.buildErrorResponse(version, req, *errCode)
+		}
 	}
 
 	// Check coordinator lease if available

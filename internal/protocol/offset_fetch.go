@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/groups"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -23,6 +24,7 @@ const (
 type OffsetFetchHandler struct {
 	store        *groups.Store
 	leaseManager *groups.LeaseManager
+	enforcer     *auth.Enforcer
 }
 
 // NewOffsetFetchHandler creates a new OffsetFetch handler.
@@ -31,6 +33,12 @@ func NewOffsetFetchHandler(store *groups.Store, leaseManager *groups.LeaseManage
 		store:        store,
 		leaseManager: leaseManager,
 	}
+}
+
+// WithEnforcer sets the ACL enforcer for this handler.
+func (h *OffsetFetchHandler) WithEnforcer(enforcer *auth.Enforcer) *OffsetFetchHandler {
+	h.enforcer = enforcer
+	return h
 }
 
 // Handle processes an OffsetFetch request.
@@ -49,6 +57,13 @@ func (h *OffsetFetchHandler) Handle(ctx context.Context, version int16, req *kms
 	if req.Group == "" {
 		resp.ErrorCode = errOffsetFetchInvalidGroupID
 		return resp
+	}
+
+	// Check ACL before processing - need READ permission on group
+	if h.enforcer != nil {
+		if errCode := h.enforcer.AuthorizeGroupFromCtx(ctx, req.Group, auth.OperationRead); errCode != nil {
+			return h.buildErrorResponse(version, req, *errCode)
+		}
 	}
 
 	// Check coordinator lease if available
@@ -119,6 +134,16 @@ func (h *OffsetFetchHandler) handleBatchedRequest(ctx context.Context, version i
 			respGroup.ErrorCode = errOffsetFetchInvalidGroupID
 			resp.Groups = append(resp.Groups, respGroup)
 			continue
+		}
+
+		// Check ACL before processing - need READ permission on group
+		if h.enforcer != nil {
+			if errCode := h.enforcer.AuthorizeGroupFromCtx(ctx, grp.Group, auth.OperationRead); errCode != nil {
+				respGroup.ErrorCode = *errCode
+				respGroup.Topics = h.buildGroupErrorTopics(version, grp.Topics, *errCode)
+				resp.Groups = append(resp.Groups, respGroup)
+				continue
+			}
 		}
 
 		// Check coordinator lease if available
@@ -306,6 +331,60 @@ func (h *OffsetFetchHandler) buildGroupTopicsFromOffsets(offsets []groups.Commit
 				respPartition.Metadata = &offset.Metadata
 			}
 			respPartition.LeaderEpoch = offset.LeaderEpoch
+
+			respTopic.Partitions = append(respTopic.Partitions, respPartition)
+		}
+
+		respTopics = append(respTopics, respTopic)
+	}
+
+	return respTopics
+}
+
+// buildErrorResponse creates an OffsetFetch response with all requested partitions having the same error.
+func (h *OffsetFetchHandler) buildErrorResponse(version int16, req *kmsg.OffsetFetchRequest, errorCode int16) *kmsg.OffsetFetchResponse {
+	resp := kmsg.NewPtrOffsetFetchResponse()
+	resp.SetVersion(version)
+	resp.ErrorCode = errorCode
+	if version >= 3 {
+		resp.ThrottleMillis = 0
+	}
+
+	for _, topic := range req.Topics {
+		respTopic := kmsg.NewOffsetFetchResponseTopic()
+		respTopic.Topic = topic.Topic
+
+		for _, partition := range topic.Partitions {
+			respPartition := kmsg.NewOffsetFetchResponseTopicPartition()
+			respPartition.Partition = partition
+			respPartition.Offset = -1
+			respPartition.ErrorCode = errorCode
+			if version >= 5 {
+				respPartition.LeaderEpoch = -1
+			}
+
+			respTopic.Partitions = append(respTopic.Partitions, respPartition)
+		}
+
+		resp.Topics = append(resp.Topics, respTopic)
+	}
+
+	return resp
+}
+
+func (h *OffsetFetchHandler) buildGroupErrorTopics(version int16, topics []kmsg.OffsetFetchRequestGroupTopic, errorCode int16) []kmsg.OffsetFetchResponseGroupTopic {
+	var respTopics []kmsg.OffsetFetchResponseGroupTopic
+
+	for _, topic := range topics {
+		respTopic := kmsg.NewOffsetFetchResponseGroupTopic()
+		respTopic.Topic = topic.Topic
+
+		for _, partition := range topic.Partitions {
+			respPartition := kmsg.NewOffsetFetchResponseGroupTopicPartition()
+			respPartition.Partition = partition
+			respPartition.Offset = -1
+			respPartition.ErrorCode = errorCode
+			respPartition.LeaderEpoch = -1
 
 			respTopic.Partitions = append(respTopic.Partitions, respPartition)
 		}

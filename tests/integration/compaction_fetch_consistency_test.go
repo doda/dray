@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -910,6 +911,7 @@ func runCompaction(t *testing.T, ctx context.Context, streamID string, metaStore
 
 // compactionTestObjectStore is a mock object store that tracks objects.
 type compactionTestObjectStore struct {
+	mu      sync.RWMutex
 	objects map[string][]byte
 }
 
@@ -924,6 +926,8 @@ func (m *compactionTestObjectStore) Put(ctx context.Context, key string, reader 
 	if err != nil {
 		return err
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.objects[key] = data
 	return nil
 }
@@ -933,6 +937,8 @@ func (m *compactionTestObjectStore) PutWithOptions(ctx context.Context, key stri
 }
 
 func (m *compactionTestObjectStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	data, ok := m.objects[key]
 	if !ok {
 		return nil, objectstore.ErrNotFound
@@ -941,6 +947,8 @@ func (m *compactionTestObjectStore) Get(ctx context.Context, key string) (io.Rea
 }
 
 func (m *compactionTestObjectStore) GetRange(ctx context.Context, key string, start, end int64) (io.ReadCloser, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	data, ok := m.objects[key]
 	if !ok {
 		return nil, objectstore.ErrNotFound
@@ -955,6 +963,8 @@ func (m *compactionTestObjectStore) GetRange(ctx context.Context, key string, st
 }
 
 func (m *compactionTestObjectStore) Head(ctx context.Context, key string) (objectstore.ObjectMeta, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	data, ok := m.objects[key]
 	if !ok {
 		return objectstore.ObjectMeta{}, objectstore.ErrNotFound
@@ -966,11 +976,15 @@ func (m *compactionTestObjectStore) Head(ctx context.Context, key string) (objec
 }
 
 func (m *compactionTestObjectStore) Delete(ctx context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.objects, key)
 	return nil
 }
 
 func (m *compactionTestObjectStore) List(ctx context.Context, prefix string) ([]objectstore.ObjectMeta, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	var result []objectstore.ObjectMeta
 	for key, data := range m.objects {
 		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {

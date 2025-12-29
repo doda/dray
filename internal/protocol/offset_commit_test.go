@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/groups"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -969,6 +970,88 @@ func TestOffsetCommitHandler_WithLeaseManager(t *testing.T) {
 
 		if resp.Topics[0].Partitions[0].ErrorCode != errOffsetCommitNone {
 			t.Errorf("expected no error, got %d", resp.Topics[0].Partitions[0].ErrorCode)
+		}
+	})
+}
+
+func TestOffsetCommitHandler_ACLEnforcement(t *testing.T) {
+	nowMs := time.Now().UnixMilli()
+
+	buildRequest := func() *kmsg.OffsetCommitRequest {
+		req := kmsg.NewPtrOffsetCommitRequest()
+		req.Group = "test-group"
+		req.Generation = -1
+		req.MemberID = ""
+
+		topic := kmsg.NewOffsetCommitRequestTopic()
+		topic.Topic = "test-topic"
+
+		partition := kmsg.NewOffsetCommitRequestTopicPartition()
+		partition.Partition = 0
+		partition.Offset = 42
+
+		topic.Partitions = append(topic.Partitions, partition)
+		req.Topics = append(req.Topics, topic)
+		return req
+	}
+
+	t.Run("allow", func(t *testing.T) {
+		ctx := auth.WithPrincipal(context.Background(), "User:alice")
+		store := newTestGroupStore()
+		enforcer := newTestEnforcer(t, &auth.ACLEntry{
+			ResourceType: auth.ResourceTypeGroup,
+			ResourceName: "test-group",
+			PatternType:  auth.PatternTypeLiteral,
+			Principal:    "User:alice",
+			Host:         "*",
+			Operation:    auth.OperationRead,
+			Permission:   auth.PermissionAllow,
+			CreatedAtMs:  nowMs,
+		})
+
+		handler := NewOffsetCommitHandler(store, nil).WithEnforcer(enforcer)
+		resp := handler.Handle(ctx, 0, buildRequest())
+
+		if resp.Topics[0].Partitions[0].ErrorCode != errOffsetCommitNone {
+			t.Fatalf("expected no error, got %d", resp.Topics[0].Partitions[0].ErrorCode)
+		}
+
+		offset, err := store.GetCommittedOffset(ctx, "test-group", "test-topic", 0)
+		if err != nil {
+			t.Fatalf("get committed offset: %v", err)
+		}
+		if offset == nil || offset.Offset != 42 {
+			t.Fatalf("expected committed offset 42, got %#v", offset)
+		}
+	})
+
+	t.Run("deny", func(t *testing.T) {
+		ctx := auth.WithPrincipal(context.Background(), "User:alice")
+		store := newTestGroupStore()
+		enforcer := newTestEnforcer(t, &auth.ACLEntry{
+			ResourceType: auth.ResourceTypeGroup,
+			ResourceName: "test-group",
+			PatternType:  auth.PatternTypeLiteral,
+			Principal:    "User:alice",
+			Host:         "*",
+			Operation:    auth.OperationRead,
+			Permission:   auth.PermissionDeny,
+			CreatedAtMs:  nowMs,
+		})
+
+		handler := NewOffsetCommitHandler(store, nil).WithEnforcer(enforcer)
+		resp := handler.Handle(ctx, 0, buildRequest())
+
+		if resp.Topics[0].Partitions[0].ErrorCode != errOffsetCommitGroupAuthFailed {
+			t.Fatalf("expected GROUP_AUTHORIZATION_FAILED (30), got %d", resp.Topics[0].Partitions[0].ErrorCode)
+		}
+
+		offset, err := store.GetCommittedOffset(ctx, "test-group", "test-topic", 0)
+		if err != nil {
+			t.Fatalf("get committed offset: %v", err)
+		}
+		if offset != nil {
+			t.Fatalf("expected no offset to be committed, got %#v", offset)
 		}
 	})
 }
