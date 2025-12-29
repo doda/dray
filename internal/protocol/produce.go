@@ -112,12 +112,11 @@ func (h *ProduceHandler) Handle(ctx context.Context, version int16, req *kmsg.Pr
 	}
 
 	// Reject transactional requests per spec 14.3
-	// Use UNSUPPORTED_FOR_MESSAGE_FORMAT to indicate transactions are not supported
 	if req.TransactionID != nil && *req.TransactionID != "" {
 		logging.FromCtx(ctx).Warnf("rejecting transactional produce request: transactions are explicitly deferred per spec 2.2/14.3", map[string]any{
 			"transactionId": *req.TransactionID,
 		})
-		resp = h.buildErrorResponse(version, req, errUnsupportedForMessageFormat)
+		resp = h.buildErrorResponse(version, req, errUnsupportedVersion)
 		return resp
 	}
 
@@ -236,7 +235,7 @@ func (h *ProduceHandler) processPartition(ctx context.Context, version int16, to
 			"partition":  partData.Partition,
 			"producerId": producerId,
 		})
-		resp.ErrorCode = errInvalidProducerIDMapping
+		resp.ErrorCode = errInvalidRequest
 		resp.BaseOffset = -1
 		return resp
 	}

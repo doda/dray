@@ -161,8 +161,8 @@ func TestProduceHandler_RejectIdempotent(t *testing.T) {
 	}
 
 	partResp := resp.Topics[0].Partitions[0]
-	if partResp.ErrorCode != errInvalidProducerIDMapping {
-		t.Errorf("expected INVALID_PRODUCER_ID_MAPPING error (%d), got %d", errInvalidProducerIDMapping, partResp.ErrorCode)
+	if partResp.ErrorCode != errInvalidRequest {
+		t.Errorf("expected INVALID_REQUEST error (%d), got %d", errInvalidRequest, partResp.ErrorCode)
 	}
 }
 
@@ -344,8 +344,8 @@ func TestProduceHandler_RejectIdempotentVariousProducerIds(t *testing.T) {
 
 			partResp := resp.Topics[0].Partitions[0]
 			if tt.wantReject {
-				if partResp.ErrorCode != errInvalidProducerIDMapping {
-					t.Errorf("expected INVALID_PRODUCER_ID_MAPPING error (%d), got %d", errInvalidProducerIDMapping, partResp.ErrorCode)
+				if partResp.ErrorCode != errInvalidRequest {
+					t.Errorf("expected INVALID_REQUEST error (%d), got %d", errInvalidRequest, partResp.ErrorCode)
 				}
 				if partResp.BaseOffset != -1 {
 					t.Errorf("expected BaseOffset=-1 on rejection, got %d", partResp.BaseOffset)
@@ -437,9 +437,9 @@ func TestProduceHandler_RejectIdempotentMultiplePartitions(t *testing.T) {
 	}
 
 	// Partition 0 should be rejected (idempotent)
-	if part0Resp.ErrorCode != errInvalidProducerIDMapping {
-		t.Errorf("partition 0: expected INVALID_PRODUCER_ID_MAPPING error (%d), got %d",
-			errInvalidProducerIDMapping, part0Resp.ErrorCode)
+	if part0Resp.ErrorCode != errInvalidRequest {
+		t.Errorf("partition 0: expected INVALID_REQUEST error (%d), got %d",
+			errInvalidRequest, part0Resp.ErrorCode)
 	}
 
 	// Partition 1 should succeed (non-idempotent)
@@ -506,9 +506,7 @@ func TestExtractProducerId(t *testing.T) {
 }
 
 // TestProduceHandler_IdempotentRejectionClientHandling verifies that the error code returned
-// is consistent with Kafka's expected behavior for idempotent producer rejection.
-// Kafka clients receiving INVALID_PRODUCER_ID_MAPPING (49) should interpret this as
-// "producer ID not found" and will typically retry with InitProducerId or fail gracefully.
+// is consistent with the spec behavior for deferred idempotent producer support.
 func TestProduceHandler_IdempotentRejectionClientHandling(t *testing.T) {
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
@@ -549,11 +547,10 @@ func TestProduceHandler_IdempotentRejectionClientHandling(t *testing.T) {
 
 		partResp := resp.Topics[0].Partitions[0]
 
-		// Verify consistent error code per Kafka protocol:
-		// INVALID_PRODUCER_ID_MAPPING = 49 indicates the producer ID is not found
-		if partResp.ErrorCode != errInvalidProducerIDMapping {
-			t.Errorf("iteration %d: expected INVALID_PRODUCER_ID_MAPPING error (%d), got %d",
-				i, errInvalidProducerIDMapping, partResp.ErrorCode)
+		// Verify consistent error code per spec for deferred idempotence.
+		if partResp.ErrorCode != errInvalidRequest {
+			t.Errorf("iteration %d: expected INVALID_REQUEST error (%d), got %d",
+				i, errInvalidRequest, partResp.ErrorCode)
 		}
 
 		// Kafka clients expect BaseOffset=-1 on error
@@ -600,11 +597,11 @@ func TestProduceHandler_RejectTransactional(t *testing.T) {
 
 	resp := handler.Handle(ctx, 9, req)
 
-	// All partitions should have UNSUPPORTED_FOR_MESSAGE_FORMAT error per spec 14.3
+	// All partitions should have UNSUPPORTED_VERSION error per spec 14.3
 	for _, topicResp := range resp.Topics {
 		for _, partResp := range topicResp.Partitions {
-			if partResp.ErrorCode != errUnsupportedForMessageFormat {
-				t.Errorf("expected UNSUPPORTED_FOR_MESSAGE_FORMAT error (%d), got %d", errUnsupportedForMessageFormat, partResp.ErrorCode)
+			if partResp.ErrorCode != errUnsupportedVersion {
+				t.Errorf("expected UNSUPPORTED_VERSION error (%d), got %d", errUnsupportedVersion, partResp.ErrorCode)
 			}
 		}
 	}

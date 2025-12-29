@@ -3086,7 +3086,7 @@
       "Add tests asserting correct error codes for rejected requests",
       "Run produce handler tests"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/protocol/produce.go"
