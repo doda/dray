@@ -79,74 +79,93 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 		return nil, fmt.Errorf("fetch: expected Parquet entry, got %s", entry.FileType)
 	}
 
-	// Read the entire Parquet file from object storage
-	rc, err := r.store.Get(ctx, entry.ParquetPath)
+	meta, err := r.store.Head(ctx, entry.ParquetPath)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
 			return nil, fmt.Errorf("%w: %s", ErrParquetNotFound, entry.ParquetPath)
 		}
-		return nil, fmt.Errorf("fetch: reading parquet file: %w", err)
+		return nil, fmt.Errorf("fetch: reading parquet metadata: %w", err)
 	}
-	defer rc.Close()
 
-	// Read all data into memory
-	data, err := io.ReadAll(rc)
+	if meta.Size == 0 {
+		return nil, ErrInvalidParquet
+	}
+
+	readerAt := newObjectStoreReaderAt(ctx, r.store, entry.ParquetPath, meta.Size)
+	parquetFile, err := parquet.OpenFile(readerAt, meta.Size, parquet.SkipPageIndex(true), parquet.SkipBloomFilters(true))
 	if err != nil {
-		return nil, fmt.Errorf("fetch: reading parquet data: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
 	}
 
-	// Parse Parquet file
-	reader := parquet.NewGenericReader[ParquetRecordWithHeaders](
-		newParquetBytesFile(data),
-	)
-	defer reader.Close()
-
-	// Read all records
-	numRows := reader.NumRows()
-	records := make([]ParquetRecordWithHeaders, int(numRows))
-	n, err := reader.Read(records)
-	if err != nil && err != io.EOF {
-		return nil, fmt.Errorf("fetch: parsing parquet records: %w", err)
+	rangeStart := fetchOffset
+	if rangeStart < entry.StartOffset {
+		rangeStart = entry.StartOffset
 	}
-	records = records[:n]
-
-	// Filter to records at or after fetchOffset and within the entry's range
-	var filteredRecords []ParquetRecordWithHeaders
-	for _, rec := range records {
-		if rec.Offset >= fetchOffset && rec.Offset >= entry.StartOffset && rec.Offset < entry.EndOffset {
-			filteredRecords = append(filteredRecords, rec)
-		}
-	}
-
-	if len(filteredRecords) == 0 {
+	rangeEnd := entry.EndOffset
+	if rangeEnd <= rangeStart {
 		return nil, ErrOffsetNotInParquet
 	}
 
-	// Reconstruct Kafka batches from the filtered records
-	// For simplicity, we create one batch per record (v1 acceptable per spec)
-	// This can be optimized later to batch multiple records together
+	rowGroups, err := selectRowGroupsByOffset(parquetFile, rangeStart, rangeEnd)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
+	}
+	if len(rowGroups) == 0 {
+		return nil, ErrOffsetNotInParquet
+	}
+
 	result := &FetchResult{
 		Batches:     make([][]byte, 0),
 		StartOffset: -1,
 	}
 
 	var totalBytes int64
+	var found bool
+	for _, rowGroup := range rowGroups {
+		groupReader := parquet.NewGenericRowGroupReader[ParquetRecordWithHeaders](rowGroup)
+		rows := make([]ParquetRecordWithHeaders, 256)
 
-	for _, rec := range filteredRecords {
-		batch := buildKafkaRecordBatch(rec)
+		for {
+			n, err := groupReader.Read(rows)
+			if n > 0 {
+				for _, rec := range rows[:n] {
+					if rec.Offset < rangeStart || rec.Offset >= rangeEnd {
+						continue
+					}
 
-		// Check maxBytes limit
-		if maxBytes > 0 && totalBytes+int64(len(batch)) > maxBytes && len(result.Batches) > 0 {
-			break
+					batch := buildKafkaRecordBatch(rec)
+					if maxBytes > 0 && totalBytes+int64(len(batch)) > maxBytes && len(result.Batches) > 0 {
+						groupReader.Close()
+						result.TotalBytes = totalBytes
+						return result, nil
+					}
+
+					result.Batches = append(result.Batches, batch)
+					totalBytes += int64(len(batch))
+					found = true
+
+					if result.StartOffset < 0 {
+						result.StartOffset = rec.Offset
+					}
+					result.EndOffset = rec.Offset + 1
+				}
+			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				groupReader.Close()
+				return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
+			}
 		}
 
-		result.Batches = append(result.Batches, batch)
-		totalBytes += int64(len(batch))
-
-		if result.StartOffset < 0 {
-			result.StartOffset = rec.Offset
+		if err := groupReader.Close(); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
 		}
-		result.EndOffset = rec.Offset + 1
+	}
+
+	if !found {
+		return nil, ErrOffsetNotInParquet
 	}
 
 	result.TotalBytes = totalBytes
@@ -351,6 +370,98 @@ func appendVarint(b []byte, v int64) []byte {
 // crc32c calculates CRC32C (Castagnoli) checksum.
 func crc32c(data []byte) uint32 {
 	return crc32.Checksum(data, crc32cTable)
+}
+
+type objectStoreReaderAt struct {
+	ctx   context.Context
+	store objectstore.Store
+	key   string
+	size  int64
+}
+
+func newObjectStoreReaderAt(ctx context.Context, store objectstore.Store, key string, size int64) *objectStoreReaderAt {
+	return &objectStoreReaderAt{
+		ctx:   ctx,
+		store: store,
+		key:   key,
+		size:  size,
+	}
+}
+
+func (r *objectStoreReaderAt) Size() int64 {
+	return r.size
+}
+
+func (r *objectStoreReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, fmt.Errorf("fetch: invalid offset %d", off)
+	}
+	if off >= r.size {
+		return 0, io.EOF
+	}
+
+	end := off + int64(len(p)) - 1
+	if end >= r.size {
+		end = r.size - 1
+	}
+
+	rc, err := r.store.GetRange(r.ctx, r.key, off, end)
+	if err != nil {
+		return 0, err
+	}
+	defer rc.Close()
+
+	readLen := int(end - off + 1)
+	n, err := io.ReadFull(rc, p[:readLen])
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return n, err
+	}
+	if readLen < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func selectRowGroupsByOffset(file *parquet.File, rangeStart, rangeEnd int64) ([]parquet.RowGroup, error) {
+	if rangeEnd <= rangeStart {
+		return nil, nil
+	}
+
+	offsetColumn, ok := file.Schema().Lookup("offset")
+	rowGroups := file.RowGroups()
+	if !ok {
+		return rowGroups, nil
+	}
+
+	columnIndex := offsetColumn.ColumnIndex
+	selected := make([]parquet.RowGroup, 0, len(rowGroups))
+	for _, rowGroup := range rowGroups {
+		chunks := rowGroup.ColumnChunks()
+		if columnIndex >= len(chunks) {
+			selected = append(selected, rowGroup)
+			continue
+		}
+		boundsChunk, ok := chunks[columnIndex].(interface {
+			Bounds() (parquet.Value, parquet.Value, bool)
+		})
+		if !ok {
+			selected = append(selected, rowGroup)
+			continue
+		}
+		minValue, maxValue, ok := boundsChunk.Bounds()
+		if !ok || minValue.IsNull() || maxValue.IsNull() {
+			selected = append(selected, rowGroup)
+			continue
+		}
+		minOffset := minValue.Int64()
+		maxOffset := maxValue.Int64()
+		if maxOffset < rangeStart || minOffset >= rangeEnd {
+			continue
+		}
+		selected = append(selected, rowGroup)
+	}
+
+	return selected, nil
 }
 
 // parquetBytesFile implements parquet.File for reading from an in-memory byte slice.

@@ -31,6 +31,25 @@ func createParquetFile(t *testing.T, records []ParquetRecordWithHeaders) []byte 
 	return buf.Bytes()
 }
 
+func createParquetFileWithRowGroupSize(t *testing.T, records []ParquetRecordWithHeaders, maxRows int64) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	writer := parquet.NewGenericWriter[ParquetRecordWithHeaders](&buf, parquet.MaxRowsPerRowGroup(maxRows))
+
+	_, err := writer.Write(records)
+	if err != nil {
+		t.Fatalf("failed to write parquet records: %v", err)
+	}
+
+	err = writer.Close()
+	if err != nil {
+		t.Fatalf("failed to close parquet writer: %v", err)
+	}
+
+	return buf.Bytes()
+}
+
 func TestParquetReader_ReadBatches(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -261,6 +280,61 @@ func TestParquetReader_MaxBytesLimit(t *testing.T) {
 	if len(result2.Batches) >= len(result1.Batches) {
 		t.Errorf("maxBytes limit did not reduce batch count: got %d, expected less than %d",
 			len(result2.Batches), len(result1.Batches))
+	}
+}
+
+func TestParquetReader_ReadsSelectedRowGroups(t *testing.T) {
+	const (
+		rowGroupSize = 200
+		rowGroups    = 6
+	)
+
+	records := make([]ParquetRecordWithHeaders, 0, rowGroupSize*rowGroups)
+	for i := 0; i < rowGroupSize*rowGroups; i++ {
+		records = append(records, ParquetRecordWithHeaders{
+			Partition:  0,
+			Offset:     int64(i),
+			Timestamp:  1000 + int64(i),
+			Key:        []byte("k"),
+			Value:      []byte("v"),
+			Attributes: 0,
+		})
+	}
+
+	store := newMockStore()
+	parquetData := createParquetFileWithRowGroupSize(t, records, rowGroupSize)
+	store.objects["test.parquet"] = parquetData
+
+	entry := &index.IndexEntry{
+		FileType:    index.FileTypeParquet,
+		ParquetPath: "test.parquet",
+		StartOffset: 0,
+		EndOffset:   int64(len(records)),
+	}
+
+	reader := NewParquetReader(store)
+	fetchOffset := int64(rowGroupSize * 4)
+	result, err := reader.ReadBatches(context.Background(), entry, fetchOffset, 1024)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Batches) == 0 {
+		t.Fatalf("expected batches, got none")
+	}
+	if result.StartOffset < fetchOffset {
+		t.Fatalf("expected start offset >= %d, got %d", fetchOffset, result.StartOffset)
+	}
+
+	store.mu.Lock()
+	totalBytes := store.getRangeBytes
+	getCalls := store.getCalls
+	store.mu.Unlock()
+
+	if getCalls != 0 {
+		t.Fatalf("expected no full Get calls, got %d", getCalls)
+	}
+	if totalBytes >= int64(len(parquetData)) {
+		t.Fatalf("expected range reads smaller than file size, got %d >= %d", totalBytes, len(parquetData))
 	}
 }
 

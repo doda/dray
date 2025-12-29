@@ -2904,7 +2904,7 @@
       "Stream-read only selected row groups from object storage",
       "Add perf/regression test to validate bounded memory usage on large files"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/fetch/parquet_reader.go"

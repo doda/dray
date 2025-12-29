@@ -1147,3 +1147,14 @@ Start with project-setup, then follow spec phases:
 - Tests: PATH="/usr/local/go/bin:$PATH" go test ./tests/integration -run TestReadYourWrites -count=1 (pass)
 - Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol -run FetchHandler -count=1 (pass)
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass; first run timed out at 120s, second failed due to invalid test batches, fixed by adding records and reran)
+[2025-12-29T23:59:59Z] Completed parquet-rowgroup-range-read: PASS
+- Implemented Parquet reader row-group selection using offset column statistics with objectstore-backed ReaderAt range reads.
+- Streamed row group records without loading entire Parquet files, honoring maxBytes early exit.
+- Added regression test to assert range reads stay below full Parquet file size and avoid full Get calls.
+- Files changed: internal/fetch/parquet_reader.go
+- Files changed: internal/fetch/wal_reader_test.go
+- Files changed: internal/fetch/parquet_reader_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/fetch -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: none

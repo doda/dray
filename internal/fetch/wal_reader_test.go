@@ -19,6 +19,10 @@ type mockStore struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 	getErr  error
+
+	getCalls      int
+	getRangeCalls int
+	getRangeBytes int64
 }
 
 func newMockStore() *mockStore {
@@ -47,6 +51,7 @@ func (s *mockStore) Get(ctx context.Context, key string) (io.ReadCloser, error) 
 		return nil, s.getErr
 	}
 	s.mu.Lock()
+	s.getCalls++
 	data, ok := s.objects[key]
 	s.mu.Unlock()
 	if !ok {
@@ -71,6 +76,10 @@ func (s *mockStore) GetRange(ctx context.Context, key string, start, end int64) 
 	if start < 0 || end >= int64(len(data)) || start > end {
 		return nil, objectstore.ErrInvalidRange
 	}
+	s.mu.Lock()
+	s.getRangeCalls++
+	s.getRangeBytes += end - start + 1
+	s.mu.Unlock()
 	return io.NopCloser(bytes.NewReader(data[start : end+1])), nil
 }
 
