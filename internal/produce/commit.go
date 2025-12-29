@@ -18,6 +18,8 @@ import (
 type CommitterConfig struct {
 	// NumDomains is the number of MetaDomains for partitioning.
 	NumDomains int
+	// ZoneID is the broker zone identifier to include in WAL paths.
+	ZoneID string
 }
 
 // Committer handles the atomic commit of WAL objects to metadata.
@@ -27,6 +29,7 @@ type Committer struct {
 	objStore   objectstore.Store
 	metaStore  metadata.MetadataStore
 	calculator *metadata.DomainCalculator
+	zoneID     string
 }
 
 // NewCommitter creates a new produce committer.
@@ -35,6 +38,7 @@ func NewCommitter(objStore objectstore.Store, metaStore metadata.MetadataStore, 
 		objStore:   objStore,
 		metaStore:  metaStore,
 		calculator: metadata.NewDomainCalculator(cfg.NumDomains),
+		zoneID:     cfg.ZoneID,
 	}
 }
 
@@ -74,7 +78,9 @@ func (c *Committer) Commit(ctx context.Context, domain metadata.MetaDomain, requ
 	}
 
 	// Create staging writer
-	writer := wal.NewStagingWriter(c.objStore, c.metaStore, nil)
+	writer := wal.NewStagingWriter(c.objStore, c.metaStore, &wal.StagingWriterConfig{
+		ZoneID: c.zoneID,
+	})
 	defer writer.Close()
 
 	// Build chunks from pending requests

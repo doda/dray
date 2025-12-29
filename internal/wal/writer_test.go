@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/dray-io/dray/internal/objectstore"
 	"github.com/google/uuid"
@@ -351,7 +353,7 @@ func TestWriterCustomPathFormatter(t *testing.T) {
 	store := newMockStore()
 
 	customFormatter := &DefaultPathFormatter{Prefix: "custom/prefix"}
-	w := NewWriter(store, &WriterConfig{PathFormatter: customFormatter})
+	w := NewWriter(store, &WriterConfig{PathFormatter: customFormatter, ZoneID: "test-zone"})
 	defer w.Close()
 
 	chunk := Chunk{
@@ -366,7 +368,13 @@ func TestWriterCustomPathFormatter(t *testing.T) {
 		t.Fatalf("Flush failed: %v", err)
 	}
 
-	expectedPrefix := "custom/prefix/wal/domain=42/"
+	createdAt := time.UnixMilli(result.CreatedAtUnixMs).UTC()
+	expectedPrefix := fmt.Sprintf(
+		"custom/prefix/wal/v1/zone=test-zone/domain=42/date=%04d/%02d/%02d/",
+		createdAt.Year(),
+		createdAt.Month(),
+		createdAt.Day(),
+	)
 	if len(result.Path) < len(expectedPrefix) || result.Path[:len(expectedPrefix)] != expectedPrefix {
 		t.Errorf("Path = %s, expected prefix %s", result.Path, expectedPrefix)
 	}
@@ -525,10 +533,12 @@ func TestWriterSortsByStreamId(t *testing.T) {
 }
 
 func TestDefaultPathFormatter(t *testing.T) {
+	createdAt := time.Date(2025, time.January, 2, 3, 4, 5, 0, time.UTC)
 	tests := []struct {
 		name       string
 		prefix     string
 		metaDomain uint32
+		zoneID     string
 		walID      uuid.UUID
 		want       string
 	}{
@@ -536,22 +546,24 @@ func TestDefaultPathFormatter(t *testing.T) {
 			name:       "no prefix",
 			prefix:     "",
 			metaDomain: 0,
+			zoneID:     "zone-a",
 			walID:      uuid.MustParse("12345678-1234-1234-1234-123456789abc"),
-			want:       "wal/domain=0/12345678-1234-1234-1234-123456789abc.wo",
+			want:       "wal/v1/zone=zone-a/domain=0/date=2025/01/02/12345678-1234-1234-1234-123456789abc.wo",
 		},
 		{
 			name:       "with prefix",
 			prefix:     "dray/v1",
 			metaDomain: 42,
+			zoneID:     "zone-b",
 			walID:      uuid.MustParse("abcdef00-1234-5678-90ab-cdef12345678"),
-			want:       "dray/v1/wal/domain=42/abcdef00-1234-5678-90ab-cdef12345678.wo",
+			want:       "dray/v1/wal/v1/zone=zone-b/domain=42/date=2025/01/02/abcdef00-1234-5678-90ab-cdef12345678.wo",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := &DefaultPathFormatter{Prefix: tt.prefix}
-			got := f.FormatPath(tt.metaDomain, tt.walID)
+			got := f.FormatPath(tt.metaDomain, tt.walID, createdAt, tt.zoneID)
 			if got != tt.want {
 				t.Errorf("FormatPath() = %q, want %q", got, tt.want)
 			}

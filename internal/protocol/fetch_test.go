@@ -257,7 +257,7 @@ func TestFetchHandler_WithData(t *testing.T) {
 
 	// Create a WAL object with some records
 	mockObjStore := NewMockObjectStore()
-	walPath := "wal/domain=0/test.wal"
+	walPath := "wal/v1/zone=zone-a/domain=0/date=2025/01/02/test.wo"
 
 	// Build record batch
 	batch := buildRecordBatch(5)
@@ -1140,7 +1140,7 @@ func TestFetchHandler_MetricsWithWALData(t *testing.T) {
 
 	// Create a WAL object with some records
 	mockObjStore := NewMockObjectStore()
-	walPath := "wal/domain=0/test.wal"
+	walPath := "wal/v1/zone=zone-a/domain=0/date=2025/01/02/test.wo"
 
 	// Build record batch
 	batch := buildRecordBatch(5)

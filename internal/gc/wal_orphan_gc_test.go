@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,6 +12,15 @@ import (
 	"github.com/dray-io/dray/internal/metadata/keys"
 	"github.com/dray-io/dray/internal/wal"
 )
+
+const (
+	testWALDate = "2025/01/02"
+	testWALZone = "zone-a"
+)
+
+func testWALPath(domain int, walID string) string {
+	return fmt.Sprintf("wal/v1/zone=%s/domain=%d/date=%s/%s.wo", testWALZone, domain, testWALDate, walID)
+}
 
 func TestWALOrphanGCWorker_ScanOnce_DeletesOrphanedObjects(t *testing.T) {
 	metaStore := metadata.NewMockStore()
@@ -20,7 +30,7 @@ func TestWALOrphanGCWorker_ScanOnce_DeletesOrphanedObjects(t *testing.T) {
 	// Create a staging marker that's orphaned (older than TTL)
 	orphanTTLMs := int64(1000) // 1 second TTL for testing
 	marker := wal.StagingMarker{
-		Path:      "wal/domain=0/orphaned-wal-001.wo",
+		Path:      testWALPath(0, "orphaned-wal-001"),
 		CreatedAt: time.Now().Add(-2 * time.Hour).UnixMilli(), // Created 2 hours ago
 		SizeBytes: 1024,
 	}
@@ -70,7 +80,7 @@ func TestWALOrphanGCWorker_ScanOnce_SkipsRecentMarkers(t *testing.T) {
 	// Create a staging marker that's NOT orphaned (created recently)
 	orphanTTLMs := int64(3600000) // 1 hour TTL
 	marker := wal.StagingMarker{
-		Path:      "wal/domain=0/recent-wal-001.wo",
+		Path:      testWALPath(0, "recent-wal-001"),
 		CreatedAt: time.Now().Add(-10 * time.Minute).UnixMilli(), // Created 10 minutes ago
 		SizeBytes: 2048,
 	}
@@ -123,7 +133,7 @@ func TestWALOrphanGCWorker_ScanOnce_MultipleDomains(t *testing.T) {
 	domains := []int{0, 1, 2}
 	for _, domain := range domains {
 		walID := "orphan-wal-" + string(rune('a'+domain))
-		path := "wal/domain=" + string(rune('0'+domain)) + "/" + walID + ".wo"
+		path := testWALPath(domain, walID)
 
 		marker := wal.StagingMarker{
 			Path:      path,
@@ -150,7 +160,7 @@ func TestWALOrphanGCWorker_ScanOnce_MultipleDomains(t *testing.T) {
 	// Verify all objects and markers were deleted
 	for _, domain := range domains {
 		walID := "orphan-wal-" + string(rune('a'+domain))
-		path := "wal/domain=" + string(rune('0'+domain)) + "/" + walID + ".wo"
+		path := testWALPath(domain, walID)
 		if objStore.hasObject(path) {
 			t.Errorf("WAL object in domain %d should have been deleted", domain)
 		}
@@ -171,7 +181,7 @@ func TestWALOrphanGCWorker_ScanOnce_HandlesAlreadyDeletedObject(t *testing.T) {
 	// Create a staging marker pointing to an object that doesn't exist
 	orphanTTLMs := int64(1000)
 	marker := wal.StagingMarker{
-		Path:      "wal/domain=0/missing-wal.wo",
+		Path:      testWALPath(0, "missing-wal"),
 		CreatedAt: time.Now().Add(-1 * time.Hour).UnixMilli(),
 		SizeBytes: 1024,
 	}
@@ -210,7 +220,7 @@ func TestWALOrphanGCWorker_ProcessOrphans(t *testing.T) {
 	// Create 3 orphaned and 2 non-orphaned staging markers
 	for i := 0; i < 5; i++ {
 		walID := "test-wal-" + string(rune('a'+i))
-		path := "wal/domain=0/" + walID + ".wo"
+		path := testWALPath(0, walID)
 
 		var createdAt int64
 		if i < 3 {
@@ -275,7 +285,7 @@ func TestWALOrphanGCWorker_GetStagingCount(t *testing.T) {
 		for j := 0; j < 2; j++ {
 			walID := "wal-" + string(rune('0'+i)) + "-" + string(rune('a'+j))
 			marker := wal.StagingMarker{
-				Path:      "wal/domain=" + string(rune('0'+i)) + "/" + walID + ".wo",
+				Path:      testWALPath(i, walID),
 				CreatedAt: time.Now().Add(-1 * time.Hour).UnixMilli(),
 				SizeBytes: 100,
 			}
@@ -316,7 +326,7 @@ func TestWALOrphanGCWorker_GetOrphanCount(t *testing.T) {
 			createdAt = time.Now().Add(-10 * time.Minute).UnixMilli() // Not orphaned
 		}
 		marker := wal.StagingMarker{
-			Path:      "wal/domain=0/" + walID + ".wo",
+			Path:      testWALPath(0, walID),
 			CreatedAt: createdAt,
 			SizeBytes: 100,
 		}
@@ -418,7 +428,7 @@ func TestWALOrphanGCWorker_IntegrationWithStagingWriter(t *testing.T) {
 	// 4. Staging marker remains, indicating an orphaned WAL
 
 	walID := "crash-orphan-001"
-	walPath := "wal/domain=0/" + walID + ".wo"
+	walPath := testWALPath(0, walID)
 
 	// Object was written before crash
 	objStore.Put(ctx, walPath, bytes.NewReader([]byte("wal-content-before-crash")), 24, "application/octet-stream")
@@ -467,7 +477,7 @@ func TestWALOrphanGCWorker_DoesNotDeleteCommittedWALs(t *testing.T) {
 	// 3. Only the orphan GC should not touch committed WALs (no staging marker exists)
 
 	walID := "committed-wal-001"
-	walPath := "wal/domain=0/" + walID + ".wo"
+	walPath := testWALPath(0, walID)
 
 	// Object was written and committed
 	objStore.Put(ctx, walPath, bytes.NewReader([]byte("committed-wal-content")), 21, "application/octet-stream")
@@ -476,7 +486,7 @@ func TestWALOrphanGCWorker_DoesNotDeleteCommittedWALs(t *testing.T) {
 
 	// Create an old WAL object record (simulating normal GC flow)
 	walObjKey := keys.WALObjectKeyPath(0, walID)
-	metaStore.Put(ctx, walObjKey, []byte(`{"path":"wal/domain=0/committed-wal-001.wo","refCount":1}`))
+	metaStore.Put(ctx, walObjKey, []byte(`{"path":"`+testWALPath(0, "committed-wal-001")+`","refCount":1}`))
 
 	// Orphan GC worker scans
 	worker := NewWALOrphanGCWorker(metaStore, objStore, WALOrphanGCWorkerConfig{
@@ -522,7 +532,7 @@ func TestWALOrphanGCWorker_MixedOrphansAndRecent(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		path := "wal/domain=0/" + tc.walID + ".wo"
+		path := testWALPath(0, tc.walID)
 		marker := wal.StagingMarker{
 			Path:      path,
 			CreatedAt: time.Now().Add(-tc.createdAgo).UnixMilli(),
@@ -546,7 +556,7 @@ func TestWALOrphanGCWorker_MixedOrphansAndRecent(t *testing.T) {
 
 	// Verify expected outcomes
 	for _, tc := range testCases {
-		path := "wal/domain=0/" + tc.walID + ".wo"
+		path := testWALPath(0, tc.walID)
 		stagingKey := keys.WALStagingKeyPath(0, tc.walID)
 
 		objExists := objStore.hasObject(path)

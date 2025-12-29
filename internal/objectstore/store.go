@@ -15,7 +15,7 @@
 //	defer store.Close()
 //
 //	// Store a WAL object
-//	err = store.Put(ctx, "wal/domain=0/abc123.wo", reader, size, "application/octet-stream")
+//	err = store.Put(ctx, "wal/v1/zone=us-east-1a/domain=0/date=2025/01/02/abc123.wo", reader, size, "application/octet-stream")
 //
 //	// Retrieve with range read for fetch operations
 //	rc, err := store.GetRange(ctx, key, startByte, endByte)
@@ -189,7 +189,7 @@ type Store interface {
 	// List returns objects matching the given prefix.
 	//
 	// The prefix should include a trailing "/" to list a "directory", e.g.,
-	// "wal/domain=0/" lists all objects in that logical directory.
+// "wal/v1/zone=us-east-1a/domain=0/date=2025/01/02/" lists all objects in that logical directory.
 	//
 	// Results are returned in lexicographic order by key. For large result sets,
 	// implementations may paginate internally but return all results.

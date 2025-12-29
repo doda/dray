@@ -151,7 +151,7 @@ func (t *mockMetaTxn) DeleteWithVersion(key string, _ metadata.Version) {
 
 func TestStagingMarkerMarshalJSON(t *testing.T) {
 	marker := &StagingMarker{
-		Path:      "wal/domain=5/abc123.wo",
+		Path:      "wal/v1/zone=test-zone/domain=5/date=2025/01/02/abc123.wo",
 		CreatedAt: 1703721600000,
 		SizeBytes: 102400,
 	}
@@ -179,14 +179,14 @@ func TestStagingMarkerMarshalJSON(t *testing.T) {
 }
 
 func TestParseStagingMarker(t *testing.T) {
-	jsonData := `{"path":"wal/domain=42/uuid-here.wo","createdAt":1703721600000,"sizeBytes":51200}`
+	jsonData := `{"path":"wal/v1/zone=zone-a/domain=42/date=2025/01/02/uuid-here.wo","createdAt":1703721600000,"sizeBytes":51200}`
 
 	marker, err := ParseStagingMarker([]byte(jsonData))
 	if err != nil {
 		t.Fatalf("ParseStagingMarker failed: %v", err)
 	}
 
-	if marker.Path != "wal/domain=42/uuid-here.wo" {
+	if marker.Path != "wal/v1/zone=zone-a/domain=42/date=2025/01/02/uuid-here.wo" {
 		t.Errorf("Path = %q", marker.Path)
 	}
 	if marker.CreatedAt != 1703721600000 {
@@ -541,7 +541,10 @@ func TestStagingWriterWithCustomPathFormatter(t *testing.T) {
 	metaStore := newMockMetadataStore()
 
 	customFormatter := &DefaultPathFormatter{Prefix: "custom/prefix"}
-	w := NewStagingWriter(objStore, metaStore, &StagingWriterConfig{PathFormatter: customFormatter})
+	w := NewStagingWriter(objStore, metaStore, &StagingWriterConfig{
+		PathFormatter: customFormatter,
+		ZoneID:        "test-zone",
+	})
 	defer w.Close()
 
 	chunk := Chunk{StreamID: 1, RecordCount: 5, Batches: []BatchEntry{{Data: []byte("data")}}}
@@ -552,7 +555,7 @@ func TestStagingWriterWithCustomPathFormatter(t *testing.T) {
 		t.Fatalf("Flush failed: %v", err)
 	}
 
-	expectedPrefix := "custom/prefix/wal/domain=42/"
+	expectedPrefix := "custom/prefix/wal/v1/zone=test-zone/domain=42/date="
 	if !strings.HasPrefix(result.Path, expectedPrefix) {
 		t.Errorf("Path = %s, expected prefix %s", result.Path, expectedPrefix)
 	}

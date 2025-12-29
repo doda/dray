@@ -390,8 +390,8 @@ func TestRangeCacheGCNotification(t *testing.T) {
 	}
 }
 
-// TestExtractWALPathFromNotification tests the path extraction helper.
-func TestExtractWALPathFromNotification(t *testing.T) {
+// TestExtractWALIDFromNotification tests the WAL ID extraction helper.
+func TestExtractWALIDFromNotification(t *testing.T) {
 	tests := []struct {
 		name     string
 		key      string
@@ -400,12 +400,12 @@ func TestExtractWALPathFromNotification(t *testing.T) {
 		{
 			name:     "WAL object key",
 			key:      keys.WALObjectsPrefix + "/5/abc123",
-			expected: "wal/5/abc123.wal",
+			expected: "abc123",
 		},
 		{
 			name:     "WAL GC key",
 			key:      keys.WALGCPrefix + "/3/def456",
-			expected: "wal/3/def456.wal",
+			expected: "def456",
 		},
 		{
 			name:     "unrelated key",
@@ -421,9 +421,9 @@ func TestExtractWALPathFromNotification(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractWALPathFromNotification(tt.key)
+			got := extractWALIDFromNotification(tt.key)
 			if got != tt.expected {
-				t.Errorf("extractWALPathFromNotification(%q) = %q, want %q", tt.key, got, tt.expected)
+				t.Errorf("extractWALIDFromNotification(%q) = %q, want %q", tt.key, got, tt.expected)
 			}
 		})
 	}

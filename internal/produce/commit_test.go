@@ -449,7 +449,7 @@ func TestCommitter_Commit(t *testing.T) {
 // TestWALObjectRecord_Marshal tests WAL object record marshaling.
 func TestWALObjectRecord_Marshal(t *testing.T) {
 	record := WALObjectRecord{
-		Path:      "wal/domain=0/abc.wo",
+		Path:      "wal/v1/zone=zone-a/domain=0/date=2025/01/02/abc.wo",
 		RefCount:  3,
 		CreatedAt: 1234567890,
 		SizeBytes: 1024,

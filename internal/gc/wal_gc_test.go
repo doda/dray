@@ -121,7 +121,7 @@ func TestWALGCWorker_ScanOnce_DeletesEligibleObjects(t *testing.T) {
 
 	// Create a GC record that's eligible for deletion (deleteAfterMs in the past)
 	gcRecord := WALGCRecord{
-		Path:          "wal/domain=0/test-wal-001.wo",
+		Path:          testWALPath(0, "test-wal-001"),
 		DeleteAfterMs: time.Now().Add(-1 * time.Hour).UnixMilli(),
 		CreatedAt:     time.Now().Add(-2 * time.Hour).UnixMilli(),
 		SizeBytes:     1024,
@@ -167,7 +167,7 @@ func TestWALGCWorker_ScanOnce_SkipsNonEligibleObjects(t *testing.T) {
 
 	// Create a GC record that's NOT eligible for deletion (deleteAfterMs in the future)
 	gcRecord := WALGCRecord{
-		Path:          "wal/domain=0/test-wal-002.wo",
+		Path:          testWALPath(0, "test-wal-002"),
 		DeleteAfterMs: time.Now().Add(1 * time.Hour).UnixMilli(),
 		CreatedAt:     time.Now().Add(-10 * time.Minute).UnixMilli(),
 		SizeBytes:     2048,
@@ -215,7 +215,7 @@ func TestWALGCWorker_ScanOnce_MultipleDomains(t *testing.T) {
 	domains := []int{0, 1, 2}
 	for _, domain := range domains {
 		gcRecord := WALGCRecord{
-			Path:          "wal/domain=" + string(rune('0'+domain)) + "/test-wal.wo",
+			Path:          testWALPath(domain, "test-wal"),
 			DeleteAfterMs: time.Now().Add(-30 * time.Minute).UnixMilli(),
 			CreatedAt:     time.Now().Add(-1 * time.Hour).UnixMilli(),
 			SizeBytes:     512,
@@ -235,7 +235,7 @@ func TestWALGCWorker_ScanOnce_MultipleDomains(t *testing.T) {
 
 	// Verify all objects and markers were deleted
 	for _, domain := range domains {
-		path := "wal/domain=" + string(rune('0'+domain)) + "/test-wal.wo"
+		path := testWALPath(domain, "test-wal")
 		if objStore.hasObject(path) {
 			t.Errorf("WAL object in domain %d should have been deleted", domain)
 		}
@@ -255,7 +255,7 @@ func TestWALGCWorker_ScanOnce_HandlesAlreadyDeletedObject(t *testing.T) {
 
 	// Create a GC record pointing to an object that doesn't exist
 	gcRecord := WALGCRecord{
-		Path:          "wal/domain=0/missing-wal.wo",
+		Path:          testWALPath(0, "missing-wal"),
 		DeleteAfterMs: time.Now().Add(-1 * time.Hour).UnixMilli(),
 		CreatedAt:     time.Now().Add(-2 * time.Hour).UnixMilli(),
 		SizeBytes:     1024,
@@ -289,7 +289,7 @@ func TestWALGCWorker_ProcessEligible(t *testing.T) {
 	// Create 3 eligible and 2 non-eligible GC records
 	for i := 0; i < 5; i++ {
 		walID := "test-wal-" + string(rune('a'+i))
-		path := "wal/domain=0/" + walID + ".wo"
+		path := testWALPath(0, walID)
 
 		var deleteAfterMs int64
 		if i < 3 {
@@ -351,7 +351,7 @@ func TestWALGCWorker_GetPendingCount(t *testing.T) {
 		for j := 0; j < 2; j++ {
 			walID := "wal-" + string(rune('0'+i)) + "-" + string(rune('a'+j))
 			gcRecord := WALGCRecord{
-				Path:          "wal/domain=" + string(rune('0'+i)) + "/" + walID + ".wo",
+				Path:          testWALPath(i, walID),
 				DeleteAfterMs: time.Now().Add(-1 * time.Hour).UnixMilli(),
 				CreatedAt:     time.Now().Add(-2 * time.Hour).UnixMilli(),
 				SizeBytes:     100,
@@ -388,7 +388,7 @@ func TestWALGCWorker_GetEligibleCount(t *testing.T) {
 			deleteAfterMs = time.Now().Add(1 * time.Hour).UnixMilli()
 		}
 		gcRecord := WALGCRecord{
-			Path:          "wal/domain=0/" + walID + ".wo",
+			Path:          testWALPath(0, walID),
 			DeleteAfterMs: deleteAfterMs,
 			CreatedAt:     time.Now().Add(-2 * time.Hour).UnixMilli(),
 			SizeBytes:     100,
@@ -470,7 +470,7 @@ func TestWALGCWorker_IntegrationWithWALRefCount(t *testing.T) {
 	// Simulate what happens when compaction decrements a WAL refcount to 0
 	// The compaction process creates a GC marker at /dray/v1/wal/gc/<metaDomain>/<walId>
 	walID := "wal-compacted-001"
-	walPath := "wal/domain=0/" + walID + ".wo"
+	walPath := testWALPath(0, walID)
 
 	// Object exists
 	objStore.Put(ctx, walPath, bytes.NewReader([]byte("original-wal-content")), 20, "application/octet-stream")

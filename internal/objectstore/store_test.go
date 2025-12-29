@@ -15,19 +15,19 @@ func TestObjectErrorFormat(t *testing.T) {
 			name: "get not found",
 			err: &ObjectError{
 				Op:  "Get",
-				Key: "wal/domain=0/abc123.wo",
+				Key: "wal/v1/zone=zone-a/domain=0/date=2025/01/02/abc123.wo",
 				Err: ErrNotFound,
 			},
-			expected: `objectstore: Get "wal/domain=0/abc123.wo": object not found`,
+			expected: `objectstore: Get "wal/v1/zone=zone-a/domain=0/date=2025/01/02/abc123.wo": object not found`,
 		},
 		{
 			name: "put access denied",
 			err: &ObjectError{
 				Op:  "Put",
-				Key: "wal/domain=1/xyz789.wo",
+				Key: "wal/v1/zone=zone-b/domain=1/date=2025/01/02/xyz789.wo",
 				Err: ErrAccessDenied,
 			},
-			expected: `objectstore: Put "wal/domain=1/xyz789.wo": access denied`,
+			expected: `objectstore: Put "wal/v1/zone=zone-b/domain=1/date=2025/01/02/xyz789.wo": access denied`,
 		},
 		{
 			name: "get range invalid",

@@ -65,6 +65,7 @@ type ObjectRangeCache struct {
 	mu            sync.RWMutex
 	ranges        map[rangeKey]*cachedRange // all cached ranges
 	walRanges     map[string][]rangeKey     // walPath -> range keys for eviction
+	walIDRanges   map[string][]rangeKey     // walID -> range keys for invalidation
 	totalSize     int64                     // total memory usage
 	lastAccessSeq int64                     // monotonic sequence for LRU tracking
 
@@ -93,6 +94,7 @@ func NewObjectRangeCache(store metadata.MetadataStore, config RangeCacheConfig) 
 		config:    config,
 		ranges:    make(map[rangeKey]*cachedRange),
 		walRanges: make(map[string][]rangeKey),
+		walIDRanges: make(map[string][]rangeKey),
 		store:     store,
 		ctx:       ctx,
 		cancel:    cancel,
@@ -167,6 +169,9 @@ func (c *ObjectRangeCache) putLocked(key rangeKey, data []byte) {
 	}
 	c.ranges[key] = cached
 	c.walRanges[key.walPath] = append(c.walRanges[key.walPath], key)
+	if walID := walIDFromPath(key.walPath); walID != "" {
+		c.walIDRanges[walID] = append(c.walIDRanges[walID], key)
+	}
 	c.totalSize += int64(len(data))
 
 	// Enforce per-WAL limit
@@ -253,6 +258,19 @@ func (c *ObjectRangeCache) removeLocked(key rangeKey) {
 	if len(c.walRanges[key.walPath]) == 0 {
 		delete(c.walRanges, key.walPath)
 	}
+
+	if walID := walIDFromPath(key.walPath); walID != "" {
+		keys := c.walIDRanges[walID]
+		for i, k := range keys {
+			if k == key {
+				c.walIDRanges[walID] = append(keys[:i], keys[i+1:]...)
+				break
+			}
+		}
+		if len(c.walIDRanges[walID]) == 0 {
+			delete(c.walIDRanges, walID)
+		}
+	}
 }
 
 // InvalidateWAL removes all cached ranges for a WAL object.
@@ -262,12 +280,21 @@ func (c *ObjectRangeCache) InvalidateWAL(walPath string) {
 
 	keys := c.walRanges[walPath]
 	for _, key := range keys {
-		if cached, ok := c.ranges[key]; ok {
-			c.totalSize -= int64(len(cached.data))
-			delete(c.ranges, key)
-		}
+		c.removeLocked(key)
 	}
 	delete(c.walRanges, walPath)
+}
+
+// InvalidateWALID removes all cached ranges for a WAL object by ID.
+func (c *ObjectRangeCache) InvalidateWALID(walID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	keys := append([]rangeKey(nil), c.walIDRanges[walID]...)
+	for _, key := range keys {
+		c.removeLocked(key)
+	}
+	delete(c.walIDRanges, walID)
 }
 
 // InvalidateAll removes all cached entries.
@@ -277,6 +304,7 @@ func (c *ObjectRangeCache) InvalidateAll() {
 
 	c.ranges = make(map[rangeKey]*cachedRange)
 	c.walRanges = make(map[string][]rangeKey)
+	c.walIDRanges = make(map[string][]rangeKey)
 	c.totalSize = 0
 }
 
@@ -366,27 +394,24 @@ func (c *ObjectRangeCache) processNotifications(stream metadata.NotificationStre
 		// GC keys: /dray/v1/wal/gc/<metaDomain>/<walId>
 		// WAL object keys: /dray/v1/wal/objects/<metaDomain>/<walId>
 		if notification.Deleted {
-			walPath := extractWALPathFromNotification(notification.Key)
-			if walPath != "" {
-				c.InvalidateWAL(walPath)
+			walID := extractWALIDFromNotification(notification.Key)
+			if walID != "" {
+				c.InvalidateWALID(walID)
 			}
 		}
 	}
 }
 
-// extractWALPathFromNotification extracts the WAL object path from a notification key.
+// extractWALIDFromNotification extracts the WAL object ID from a notification key.
 // Returns empty string if the key is not a WAL-related key.
-func extractWALPathFromNotification(key string) string {
+func extractWALIDFromNotification(key string) string {
 	// Handle WAL object deletion notifications
 	// Key format: /dray/v1/wal/objects/<metaDomain>/<walId>
-	// The actual object path in S3 would be: wal/<metaDomain>/<walId>.wal
 	if strings.HasPrefix(key, keys.WALObjectsPrefix+"/") {
 		suffix := strings.TrimPrefix(key, keys.WALObjectsPrefix+"/")
 		parts := strings.SplitN(suffix, "/", 2)
 		if len(parts) == 2 {
-			metaDomain := parts[0]
-			walID := parts[1]
-			return fmt.Sprintf("wal/%s/%s.wal", metaDomain, walID)
+			return parts[1]
 		}
 	}
 
@@ -396,11 +421,28 @@ func extractWALPathFromNotification(key string) string {
 		suffix := strings.TrimPrefix(key, keys.WALGCPrefix+"/")
 		parts := strings.SplitN(suffix, "/", 2)
 		if len(parts) == 2 {
-			metaDomain := parts[0]
-			walID := parts[1]
-			return fmt.Sprintf("wal/%s/%s.wal", metaDomain, walID)
+			return parts[1]
 		}
 	}
 
 	return ""
+}
+
+func walIDFromPath(walPath string) string {
+	if walPath == "" {
+		return ""
+	}
+	parts := strings.Split(walPath, "/")
+	last := parts[len(parts)-1]
+	if last == "" {
+		return ""
+	}
+	switch {
+	case strings.HasSuffix(last, ".wo"):
+		return strings.TrimSuffix(last, ".wo")
+	case strings.HasSuffix(last, ".wal"):
+		return strings.TrimSuffix(last, ".wal")
+	default:
+		return ""
+	}
 }

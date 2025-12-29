@@ -71,7 +71,7 @@ type ChunkOffset struct {
 // PathFormatter generates object storage paths for WAL objects.
 type PathFormatter interface {
 	// FormatPath returns the object key for a WAL with the given parameters.
-	FormatPath(metaDomain uint32, walID uuid.UUID) string
+	FormatPath(metaDomain uint32, walID uuid.UUID, createdAt time.Time, zoneID string) string
 }
 
 // DefaultPathFormatter implements PathFormatter with a standard path format.
@@ -80,18 +80,32 @@ type DefaultPathFormatter struct {
 	Prefix string
 }
 
-// FormatPath returns a path in the format: {prefix}wal/domain={metaDomain}/{walId}.wo
-func (f *DefaultPathFormatter) FormatPath(metaDomain uint32, walID uuid.UUID) string {
+// FormatPath returns a path in the format:
+// {prefix}wal/v1/zone={zoneId}/domain={metaDomain}/date=YYYY/MM/DD/{walId}.wo
+func (f *DefaultPathFormatter) FormatPath(metaDomain uint32, walID uuid.UUID, createdAt time.Time, zoneID string) string {
+	zoneID = normalizeZoneID(zoneID)
+	createdAt = createdAt.UTC()
+	path := fmt.Sprintf(
+		"wal/v1/zone=%s/domain=%d/date=%04d/%02d/%02d/%s.wo",
+		zoneID,
+		metaDomain,
+		createdAt.Year(),
+		createdAt.Month(),
+		createdAt.Day(),
+		walID.String(),
+	)
 	if f.Prefix == "" {
-		return fmt.Sprintf("wal/domain=%d/%s.wo", metaDomain, walID.String())
+		return path
 	}
-	return fmt.Sprintf("%s/wal/domain=%d/%s.wo", f.Prefix, metaDomain, walID.String())
+	return fmt.Sprintf("%s/%s", f.Prefix, path)
 }
 
 // WriterConfig configures the WAL writer.
 type WriterConfig struct {
 	// PathFormatter generates object storage paths. If nil, DefaultPathFormatter is used.
 	PathFormatter PathFormatter
+	// ZoneID is the broker zone identifier to include in WAL paths.
+	ZoneID string
 }
 
 // Writer batches multi-stream entries and writes WAL objects to storage.
@@ -99,6 +113,7 @@ type WriterConfig struct {
 type Writer struct {
 	store         objectstore.Store
 	pathFormatter PathFormatter
+	zoneID        string
 	metaDomain    *uint32 // nil until first chunk is added
 	chunks        []Chunk
 	closed        bool
@@ -107,12 +122,17 @@ type Writer struct {
 // NewWriter creates a new WAL writer that writes to the given object store.
 func NewWriter(store objectstore.Store, cfg *WriterConfig) *Writer {
 	var pf PathFormatter = &DefaultPathFormatter{}
+	zoneID := ""
 	if cfg != nil && cfg.PathFormatter != nil {
 		pf = cfg.PathFormatter
+	}
+	if cfg != nil {
+		zoneID = cfg.ZoneID
 	}
 	return &Writer{
 		store:         store,
 		pathFormatter: pf,
+		zoneID:        normalizeZoneID(zoneID),
 		chunks:        make([]Chunk, 0),
 	}
 }
@@ -158,7 +178,8 @@ func (w *Writer) Flush(ctx context.Context) (*WriteResult, error) {
 	}
 
 	walID := uuid.New()
-	createdAt := time.Now().UnixMilli()
+	now := time.Now().UTC()
+	createdAt := now.UnixMilli()
 	metaDomain := *w.metaDomain
 
 	wal := NewWAL(walID, metaDomain, createdAt)
@@ -171,7 +192,7 @@ func (w *Writer) Flush(ctx context.Context) (*WriteResult, error) {
 		return nil, fmt.Errorf("wal: encoding failed: %w", err)
 	}
 
-	path := w.pathFormatter.FormatPath(metaDomain, walID)
+	path := w.pathFormatter.FormatPath(metaDomain, walID, now, w.zoneID)
 
 	err = w.store.Put(ctx, path, bytes.NewReader(data), int64(len(data)), "application/octet-stream")
 	if err != nil {
@@ -214,4 +235,11 @@ func (w *Writer) Close() error {
 	w.closed = true
 	w.chunks = nil
 	return nil
+}
+
+func normalizeZoneID(zoneID string) string {
+	if zoneID == "" {
+		return "unknown"
+	}
+	return zoneID
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -112,6 +113,15 @@ func (s *mockStore) Close() error {
 	return nil
 }
 
+const (
+	walTestZone = "zone-a"
+	walTestDate = "2025/01/02"
+)
+
+func testWALPath(walID string) string {
+	return fmt.Sprintf("wal/v1/zone=%s/domain=0/date=%s/%s.wo", walTestZone, walTestDate, walID)
+}
+
 // makeMinimalBatch creates a minimal valid Kafka record batch for testing.
 // Record batch format (minimum 61 bytes):
 //   - baseOffset: int64 (8 bytes) - offset 0
@@ -194,7 +204,7 @@ func TestWALReader_ReadBatches_SingleBatch(t *testing.T) {
 	chunkData := makeChunkData([][]byte{batch})
 
 	// Store the chunk data
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	entry := &index.IndexEntry{
@@ -237,7 +247,7 @@ func TestWALReader_ReadBatches_MultipleBatches(t *testing.T) {
 	batch3 := makeMinimalBatch(0, 2)
 	chunkData := makeChunkData([][]byte{batch1, batch2, batch3})
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	entry := &index.IndexEntry{
@@ -277,7 +287,7 @@ func TestWALReader_ReadBatches_OffsetFiltering(t *testing.T) {
 	batch3 := makeMinimalBatch(0, 2)
 	chunkData := makeChunkData([][]byte{batch1, batch2, batch3})
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	entry := &index.IndexEntry{
@@ -329,7 +339,7 @@ func TestWALReader_ReadBatches_MaxBytesLimit(t *testing.T) {
 	batch := makeMinimalBatch(0, 5)
 	chunkData := makeChunkData([][]byte{batch, batch, batch})
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	entry := &index.IndexEntry{
@@ -376,7 +386,7 @@ func TestWALReader_ReadBatches_WithBatchIndex(t *testing.T) {
 	batch3 := makeMinimalBatch(0, 2)
 	chunkData := makeChunkData([][]byte{batch1, batch2, batch3})
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	// Calculate batch positions in chunk
@@ -483,7 +493,7 @@ func TestWALReader_ReadBatches_LargeBatchIndex(t *testing.T) {
 	}
 
 	chunkData := makeChunkData(batches)
-	walPath := "wal/domain=0/large.wo"
+	walPath := testWALPath("large")
 	store.objects[walPath] = chunkData
 
 	entry := &index.IndexEntry{
@@ -529,7 +539,7 @@ func TestWALReader_ReadBatches_ChunkOffset(t *testing.T) {
 	}
 	fullObject := append(padding, chunkData...)
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = fullObject
 
 	entry := &index.IndexEntry{
@@ -562,7 +572,7 @@ func TestWALReader_ReadBatches_ObjectNotFound(t *testing.T) {
 		StartOffset: 0,
 		EndOffset:   5,
 		FileType:    index.FileTypeWAL,
-		WalPath:     "wal/domain=0/nonexistent.wo",
+		WalPath:     testWALPath("nonexistent"),
 		ChunkOffset: 0,
 		ChunkLength: 100,
 	}
@@ -598,7 +608,7 @@ func TestWALReader_ReadBatches_TruncatedChunk(t *testing.T) {
 	batch := makeMinimalBatch(0, 5)
 	chunkData := makeChunkData([][]byte{batch})
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	entry := &index.IndexEntry{
@@ -627,7 +637,7 @@ func TestWALReader_ReadBatches_OffsetNotInChunk(t *testing.T) {
 	batch := makeMinimalBatch(0, 5)
 	chunkData := makeChunkData([][]byte{batch})
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	entry := &index.IndexEntry{
@@ -658,7 +668,7 @@ func TestWALReader_ReadBatches_RawBytesForPatching(t *testing.T) {
 	originalBaseOffset := GetBaseOffset(batch)
 	chunkData := makeChunkData([][]byte{batch})
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	entry := &index.IndexEntry{
@@ -755,7 +765,7 @@ func TestWALReaderWithCache_CacheHit(t *testing.T) {
 	batch := makeMinimalBatch(0, 5)
 	chunkData := makeChunkData([][]byte{batch})
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	entry := &index.IndexEntry{
@@ -810,7 +820,7 @@ func TestWALReaderWithCache_CacheInvalidation(t *testing.T) {
 	batch := makeMinimalBatch(0, 5)
 	chunkData := makeChunkData([][]byte{batch})
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	entry := &index.IndexEntry{
@@ -860,7 +870,7 @@ func TestWALReaderWithCache_NilCache(t *testing.T) {
 	batch := makeMinimalBatch(0, 5)
 	chunkData := makeChunkData([][]byte{batch})
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	entry := &index.IndexEntry{
@@ -893,7 +903,7 @@ func TestWALReader_ReadBatches_BatchIndexMaxBytes(t *testing.T) {
 	batch := makeMinimalBatch(0, 5)
 	chunkData := makeChunkData([][]byte{batch, batch, batch})
 
-	walPath := "wal/domain=0/test.wo"
+	walPath := testWALPath("test")
 	store.objects[walPath] = chunkData
 
 	batchLen := uint32(len(batch))

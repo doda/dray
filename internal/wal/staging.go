@@ -55,6 +55,8 @@ type StagingWriteResult struct {
 type StagingWriterConfig struct {
 	// PathFormatter generates object storage paths. If nil, DefaultPathFormatter is used.
 	PathFormatter PathFormatter
+	// ZoneID is the broker zone identifier to include in WAL paths.
+	ZoneID string
 
 	// Metrics is an optional WAL metrics recorder. If nil, no metrics are recorded.
 	Metrics *metrics.WALMetrics
@@ -68,6 +70,7 @@ type StagingWriter struct {
 	store         objectstore.Store
 	metaStore     metadata.MetadataStore
 	pathFormatter PathFormatter
+	zoneID        string
 	metaDomain    *uint32
 	chunks        []Chunk
 	closed        bool
@@ -79,16 +82,19 @@ type StagingWriter struct {
 func NewStagingWriter(store objectstore.Store, metaStore metadata.MetadataStore, cfg *StagingWriterConfig) *StagingWriter {
 	var pf PathFormatter = &DefaultPathFormatter{}
 	var walMetrics *metrics.WALMetrics
+	zoneID := ""
 	if cfg != nil {
 		if cfg.PathFormatter != nil {
 			pf = cfg.PathFormatter
 		}
 		walMetrics = cfg.Metrics
+		zoneID = cfg.ZoneID
 	}
 	return &StagingWriter{
 		store:         store,
 		metaStore:     metaStore,
 		pathFormatter: pf,
+		zoneID:        normalizeZoneID(zoneID),
 		chunks:        make([]Chunk, 0),
 		metrics:       walMetrics,
 	}
@@ -142,7 +148,8 @@ func (w *StagingWriter) Flush(ctx context.Context) (*StagingWriteResult, error) 
 
 	flushStart := time.Now()
 	walID := uuid.New()
-	createdAt := time.Now().UnixMilli()
+	now := time.Now().UTC()
+	createdAt := now.UnixMilli()
 	metaDomain := *w.metaDomain
 
 	wal := NewWAL(walID, metaDomain, createdAt)
@@ -155,7 +162,7 @@ func (w *StagingWriter) Flush(ctx context.Context) (*StagingWriteResult, error) 
 		return nil, fmt.Errorf("wal: encoding failed: %w", err)
 	}
 
-	path := w.pathFormatter.FormatPath(metaDomain, walID)
+	path := w.pathFormatter.FormatPath(metaDomain, walID, now, w.zoneID)
 	size := int64(len(data))
 
 	// Write WAL object to object storage

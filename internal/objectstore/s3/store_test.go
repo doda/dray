@@ -665,7 +665,7 @@ func TestWALObjectPath(t *testing.T) {
 	ctx := context.Background()
 
 	// Test with WAL-like path
-	key := "wal/domain=0/abc123-def456.wo"
+	key := "wal/v1/zone=zone-a/domain=0/date=2025/01/02/abc123-def456.wo"
 	data := make([]byte, 1024)
 	for i := range data {
 		data[i] = byte(i % 256)
@@ -677,7 +677,7 @@ func TestWALObjectPath(t *testing.T) {
 	}
 
 	// List with prefix
-	results, err := store.List(ctx, "wal/domain=0/")
+	results, err := store.List(ctx, "wal/v1/zone=zone-a/domain=0/date=2025/01/02/")
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}

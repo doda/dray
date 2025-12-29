@@ -104,6 +104,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	// Create committer with object store (nil until object store integration).
 	b.committer = produce.NewCommitter(b.objectStore, b.metaStore, produce.CommitterConfig{
 		NumDomains: cfg.Metadata.NumDomains,
+		ZoneID:     cfg.Broker.ZoneID,
 	})
 
 	b.buffer = produce.NewBuffer(produce.BufferConfig{

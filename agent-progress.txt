@@ -1107,3 +1107,30 @@ Start with project-setup, then follow spec phases:
 - Challenge: gofmt not available in PATH.
 - Resolution: left formatting consistent with existing file style.
 - Follow-ups: none
+[2025-12-29T22:55:00Z] Completed fix-wal-path-format: PASS
+- Updated WAL path formatter to wal/v1/zone=.../domain=.../date=YYYY/MM/DD/<walId>.wo with zone/date wiring in writers.
+- Adjusted range-cache invalidation to operate on WAL IDs and updated WAL path expectations across GC, writer, staging, fetch, and objectstore tests.
+- Files changed: internal/wal/writer.go
+- Files changed: internal/wal/staging.go
+- Files changed: internal/fetch/range_cache.go
+- Files changed: internal/gc/wal_orphan_gc_test.go
+- Files changed: internal/gc/wal_gc_test.go
+- Files changed: internal/fetch/wal_reader_test.go
+- Files changed: internal/wal/writer_test.go
+- Files changed: internal/wal/staging_test.go
+- Files changed: internal/protocol/fetch_test.go
+- Files changed: internal/objectstore/store.go
+- Files changed: internal/objectstore/store_test.go
+- Files changed: internal/objectstore/s3/store_test.go
+- Files changed: internal/produce/commit_test.go
+- Files changed: cmd/drayd/broker.go
+- Files changed: internal/fetch/range_cache_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/wal -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/fetch -run "RangeCache|WALReader" -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/gc -run "WAL" -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/objectstore -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: ./init.sh timed out at 120s.
+- Resolution: reran ./init.sh with 600s timeout; completed successfully.
+- Follow-ups: none.

@@ -2874,7 +2874,7 @@
       "Adjust any downstream code that assumes old path format",
       "Add test for path format correctness"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/wal/writer.go"
