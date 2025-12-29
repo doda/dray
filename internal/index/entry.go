@@ -150,16 +150,18 @@ func (sm *StreamManager) AppendIndexEntry(ctx context.Context, req AppendRequest
 		// If no entries exist, cumulative size starts at 0.
 		prevCumulativeSize := int64(0)
 
-		// List the last index entry for this stream to get previous cumulative size
-		prefix := keys.OffsetIndexPrefix(req.StreamID)
-		entries, err := sm.store.List(ctx, prefix, "", 0)
+		// Lookup the last entry by listing only the current HWM offsetEnd key.
+		startKey, err := keys.OffsetIndexStartKey(req.StreamID, currentHWM)
+		if err != nil {
+			return err
+		}
+		entries, err := sm.store.List(ctx, startKey, "", 1)
 		if err != nil {
 			return err
 		}
 
 		if len(entries) > 0 {
-			// Find the entry with the highest offset (last in lexicographic order)
-			lastEntry := entries[len(entries)-1]
+			lastEntry := entries[0]
 			var lastIndexEntry IndexEntry
 			if err := json.Unmarshal(lastEntry.Value, &lastIndexEntry); err != nil {
 				return err

@@ -2799,7 +2799,7 @@
       "Add benchmark or unit test asserting no full list on append",
       "Run index append tests to confirm correctness"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/index/entry.go"

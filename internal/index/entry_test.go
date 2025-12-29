@@ -14,15 +14,20 @@ import (
 	"time"
 
 	"github.com/dray-io/dray/internal/metadata"
+	"github.com/dray-io/dray/internal/metadata/keys"
 	"github.com/dray-io/dray/internal/objectstore"
 	"github.com/google/uuid"
 )
 
 // indexTestStore extends the mock store to support List for offset index tests.
 type indexTestStore struct {
-	data     map[string]indexTestKV
-	closed   bool
-	txnCount int
+	data             map[string]indexTestKV
+	closed           bool
+	txnCount         int
+	listCalls        int
+	lastListStartKey string
+	lastListEndKey   string
+	lastListLimit    int
 }
 
 type indexTestKV struct {
@@ -84,6 +89,11 @@ func (m *indexTestStore) List(ctx context.Context, startKey, endKey string, limi
 	if m.closed {
 		return nil, metadata.ErrStoreClosed
 	}
+
+	m.listCalls++
+	m.lastListStartKey = startKey
+	m.lastListEndKey = endKey
+	m.lastListLimit = limit
 
 	// Collect all matching keys
 	// The semantics are: if endKey is empty, it's a prefix match.
@@ -349,6 +359,68 @@ func TestAppendIndexEntry_MultipleAppends(t *testing.T) {
 	}
 	if entries[1].CumulativeSize != 6144 { // 4096 + 2048
 		t.Errorf("Second entry CumulativeSize = %d, want 6144", entries[1].CumulativeSize)
+	}
+}
+
+func TestAppendIndexEntry_UsesLastEntryLookup(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    100,
+		ChunkSizeBytes: 4096,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		WalID:          uuid.New().String(),
+		WalPath:        "s3://bucket/wal/1.wo",
+		ChunkOffset:    0,
+		ChunkLength:    4096,
+	})
+	if err != nil {
+		t.Fatalf("First AppendIndexEntry failed: %v", err)
+	}
+
+	store.listCalls = 0
+	store.lastListStartKey = ""
+	store.lastListEndKey = ""
+	store.lastListLimit = 0
+
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    50,
+		ChunkSizeBytes: 2048,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		WalID:          uuid.New().String(),
+		WalPath:        "s3://bucket/wal/2.wo",
+		ChunkOffset:    0,
+		ChunkLength:    2048,
+	})
+	if err != nil {
+		t.Fatalf("Second AppendIndexEntry failed: %v", err)
+	}
+
+	expectedStartKey, err := keys.OffsetIndexStartKey(streamID, 100)
+	if err != nil {
+		t.Fatalf("OffsetIndexStartKey failed: %v", err)
+	}
+
+	if store.listCalls != 1 {
+		t.Errorf("listCalls = %d, want 1", store.listCalls)
+	}
+	if store.lastListStartKey != expectedStartKey {
+		t.Errorf("lastListStartKey = %s, want %s", store.lastListStartKey, expectedStartKey)
+	}
+	if store.lastListLimit != 1 {
+		t.Errorf("lastListLimit = %d, want 1", store.lastListLimit)
+	}
+	if store.lastListEndKey != "" {
+		t.Errorf("lastListEndKey = %s, want empty", store.lastListEndKey)
 	}
 }
 
