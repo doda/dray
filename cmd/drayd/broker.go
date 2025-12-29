@@ -609,6 +609,43 @@ func (h *brokerHandler) HandleRequest(ctx context.Context, header *server.Reques
 		resp := h.consumerGroupDescribe.Handle(ctx, version, descReq)
 		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
 
+	// Transaction APIs - explicitly rejected per spec 14.3
+	case 24: // AddPartitionsToTxn
+		req, err := h.decoder.DecodeRequest(apiKey, version, payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode AddPartitionsToTxn: %w", err)
+		}
+		txnReq := req.Inner().(*kmsg.AddPartitionsToTxnRequest)
+		resp := protocol.HandleAddPartitionsToTxn(version, txnReq, h.logger)
+		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
+
+	case 25: // AddOffsetsToTxn
+		req, err := h.decoder.DecodeRequest(apiKey, version, payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode AddOffsetsToTxn: %w", err)
+		}
+		txnReq := req.Inner().(*kmsg.AddOffsetsToTxnRequest)
+		resp := protocol.HandleAddOffsetsToTxn(version, txnReq, h.logger)
+		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
+
+	case 26: // EndTxn
+		req, err := h.decoder.DecodeRequest(apiKey, version, payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode EndTxn: %w", err)
+		}
+		txnReq := req.Inner().(*kmsg.EndTxnRequest)
+		resp := protocol.HandleEndTxn(version, txnReq, h.logger)
+		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
+
+	case 28: // TxnOffsetCommit
+		req, err := h.decoder.DecodeRequest(apiKey, version, payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode TxnOffsetCommit: %w", err)
+		}
+		txnReq := req.Inner().(*kmsg.TxnOffsetCommitRequest)
+		resp := protocol.HandleTxnOffsetCommit(version, txnReq, h.logger)
+		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
+
 	default:
 		return nil, fmt.Errorf("unsupported API key: %d", apiKey)
 	}

@@ -2589,7 +2589,7 @@
     "scope": [
       "internal/protocol/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "inter-broker-api-rejection",
