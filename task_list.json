@@ -2844,7 +2844,7 @@
       "Add test that ensures staging is not created when WAL write fails",
       "Run WAL staging tests"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/wal/staging.go"

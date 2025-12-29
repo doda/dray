@@ -65,7 +65,7 @@ type WALObjectRecord struct {
 // It performs the following steps per spec section 9.3:
 //  1. Create a WAL writer with staging marker support
 //  2. Build chunks from pending requests
-//  3. Flush WAL to object storage (with staging marker)
+//  3. Flush WAL to object storage and write staging marker
 //  4. Execute atomic metadata commit transaction
 //  5. Populate results with assigned offsets
 func (c *Committer) Commit(ctx context.Context, domain metadata.MetaDomain, requests []*PendingRequest) error {

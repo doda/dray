@@ -442,7 +442,7 @@ func TestCreateFlushHandler(t *testing.T) {
 
 // TestCommitter_FullProduceCommitFlow verifies all steps of produce-commit per spec 9.2-9.7:
 // 1. Write WAL object to storage
-// 2. Write staging marker before commit
+// 2. Write staging marker after WAL write
 // 3. Execute atomic transaction per spec 9.2
 // 4. Allocate offsets for each stream chunk
 // 5. Create offset index entries
@@ -1053,9 +1053,9 @@ func TestCommitter_WALWriteFailure_NoMetadataCommit(t *testing.T) {
 	}
 }
 
-// TestCommitter_WALWriteFailure_StagingMarkerRemains verifies that when WAL write fails,
-// the staging marker remains for orphan GC to clean up.
-func TestCommitter_WALWriteFailure_StagingMarkerRemains(t *testing.T) {
+// TestCommitter_WALWriteFailure_NoStagingMarker verifies that when WAL write fails,
+// no staging marker is created.
+func TestCommitter_WALWriteFailure_NoStagingMarker(t *testing.T) {
 	metaStore := metadata.NewMockStore()
 	objStore := newFailingObjectStore(true)
 	ctx := context.Background()
@@ -1092,7 +1092,7 @@ func TestCommitter_WALWriteFailure_StagingMarkerRemains(t *testing.T) {
 		t.Fatal("expected commit to fail due to WAL write failure")
 	}
 
-	// Verify staging marker exists (it was written before the WAL object write failed)
+	// Verify no staging marker exists
 	allKeys := metaStore.GetAllKeys()
 	foundStaging := false
 	for _, key := range allKeys {
@@ -1102,8 +1102,8 @@ func TestCommitter_WALWriteFailure_StagingMarkerRemains(t *testing.T) {
 		}
 	}
 
-	if !foundStaging {
-		t.Error("staging marker should remain after WAL write failure (for orphan GC)")
+	if foundStaging {
+		t.Error("staging marker should not be created after WAL write failure")
 	}
 }
 

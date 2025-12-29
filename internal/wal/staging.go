@@ -15,10 +15,10 @@ import (
 )
 
 // StagingMarker contains metadata about a WAL object that is being written.
-// It is stored at /dray/v1/wal/staging/<metaDomain>/<walId> before the WAL object
-// is fully committed. Per spec section 9.7, orphaned WAL objects (where
-// staging marker exists but no commit) can be safely garbage collected
-// after wal.orphan_ttl (default 24h).
+// It is stored at /dray/v1/wal/staging/<metaDomain>/<walId> after the WAL object
+// is durably written but before the metadata commit. Per spec section 9.7,
+// orphaned WAL objects (where staging marker exists but no commit) can be
+// safely garbage collected after wal.orphan_ttl (default 24h).
 type StagingMarker struct {
 	// Path is the object storage key where the WAL will be written.
 	Path string `json:"path"`
@@ -61,7 +61,7 @@ type StagingWriterConfig struct {
 }
 
 // StagingWriter wraps Writer with staging marker support for orphan detection.
-// Per spec section 9.7, it writes a staging marker before the WAL object
+// Per spec section 9.7, it writes a staging marker after the WAL object
 // is written to object storage. The staging marker is then deleted in the
 // commit transaction.
 type StagingWriter struct {
@@ -124,8 +124,8 @@ func (w *StagingWriter) MetaDomain() *uint32 {
 // Flush writes all buffered chunks to object storage as a single WAL object.
 // Per spec section 9.7, the flush process is:
 //  1. Generate WAL ID and encode the WAL data
-//  2. Write staging marker to metadata store with path, createdAt, sizeBytes
-//  3. Write WAL object to object storage
+//  2. Write WAL object to object storage
+//  3. Write staging marker to metadata store with path, createdAt, sizeBytes
 //  4. Return the staging key for deletion in commit transaction
 //
 // If the metadata commit transaction fails after Flush succeeds, the WAL object
@@ -158,7 +158,13 @@ func (w *StagingWriter) Flush(ctx context.Context) (*StagingWriteResult, error) 
 	path := w.pathFormatter.FormatPath(metaDomain, walID)
 	size := int64(len(data))
 
-	// Write staging marker before WAL object write
+	// Write WAL object to object storage
+	err = w.store.Put(ctx, path, bytes.NewReader(data), size, "application/octet-stream")
+	if err != nil {
+		return nil, fmt.Errorf("wal: write to object store failed: %w", err)
+	}
+
+	// Write staging marker after WAL object write
 	stagingKey := keys.WALStagingKeyPath(int(metaDomain), walID.String())
 	stagingMarker := &StagingMarker{
 		Path:      path,
@@ -167,19 +173,18 @@ func (w *StagingWriter) Flush(ctx context.Context) (*StagingWriteResult, error) 
 	}
 	stagingData, err := json.Marshal(stagingMarker)
 	if err != nil {
+		if deleteErr := w.store.Delete(ctx, path); deleteErr != nil {
+			return nil, fmt.Errorf("wal: failed to marshal staging marker: %w (cleanup failed: %v)", err, deleteErr)
+		}
 		return nil, fmt.Errorf("wal: failed to marshal staging marker: %w", err)
 	}
 
 	_, err = w.metaStore.Put(ctx, stagingKey, stagingData)
 	if err != nil {
+		if deleteErr := w.store.Delete(ctx, path); deleteErr != nil {
+			return nil, fmt.Errorf("wal: failed to write staging marker: %w (cleanup failed: %v)", err, deleteErr)
+		}
 		return nil, fmt.Errorf("wal: failed to write staging marker: %w", err)
-	}
-
-	// Write WAL object to object storage
-	err = w.store.Put(ctx, path, bytes.NewReader(data), size, "application/octet-stream")
-	if err != nil {
-		// Note: staging marker remains - it will be cleaned up by orphan GC
-		return nil, fmt.Errorf("wal: write to object store failed: %w", err)
 	}
 
 	// Calculate chunk layouts to get byte offsets and lengths

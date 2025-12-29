@@ -301,8 +301,8 @@ func (s *orderTrackingObjStore) Put(ctx context.Context, key string, reader io.R
 	return s.mockStore.Put(ctx, key, reader, size, contentType)
 }
 
-func TestStagingWriterStagingKeyBeforeWAL(t *testing.T) {
-	// This test verifies that the staging marker is written before the WAL object
+func TestStagingWriterStagingKeyAfterWAL(t *testing.T) {
+	// This test verifies that the staging marker is written after the WAL object
 	// by tracking the order of operations
 
 	var writeOrder []string
@@ -328,16 +328,16 @@ func TestStagingWriterStagingKeyBeforeWAL(t *testing.T) {
 		t.Fatalf("Flush failed: %v", err)
 	}
 
-	// Verify order: staging marker should be written before WAL object
+	// Verify order: WAL object should be written before staging marker
 	if len(writeOrder) != 2 {
 		t.Fatalf("Expected 2 writes, got %d: %v", len(writeOrder), writeOrder)
 	}
 
-	if !strings.HasPrefix(writeOrder[0], "meta:"+keys.WALStagingPrefix) {
-		t.Errorf("First write should be staging marker, got %q", writeOrder[0])
+	if !strings.HasPrefix(writeOrder[0], "obj:") {
+		t.Errorf("First write should be object, got %q", writeOrder[0])
 	}
-	if !strings.HasPrefix(writeOrder[1], "obj:") {
-		t.Errorf("Second write should be object, got %q", writeOrder[1])
+	if !strings.HasPrefix(writeOrder[1], "meta:"+keys.WALStagingPrefix) {
+		t.Errorf("Second write should be staging marker, got %q", writeOrder[1])
 	}
 }
 
@@ -392,9 +392,13 @@ func TestStagingWriterMetadataError(t *testing.T) {
 		t.Errorf("error should mention staging marker, got: %v", err)
 	}
 
-	// Verify no WAL object was written
+	if len(metaStore.data) != 0 {
+		t.Errorf("Expected no staging markers, found %d", len(metaStore.data))
+	}
+
+	// Verify WAL object was cleaned up after staging marker failure
 	if len(objStore.objects) != 0 {
-		t.Error("WAL object should not be written when staging marker fails")
+		t.Error("WAL object should be cleaned up when staging marker fails")
 	}
 }
 
@@ -414,15 +418,9 @@ func TestStagingWriterObjectStoreError(t *testing.T) {
 		t.Error("expected error from Flush")
 	}
 
-	// Staging marker should remain (for orphan GC cleanup)
-	stagingKeys := 0
-	for key := range metaStore.data {
-		if strings.HasPrefix(key, keys.WALStagingPrefix) {
-			stagingKeys++
-		}
-	}
-	if stagingKeys != 1 {
-		t.Errorf("Expected 1 staging marker to remain, found %d", stagingKeys)
+	// Staging marker should not be written if WAL write fails
+	if len(metaStore.data) != 0 {
+		t.Errorf("Expected no staging markers, found %d", len(metaStore.data))
 	}
 }
 

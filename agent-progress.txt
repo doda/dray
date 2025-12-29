@@ -1083,3 +1083,16 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass)
 - Challenges: init.sh timed out at default 10s on first quick run.
 - Resolution: reran ./init.sh --quick with longer timeout to completion.
+[2025-12-29T21:15:00Z] Completed wal-staging-after-object-write: PASS
+- Implemented staging writer to write markers after WAL object writes with cleanup on staging write failures.
+- Updated staging tests for write order and no staging on WAL write failure.
+- Updated WAL write failure commit test expectations and commit flow comments.
+- Files changed: internal/wal/staging.go
+- Files changed: internal/wal/staging_test.go
+- Files changed: internal/produce/commit.go
+- Files changed: internal/produce/commit_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/wal -run Staging -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/produce -run WALWriteFailure -count=1 (pass)
+- Challenges: none
+- Follow-ups: none
