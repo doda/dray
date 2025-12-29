@@ -1134,3 +1134,16 @@ Start with project-setup, then follow spec phases:
 - Challenge: ./init.sh timed out at 120s.
 - Resolution: reran ./init.sh with 600s timeout; completed successfully.
 - Follow-ups: none.
+[2025-12-29T23:59:00Z] Completed validate-compression-and-deltas-fetch: PASS
+- Implemented franz-go record batch parsing + decompression in fetch patching validation, enforcing per-record offset deltas.
+- Added corrupted compressed payload + per-record offset delta mismatch coverage in fetch patching tests.
+- Updated test record batch builders to include real Kafka records so fetch validation passes (protocol + integration read-your-writes).
+- Files changed: internal/fetch/patching.go
+- Files changed: internal/fetch/patching_test.go
+- Files changed: tests/integration/read_your_writes_test.go
+- Files changed: internal/protocol/produce_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/fetch -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./tests/integration -run TestReadYourWrites -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol -run FetchHandler -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass; first run timed out at 120s, second failed due to invalid test batches, fixed by adding records and reran)

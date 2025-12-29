@@ -628,59 +628,89 @@ func buildFetchRequest(topic string, partition int32, fetchOffset int64) *kmsg.F
 
 // buildRecordBatch creates a valid Kafka record batch with the specified record count.
 func buildRecordBatch(recordCount int) []byte {
-	// Kafka record batch format v2
-	batch := make([]byte, 0, 80)
+	var records []byte
+	for i := 0; i < recordCount; i++ {
+		recordBody := []byte{0}
+		recordBody = appendVarint(recordBody, 0)
+		recordBody = appendVarint(recordBody, int64(i))
+		recordBody = appendVarint(recordBody, -1)
+		recordBody = appendVarint(recordBody, -1)
+		recordBody = appendVarint(recordBody, 0)
 
-	// baseOffset (8 bytes) = 0
-	batch = append(batch, 0, 0, 0, 0, 0, 0, 0, 0)
+		var record []byte
+		record = appendVarint(record, int64(len(recordBody)))
+		record = append(record, recordBody...)
+		records = append(records, record...)
+	}
 
-	// batchLength (4 bytes) = 49 (61 - 12 header bytes)
-	batch = append(batch, 0, 0, 0, 49)
+	batchLength := 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4 + len(records)
+	totalSize := 8 + 4 + batchLength
+	batch := make([]byte, totalSize)
 
-	// partitionLeaderEpoch (4 bytes)
-	batch = append(batch, 0, 0, 0, 0)
+	offset := 0
+	binary.BigEndian.PutUint64(batch[offset:], 0)
+	offset += 8
 
-	// magic (1 byte) = 2
-	batch = append(batch, 2)
+	binary.BigEndian.PutUint32(batch[offset:], uint32(batchLength))
+	offset += 4
 
-	// crc (4 bytes) - placeholder
-	batch = append(batch, 0, 0, 0, 0)
+	binary.BigEndian.PutUint32(batch[offset:], 0)
+	offset += 4
 
-	// attributes (2 bytes)
-	batch = append(batch, 0, 0)
+	batch[offset] = 2
+	offset++
 
-	// lastOffsetDelta (4 bytes)
-	batch = append(batch, 0, 0, 0, byte(recordCount-1))
+	crcOffset := offset
+	offset += 4
+	crcStart := offset
 
-	// firstTimestamp (8 bytes)
+	binary.BigEndian.PutUint16(batch[offset:], 0)
+	offset += 2
+
+	lastOffsetDelta := int32(0)
+	if recordCount > 0 {
+		lastOffsetDelta = int32(recordCount - 1)
+	}
+	binary.BigEndian.PutUint32(batch[offset:], uint32(lastOffsetDelta))
+	offset += 4
+
 	ts := time.Now().UnixMilli()
-	batch = append(batch,
-		byte(ts>>56), byte(ts>>48), byte(ts>>40), byte(ts>>32),
-		byte(ts>>24), byte(ts>>16), byte(ts>>8), byte(ts))
+	binary.BigEndian.PutUint64(batch[offset:], uint64(ts))
+	offset += 8
 
-	// maxTimestamp (8 bytes)
-	batch = append(batch,
-		byte(ts>>56), byte(ts>>48), byte(ts>>40), byte(ts>>32),
-		byte(ts>>24), byte(ts>>16), byte(ts>>8), byte(ts))
+	binary.BigEndian.PutUint64(batch[offset:], uint64(ts))
+	offset += 8
 
-	// producerId (8 bytes) = -1 (non-idempotent)
-	batch = append(batch, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff)
+	binary.BigEndian.PutUint64(batch[offset:], 0xFFFFFFFFFFFFFFFF)
+	offset += 8
 
-	// producerEpoch (2 bytes) = -1
-	batch = append(batch, 0xff, 0xff)
+	binary.BigEndian.PutUint16(batch[offset:], 0xFFFF)
+	offset += 2
 
-	// firstSequence (4 bytes) = -1
-	batch = append(batch, 0xff, 0xff, 0xff, 0xff)
+	binary.BigEndian.PutUint32(batch[offset:], 0xFFFFFFFF)
+	offset += 4
 
-	// recordCount (4 bytes)
-	batch = append(batch, 0, 0, 0, byte(recordCount))
+	binary.BigEndian.PutUint32(batch[offset:], uint32(recordCount))
+	offset += 4
 
-	// Calculate CRC over bytes from offset 21 onwards
+	copy(batch[offset:], records)
+
 	table := crc32.MakeTable(crc32.Castagnoli)
-	crcValue := crc32.Checksum(batch[21:], table)
-	binary.BigEndian.PutUint32(batch[17:21], crcValue)
+	crcValue := crc32.Checksum(batch[crcStart:], table)
+	binary.BigEndian.PutUint32(batch[crcOffset:], crcValue)
 
 	return batch
+}
+
+// appendVarint appends a signed varint to the byte slice using zigzag encoding.
+func appendVarint(b []byte, v int64) []byte {
+	uv := uint64((v << 1) ^ (v >> 63))
+	for uv >= 0x80 {
+		b = append(b, byte(uv)|0x80)
+		uv >>= 7
+	}
+	b = append(b, byte(uv))
+	return b
 }
 
 // mockObjectStore implements objectstore.Store for testing.

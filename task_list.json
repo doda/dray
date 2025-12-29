@@ -2889,7 +2889,7 @@
       "Update validation logic to reject malformed batches with correct errors/logs",
       "Add unit tests with malformed offset deltas and corrupted compressed payloads"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/fetch/patching.go"

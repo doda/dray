@@ -1,10 +1,14 @@
 package fetch
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
 	"testing"
+
+	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
 // TestPatchBaseOffset tests patching the baseOffset field.
@@ -248,31 +252,124 @@ func buildTestBatch(recordCount int, baseOffset int64) []byte {
 // buildTestBatchWithValidCRC creates a Kafka record batch with a valid CRC.
 // This is needed for tests that verify CRC behavior.
 func buildTestBatchWithValidCRC(recordCount int, baseOffset int64) []byte {
-	batch := buildTestBatch(recordCount, baseOffset)
-
-	// Calculate and set the CRC over bytes from offset 21 onwards
-	table := crc32.MakeTable(crc32.Castagnoli)
-	crcValue := crc32.Checksum(batch[21:], table)
-	binary.BigEndian.PutUint32(batch[17:21], crcValue)
-
-	return batch
+	return buildTestBatchWithRecords(recordCount, baseOffset, CompressionNone, nil, true)
 }
 
 // buildTestBatchWithCompression creates a Kafka record batch with a specific
 // compression type and valid CRC.
 func buildTestBatchWithCompression(recordCount int, baseOffset int64, compressionType int) []byte {
-	batch := buildTestBatch(recordCount, baseOffset)
+	return buildTestBatchWithRecords(recordCount, baseOffset, compressionType, nil, true)
+}
 
-	// Set compression type in attributes field (bits 0-2)
-	attrs := int16(compressionType & 0x07)
-	binary.BigEndian.PutUint16(batch[21:23], uint16(attrs))
+func buildTestBatchWithRecords(recordCount int, baseOffset int64, compressionType int, offsetDeltas []int32, setCRC bool) []byte {
+	recordsData := buildTestRecords(recordCount, offsetDeltas)
+	if compressionType > 0 && compressionType <= CompressionZstd {
+		compressed, err := compressRecords(recordsData, compressionType)
+		if err != nil {
+			panic(err)
+		}
+		recordsData = compressed
+	}
 
-	// Calculate and set the CRC over bytes from offset 21 onwards
-	table := crc32.MakeTable(crc32.Castagnoli)
-	crcValue := crc32.Checksum(batch[21:], table)
-	binary.BigEndian.PutUint32(batch[17:21], crcValue)
+	lastOffsetDelta := int32(-1)
+	if recordCount > 0 {
+		lastOffsetDelta = int32(recordCount - 1)
+	}
+
+	recordBatch := kmsg.RecordBatch{
+		FirstOffset:          baseOffset,
+		Length:               int32(49 + len(recordsData)),
+		PartitionLeaderEpoch: 0,
+		Magic:                2,
+		CRC:                  0,
+		Attributes:           int16(compressionType & 0x07),
+		LastOffsetDelta:      lastOffsetDelta,
+		FirstTimestamp:       0,
+		MaxTimestamp:         0,
+		ProducerID:           -1,
+		ProducerEpoch:        -1,
+		FirstSequence:        -1,
+		NumRecords:           int32(recordCount),
+		Records:              recordsData,
+	}
+
+	batch := recordBatch.AppendTo(nil)
+	if setCRC {
+		crcValue := CalculateCRC(batch)
+		binary.BigEndian.PutUint32(batch[17:21], crcValue)
+	}
 
 	return batch
+}
+
+func buildTestRecords(recordCount int, offsetDeltas []int32) []byte {
+	if recordCount == 0 {
+		return nil
+	}
+
+	var buf bytes.Buffer
+	for i := 0; i < recordCount; i++ {
+		offsetDelta := int64(i)
+		if offsetDeltas != nil {
+			offsetDelta = int64(offsetDeltas[i])
+		}
+		writeTestRecord(&buf, offsetDelta)
+	}
+	return buf.Bytes()
+}
+
+func compressRecords(data []byte, compressionType int) ([]byte, error) {
+	var codec kgo.CompressionCodec
+	switch compressionType {
+	case CompressionGzip:
+		codec = kgo.GzipCompression()
+	case CompressionSnappy:
+		codec = kgo.SnappyCompression()
+	case CompressionLz4:
+		codec = kgo.Lz4Compression()
+	case CompressionZstd:
+		codec = kgo.ZstdCompression()
+	default:
+		return data, nil
+	}
+
+	compressor, err := kgo.DefaultCompressor(codec)
+	if err != nil {
+		return nil, err
+	}
+	if compressor == nil {
+		return data, nil
+	}
+
+	var buf bytes.Buffer
+	compressed, _ := compressor.Compress(&buf, data)
+	return compressed, nil
+}
+
+// writeTestRecord writes a single Kafka v2 record.
+func writeTestRecord(w *bytes.Buffer, offsetDelta int64) {
+	var body bytes.Buffer
+
+	body.WriteByte(0)
+	writeVarint(&body, 0)
+	writeVarint(&body, offsetDelta)
+	writeVarint(&body, -1)
+	writeVarint(&body, -1)
+	writeVarint(&body, 0)
+
+	bodyBytes := body.Bytes()
+	writeVarint(w, int64(len(bodyBytes)))
+	w.Write(bodyBytes)
+}
+
+// writeVarint writes a zigzag-encoded signed varint.
+func writeVarint(w *bytes.Buffer, v int64) {
+	uv := uint64((v << 1) ^ (v >> 63))
+	for uv >= 0x80 {
+		w.WriteByte(byte(uv) | 0x80)
+		uv >>= 7
+	}
+	w.WriteByte(byte(uv))
 }
 
 // TestCRCVerification tests that CRC verification works correctly.
@@ -416,6 +513,15 @@ func TestValidateOffsetDeltas(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid record delta sequence fails", func(t *testing.T) {
+		batch := buildTestBatchWithRecords(3, 0, CompressionNone, []int32{0, 2, 2}, true)
+
+		err := ValidateOffsetDeltas(batch)
+		if err == nil {
+			t.Error("ValidateOffsetDeltas() expected error for invalid record delta sequence")
+		}
+	})
+
 	t.Run("small batch fails", func(t *testing.T) {
 		batch := make([]byte, 20)
 
@@ -532,6 +638,22 @@ func TestPatchAndValidate(t *testing.T) {
 		err := PatchAndValidate(batch, 100)
 		if err == nil {
 			t.Error("PatchAndValidate() expected error for invalid compression type")
+		}
+	})
+
+	t.Run("corrupted compressed payload fails", func(t *testing.T) {
+		batch := buildTestBatchWithCompression(3, 0, CompressionGzip)
+
+		recordsOffset := 61
+		if len(batch) <= recordsOffset {
+			t.Fatalf("expected records payload, got batch length %d", len(batch))
+		}
+		batch[recordsOffset] ^= 0xFF
+		binary.BigEndian.PutUint32(batch[17:21], CalculateCRC(batch))
+
+		err := PatchAndValidate(batch, 100)
+		if err == nil {
+			t.Error("PatchAndValidate() expected error for corrupted compressed payload")
 		}
 	})
 

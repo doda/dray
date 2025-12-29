@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+
+	"github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
 // Kafka record batch header offsets
@@ -199,17 +202,25 @@ func GetCompressionType(batch []byte) int {
 // Per spec 9.5, we must validate compression correctness.
 // Valid compression types: 0 (none), 1 (gzip), 2 (snappy), 3 (lz4), 4 (zstd)
 func ValidateCompression(batch []byte) error {
-	if len(batch) < minBatchSize {
-		return ErrBatchTooSmall
+	recordBatch, err := parseRecordBatch(batch)
+	if err != nil {
+		return err
 	}
 
-	compressionType := GetCompressionType(batch)
-	switch compressionType {
-	case CompressionNone, CompressionGzip, CompressionSnappy, CompressionLz4, CompressionZstd:
-		return nil
-	default:
-		return fmt.Errorf("%w: type=%d", ErrInvalidCompression, compressionType)
+	compression := kgo.CompressionCodecType(recordBatch.Attributes & 0x0007)
+	if compression < kgo.CodecNone || compression > kgo.CodecZstd {
+		return fmt.Errorf("%w: type=%d", ErrInvalidCompression, compression)
 	}
+
+	if compression == kgo.CodecNone {
+		return nil
+	}
+
+	if _, err := batchDecompressor.Decompress(recordBatch.Records, compression); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidCompression, err)
+	}
+
+	return nil
 }
 
 // ValidateOffsetDeltas validates that record offset deltas are sequential (0, 1, 2, ..., n-1).
@@ -221,17 +232,27 @@ func ValidateCompression(batch []byte) error {
 //
 // This means the records have offsets: baseOffset+0, baseOffset+1, ..., baseOffset+(n-1)
 func ValidateOffsetDeltas(batch []byte) error {
-	if len(batch) < minBatchSize {
-		return ErrBatchTooSmall
+	recordBatch, err := parseRecordBatch(batch)
+	if err != nil {
+		return err
 	}
 
-	recordCount := GetRecordCount(batch)
-	lastOffsetDelta := GetLastOffsetDelta(batch)
+	rawRecords, err := decompressBatchRecords(recordBatch)
+	if err != nil {
+		return err
+	}
 
-	// For n records, lastOffsetDelta should be n-1
-	// Records have offset deltas: 0, 1, 2, ..., n-1
+	recordCount := recordBatch.NumRecords
+	if recordCount < 0 {
+		return fmt.Errorf("fetch: invalid record count %d", recordCount)
+	}
+
+	if _, err := parseBatchRecords(rawRecords, recordCount); err != nil {
+		return err
+	}
+
+	lastOffsetDelta := recordBatch.LastOffsetDelta
 	expectedLastDelta := recordCount - 1
-
 	if lastOffsetDelta != expectedLastDelta {
 		return fmt.Errorf("%w: lastOffsetDelta=%d, expected=%d (recordCount=%d)",
 			ErrInvalidOffsetDelta, lastOffsetDelta, expectedLastDelta, recordCount)
@@ -293,4 +314,98 @@ func PatchBatchesWithValidation(batches [][]byte, startOffset int64) (int64, err
 	}
 
 	return totalRecords, nil
+}
+
+var batchDecompressor = kgo.DefaultDecompressor()
+
+func parseRecordBatch(batch []byte) (*kmsg.RecordBatch, error) {
+	if len(batch) < minBatchSize {
+		return nil, ErrBatchTooSmall
+	}
+
+	var recordBatch kmsg.RecordBatch
+	if err := recordBatch.ReadFrom(batch); err != nil {
+		return nil, fmt.Errorf("fetch: invalid record batch: %w", err)
+	}
+
+	if recordBatch.Magic != 2 {
+		return nil, fmt.Errorf("fetch: unsupported record batch magic %d", recordBatch.Magic)
+	}
+
+	expectedLength := int32(len(batch) - 12)
+	if expectedLength != recordBatch.Length {
+		return nil, fmt.Errorf("fetch: batch length mismatch: header=%d actual=%d", recordBatch.Length, expectedLength)
+	}
+
+	return &recordBatch, nil
+}
+
+func decompressBatchRecords(recordBatch *kmsg.RecordBatch) ([]byte, error) {
+	compression := kgo.CompressionCodecType(recordBatch.Attributes & 0x0007)
+	if compression < kgo.CodecNone || compression > kgo.CodecZstd {
+		return nil, fmt.Errorf("%w: type=%d", ErrInvalidCompression, compression)
+	}
+
+	if compression == kgo.CodecNone {
+		return recordBatch.Records, nil
+	}
+
+	rawRecords, err := batchDecompressor.Decompress(recordBatch.Records, compression)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidCompression, err)
+	}
+
+	return rawRecords, nil
+}
+
+func parseBatchRecords(raw []byte, recordCount int32) ([]kmsg.Record, error) {
+	if recordCount == 0 {
+		if len(raw) != 0 {
+			return nil, fmt.Errorf("fetch: unexpected record bytes for empty batch")
+		}
+		return nil, nil
+	}
+
+	records := make([]kmsg.Record, 0, recordCount)
+	remaining := raw
+	for i := int32(0); i < recordCount; i++ {
+		length, used := readVarint32(remaining)
+		if used <= 0 {
+			return nil, fmt.Errorf("fetch: truncated record length")
+		}
+		if length < 0 {
+			return nil, fmt.Errorf("fetch: negative record length %d", length)
+		}
+		total := used + int(length)
+		if len(remaining) < total {
+			return nil, fmt.Errorf("fetch: truncated record data")
+		}
+
+		var rec kmsg.Record
+		if err := rec.ReadFrom(remaining[:total]); err != nil {
+			return nil, fmt.Errorf("fetch: record parse error: %w", err)
+		}
+		if rec.OffsetDelta != i {
+			return nil, fmt.Errorf("%w: record=%d offsetDelta=%d", ErrInvalidOffsetDelta, i, rec.OffsetDelta)
+		}
+		records = append(records, rec)
+		remaining = remaining[total:]
+	}
+
+	if len(remaining) != 0 {
+		return nil, fmt.Errorf("fetch: extra record data")
+	}
+
+	return records, nil
+}
+
+func readVarint32(in []byte) (int32, int) {
+	uv, n := binary.Uvarint(in)
+	if n <= 0 {
+		return 0, n
+	}
+	if uv > uint64(^uint32(0)) {
+		return 0, -1
+	}
+	return int32((uv >> 1) ^ uint64(-(int64(uv & 1)))), n
 }
