@@ -319,10 +319,23 @@ func TestGolden_SyncGroup_TwoMemberCoordination(t *testing.T) {
 	}
 	defer client2.Close()
 
-	// Two members join; member2 triggers rebalance.
+	// Two members join; member2 triggers rebalance and waits for leader rejoin.
 	member1ID := joinWithRetry(t, ctx, client1, groupID, "range", []string{topicName})
-	member2ID, member2JoinResp := joinWithRetryResponse(t, ctx, client2, groupID, "range", []string{topicName})
+
+	type joinResult struct {
+		memberID string
+		resp     *kmsg.JoinGroupResponse
+	}
+	joinCh := make(chan joinResult, 1)
+	go func() {
+		member2ID, member2JoinResp := joinWithRetryResponse(t, ctx, client2, groupID, "range", []string{topicName})
+		joinCh <- joinResult{memberID: member2ID, resp: member2JoinResp}
+	}()
+
 	joinResp1 := rejoinGroup(t, ctx, client1, groupID, member1ID, []string{"range"}, []string{topicName})
+	member2Join := <-joinCh
+	member2ID := member2Join.memberID
+	member2JoinResp := member2Join.resp
 
 	// Golden check: members should have different IDs
 	if member1ID == member2ID {

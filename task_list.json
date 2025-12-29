@@ -2664,7 +2664,7 @@
     "scope": [
       "internal/metadata/"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "id": "graceful-shutdown",

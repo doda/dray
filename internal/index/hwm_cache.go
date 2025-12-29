@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
 )
@@ -157,6 +158,11 @@ func (c *HWMCache) Close() error {
 // cache entries when hwm keys are modified.
 func (c *HWMCache) watchNotifications() {
 	defer c.wg.Done()
+	logger := logging.Global().With(map[string]any{
+		"component": "hwm_cache",
+	})
+	var pendingRefresh []string
+	var disconnected bool
 
 	for {
 		// Check if we're closed before starting
@@ -174,13 +180,31 @@ func (c *HWMCache) watchNotifications() {
 			if c.ctx.Err() != nil {
 				return
 			}
+			logger.Warnf("notification stream connection failed", map[string]any{
+				"error": err.Error(),
+			})
 			// Invalidate all on error and retry
 			c.InvalidateAll()
 			continue
 		}
 
+		if disconnected {
+			logger.Infof("notification stream reconnected", map[string]any{
+				"cachedStreams": len(pendingRefresh),
+			})
+			refreshed, failed := c.refreshCachedHWMs(pendingRefresh)
+			if refreshed+failed > 0 {
+				logger.Infof("hwm cache refreshed after reconnect", map[string]any{
+					"refreshed": refreshed,
+					"failed":    failed,
+				})
+			}
+			pendingRefresh = nil
+			disconnected = false
+		}
+
 		// Process notifications until error or cancellation
-		c.processNotifications(stream)
+		err = c.processNotifications(stream)
 		stream.Close()
 
 		// Check if we should exit
@@ -189,17 +213,24 @@ func (c *HWMCache) watchNotifications() {
 		}
 
 		// Invalidate all after stream disconnect to ensure consistency
+		if err != nil {
+			logger.Warnf("notification stream disconnected", map[string]any{
+				"error": err.Error(),
+			})
+		}
+		pendingRefresh = c.cachedStreamIDs()
+		disconnected = true
 		c.InvalidateAll()
 	}
 }
 
 // processNotifications handles incoming notifications from the stream.
-func (c *HWMCache) processNotifications(stream metadata.NotificationStream) {
+func (c *HWMCache) processNotifications(stream metadata.NotificationStream) error {
 	for {
 		notification, err := stream.Next(c.ctx)
 		if err != nil {
 			// Stream error or context cancelled
-			return
+			return err
 		}
 
 		// Check if this is an hwm key
@@ -222,6 +253,45 @@ func (c *HWMCache) processNotifications(stream metadata.NotificationStream) {
 			}
 		}
 	}
+}
+
+func (c *HWMCache) cachedStreamIDs() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	streamIDs := make([]string, 0, len(c.cache))
+	for streamID := range c.cache {
+		streamIDs = append(streamIDs, streamID)
+	}
+	return streamIDs
+}
+
+func (c *HWMCache) refreshCachedHWMs(streamIDs []string) (int, int) {
+	if len(streamIDs) == 0 {
+		return 0, 0
+	}
+
+	refreshed := 0
+	failed := 0
+	for _, streamID := range streamIDs {
+		hwmKey := keys.HwmKeyPath(streamID)
+		result, err := c.store.Get(c.ctx, hwmKey)
+		if err != nil {
+			failed++
+			continue
+		}
+		if !result.Exists {
+			failed++
+			continue
+		}
+		hwm, err := DecodeHWM(result.Value)
+		if err != nil {
+			failed++
+			continue
+		}
+		c.Put(streamID, hwm, result.Version)
+		refreshed++
+	}
+	return refreshed, failed
 }
 
 // extractStreamIDFromHWMKey extracts the stream ID from an hwm key.

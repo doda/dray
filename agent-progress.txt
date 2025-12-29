@@ -945,3 +945,17 @@ Start with project-setup, then follow spec phases:
 - Verified notification-driven invalidation for WAL GC/object deletions
 - Issues found: none
 - Tests: not run (trusted prior run by working agent)
+[2025-12-29T17:01:29Z] notification-stream-restart: PASS
+- Implemented HWM cache reconnect handling with post-reconnect HWM refresh to avoid missed updates.
+- Added notification stream disconnect/reconnect logging and refresh counts for HWM cache.
+- Adjusted mock notification streams to support restart gating and added reconnect refresh test coverage.
+- Fixed flaky golden SyncGroup two-member coordination test by ordering joins with a goroutine.
+- Files changed: internal/index/hwm_cache.go
+- Files changed: internal/index/hwm_cache_test.go
+- Files changed: tests/compatibility/golden_groups_test.go
+- Tests: PATH="$PATH:/usr/local/go/bin" go test ./internal/index -run HWMCache -count=1 (pass)
+- Tests: PATH="$PATH:/usr/local/go/bin" go test ./tests/compatibility -run TestGolden_SyncGroup_TwoMemberCoordination -count=1 (pass)
+- Tests: ./init.sh --quick (pass)
+- Challenge: init.sh failed on TestGolden_SyncGroup_TwoMemberCoordination generation mismatch.
+- Resolution: made member2 join wait while leader rejoins; test now coordinates rebalance order.
+- Follow-ups: none

@@ -18,6 +18,8 @@ type hwmMockStore struct {
 	txnCount     int
 	notifyChan   chan metadata.Notification
 	notifyActive bool
+	notifyClosed bool
+	notifyGate   chan struct{}
 	txnHook      func(key string, value []byte, version metadata.Version) // Called after txn commit
 }
 
@@ -67,7 +69,7 @@ func (m *hwmMockStore) Put(ctx context.Context, key string, value []byte, opts .
 	m.data[key] = mockKV{value: value, version: newVersion}
 
 	// Send notification if active
-	if m.notifyActive {
+	if m.notifyActive && !m.notifyClosed && m.notifyChan != nil {
 		select {
 		case m.notifyChan <- metadata.Notification{
 			Key:     key,
@@ -146,7 +148,7 @@ func (m *hwmMockStore) Txn(ctx context.Context, scopeKey string, fn func(metadat
 	for key, op := range txn.pending {
 		if op.isDelete {
 			delete(m.data, key)
-			if m.notifyActive {
+			if m.notifyActive && !m.notifyClosed && m.notifyChan != nil {
 				select {
 				case m.notifyChan <- metadata.Notification{
 					Key:     key,
@@ -161,7 +163,7 @@ func (m *hwmMockStore) Txn(ctx context.Context, scopeKey string, fn func(metadat
 				newVersion = kv.version + 1
 			}
 			m.data[key] = mockKV{value: op.value, version: newVersion}
-			if m.notifyActive {
+			if m.notifyActive && !m.notifyClosed && m.notifyChan != nil {
 				select {
 				case m.notifyChan <- metadata.Notification{
 					Key:     key,
@@ -182,12 +184,42 @@ func (m *hwmMockStore) Txn(ctx context.Context, scopeKey string, fn func(metadat
 
 func (m *hwmMockStore) Notifications(ctx context.Context) (metadata.NotificationStream, error) {
 	m.mu.Lock()
+	gate := m.notifyGate
+	m.mu.Unlock()
+
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	m.mu.Lock()
+	m.notifyChan = make(chan metadata.Notification, 100)
 	m.notifyActive = true
+	m.notifyClosed = false
+	ch := m.notifyChan
 	m.mu.Unlock()
 	return &hwmMockNotificationStream{
-		store: m,
-		ctx:   ctx,
+		ctx: ctx,
+		ch:  ch,
 	}, nil
+}
+
+func (m *hwmMockStore) CloseNotifications() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.notifyChan != nil && !m.notifyClosed {
+		close(m.notifyChan)
+		m.notifyClosed = true
+	}
+}
+
+func (m *hwmMockStore) SetNotifyGate(gate chan struct{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.notifyGate = gate
 }
 
 func (m *hwmMockStore) PutEphemeral(ctx context.Context, key string, value []byte, opts ...metadata.EphemeralOption) (metadata.Version, error) {
@@ -198,7 +230,10 @@ func (m *hwmMockStore) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.closed = true
-	close(m.notifyChan)
+	if m.notifyChan != nil && !m.notifyClosed {
+		close(m.notifyChan)
+		m.notifyClosed = true
+	}
 	return nil
 }
 
@@ -228,8 +263,8 @@ func (t *hwmMockTxn) DeleteWithVersion(key string, expectedVersion metadata.Vers
 }
 
 type hwmMockNotificationStream struct {
-	store  *hwmMockStore
 	ctx    context.Context
+	ch     <-chan metadata.Notification
 	closed bool
 }
 
@@ -237,7 +272,7 @@ func (s *hwmMockNotificationStream) Next(ctx context.Context) (metadata.Notifica
 	select {
 	case <-ctx.Done():
 		return metadata.Notification{}, ctx.Err()
-	case n, ok := <-s.store.notifyChan:
+	case n, ok := <-s.ch:
 		if !ok {
 			return metadata.Notification{}, metadata.ErrStoreClosed
 		}
@@ -601,6 +636,72 @@ func TestHWMCacheNotificationInvalidation(t *testing.T) {
 	}
 	if hwmCached != 50 {
 		t.Errorf("cached hwm after notification = %d, want 50", hwmCached)
+	}
+}
+
+func waitForCondition(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("condition not met within %s", timeout)
+}
+
+func TestHWMCacheRestartRefreshesHWM(t *testing.T) {
+	store := newHWMMockStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "restart-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	cache := NewHWMCache(store)
+	defer cache.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	hwm, version, err := cache.Get(ctx, streamID)
+	if err != nil {
+		t.Fatalf("cache.Get failed: %v", err)
+	}
+	if hwm != 0 {
+		t.Errorf("initial hwm = %d, want 0", hwm)
+	}
+
+	gate := make(chan struct{})
+	store.SetNotifyGate(gate)
+	store.CloseNotifications()
+
+	waitForCondition(t, 200*time.Millisecond, func() bool {
+		return cache.Size() == 0
+	})
+
+	hwmKey := keys.HwmKeyPath(streamID)
+	newHwmBytes := EncodeHWM(50)
+	_, err = store.Put(ctx, hwmKey, newHwmBytes, metadata.WithExpectedVersion(version))
+	if err != nil {
+		t.Fatalf("direct Put failed: %v", err)
+	}
+
+	close(gate)
+
+	waitForCondition(t, 200*time.Millisecond, func() bool {
+		hwmCached, _, ok := cache.GetIfCached(streamID)
+		return ok && hwmCached == 50
+	})
+
+	hwmCached, _, ok := cache.GetIfCached(streamID)
+	if !ok {
+		t.Fatal("cache should have entry after reconnect refresh")
+	}
+	if hwmCached != 50 {
+		t.Fatalf("cached hwm after reconnect refresh = %d, want 50", hwmCached)
 	}
 }
 
