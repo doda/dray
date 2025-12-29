@@ -3116,7 +3116,7 @@
       "Fetch and assert LogStartOffset equals earliest offset",
       "Run fetch tests and fix failures"
     ],
-    "passes": false,
+    "passes": true,
     "depends_on": [],
     "scope": [
       "internal/protocol"

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dray-io/dray/internal/compaction"
 	"github.com/dray-io/dray/internal/fetch"
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/metadata"
@@ -230,6 +231,110 @@ func TestFetchHandler_EmptyStream(t *testing.T) {
 
 	if partResp.HighWatermark != 0 {
 		t.Errorf("expected HWM=0, got %d", partResp.HighWatermark)
+	}
+}
+
+func TestFetchHandler_LogStartOffsetAfterCompactionSwap(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx := context.Background()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "compaction-lso-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	streamID := result.Partitions[0].StreamID
+	if err := streamManager.CreateStreamWithID(ctx, streamID, "compaction-lso-topic", 0); err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	now := time.Now()
+	oldEntry, err := streamManager.AppendIndexEntry(ctx, index.AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    5,
+		ChunkSizeBytes: 100,
+		CreatedAtMs:    now.Add(-2 * time.Hour).UnixMilli(),
+		MinTimestampMs: now.Add(-2 * time.Hour).UnixMilli(),
+		MaxTimestampMs: now.Add(-2 * time.Hour).UnixMilli(),
+		WalID:          "wal-old",
+		WalPath:        "wal/old",
+		ChunkOffset:    0,
+		ChunkLength:    100,
+	})
+	if err != nil {
+		t.Fatalf("failed to append old index entry: %v", err)
+	}
+
+	newEntry, err := streamManager.AppendIndexEntry(ctx, index.AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    5,
+		ChunkSizeBytes: 100,
+		CreatedAtMs:    now.UnixMilli(),
+		MinTimestampMs: now.UnixMilli(),
+		MaxTimestampMs: now.UnixMilli(),
+		WalID:          "wal-new",
+		WalPath:        "wal/new",
+		ChunkOffset:    0,
+		ChunkLength:    100,
+	})
+	if err != nil {
+		t.Fatalf("failed to append new index entry: %v", err)
+	}
+
+	if err := store.Delete(ctx, oldEntry.IndexKey); err != nil {
+		t.Fatalf("failed to delete old index entry: %v", err)
+	}
+
+	swapper := compaction.NewIndexSwapper(store)
+	parquetEntry := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      newEntry.StartOffset,
+		EndOffset:        newEntry.EndOffset,
+		FileType:         index.FileTypeParquet,
+		RecordCount:      5,
+		MessageCount:     5,
+		CreatedAtMs:      now.UnixMilli(),
+		MinTimestampMs:   now.UnixMilli(),
+		MaxTimestampMs:   now.UnixMilli(),
+		ParquetPath:      "parquet/test.parquet",
+		ParquetSizeBytes: 128,
+	}
+
+	_, err = swapper.Swap(ctx, compaction.SwapRequest{
+		StreamID:     streamID,
+		WALIndexKeys: []string{newEntry.IndexKey},
+		ParquetEntry: parquetEntry,
+		MetaDomain:   0,
+	})
+	if err != nil {
+		t.Fatalf("failed to swap index entries: %v", err)
+	}
+
+	hwm, _, err := streamManager.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("failed to read HWM: %v", err)
+	}
+
+	fetcher := fetch.NewFetcher(NewMockObjectStore(), streamManager)
+	handler := NewFetchHandler(FetchHandlerConfig{MaxBytes: 1024 * 1024}, topicStore, fetcher, streamManager)
+
+	resp := handler.Handle(ctx, 12, buildFetchRequest("compaction-lso-topic", 0, hwm))
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != 0 {
+		t.Fatalf("expected success, got error code %d", partResp.ErrorCode)
+	}
+	if partResp.LogStartOffset != newEntry.StartOffset {
+		t.Fatalf("expected LogStartOffset %d, got %d", newEntry.StartOffset, partResp.LogStartOffset)
 	}
 }
 
