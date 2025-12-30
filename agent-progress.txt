@@ -1490,3 +1490,4 @@ Start with project-setup, then follow spec phases:
 - Challenge: SASLAuthenticate decode failures due to flexible header mismatch.
 - Resolution: treat SASLAuthenticate v2 as flexible in server header parsing.
 - Follow-ups: none
+[2025-12-30T09:42:40.200Z] Audit (codex): FAIL, 6 area(s), 18 new, lens=maintainability.
