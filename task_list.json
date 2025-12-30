@@ -3161,10 +3161,10 @@
       "Add unit test that requests small maxBytes against a large chunk and asserts bounded memory/bytes read",
       "Run fetch unit tests and fix any regressions"
     ],
+    "completed": true,
     "scope": [
       "internal/fetch/wal_reader.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "produce-decompression-cap",
@@ -3176,10 +3176,10 @@
       "Add tests with oversized/compressed payloads that validate rejection",
       "Run protocol/produce tests and fix failures"
     ],
+    "completed": true,
     "scope": [
       "internal/protocol/produce.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "request-timeout-enforcement",
@@ -3190,11 +3190,11 @@
       "Add tests that simulate stalled flush and verify deadline expiry returns an error",
       "Run server/protocol tests and fix failures"
     ],
+    "completed": true,
     "scope": [
       "internal/server/server.go",
       "internal/protocol/produce.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "s3-delete-idempotent",
@@ -3205,10 +3205,10 @@
       "Add unit test for Delete on missing object",
       "Run objectstore tests and fix failures"
     ],
+    "completed": true,
     "scope": [
       "internal/objectstore/s3/store.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-writer-flush-populates-chunk-offsets",
@@ -3219,10 +3219,10 @@
       "Add unit test that validates chunk offsets/lengths are populated after flush",
       "Run WAL tests and fix failures"
     ],
+    "completed": true,
     "scope": [
       "internal/wal/writer.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "oxia-atomic-transactions",
@@ -3233,10 +3233,10 @@
       "Add tests proving multi-key atomicity and rollback on partial failure",
       "Run metadata tests and fix failures"
     ],
+    "completed": true,
     "scope": [
       "internal/metadata/oxia/transaction.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "hwm-index-atomic-commit",
@@ -3247,13 +3247,13 @@
       "Add failure-injection test that verifies HWM does not advance on index write failure",
       "Run index tests and fix failures"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-atomic-transactions"
     ],
     "scope": [
       "internal/index/entry.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "compaction-gc-only-after-done",
@@ -3264,10 +3264,10 @@
       "Add unit test that ensures GC entries are not created before DONE",
       "Run compaction and GC tests and fix failures"
     ],
+    "completed": true,
     "scope": [
       "internal/compaction/swap.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wire-iceberg-removal-confirmation",
@@ -3278,10 +3278,10 @@
       "Add unit test that simulates Iceberg removal confirmation gating GC eligibility",
       "Run GC tests and fix failures"
     ],
+    "completed": true,
     "scope": [
       "internal/gc/parquet_gc.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "test-iceberg-recompaction-gc-ordering",
@@ -3292,10 +3292,10 @@
       "Assert GC does not delete files until Iceberg removal is confirmed and job reaches DONE",
       "Run integration tests, fix any failures, and re-run"
     ],
+    "completed": true,
     "scope": [
       "tests/integration"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "acl-enforcer-fail-closed",
@@ -3306,10 +3306,10 @@
       "Add unit test for nil cache enforcement path",
       "Run auth tests and fix failures"
     ],
+    "completed": true,
     "scope": [
       "internal/auth/enforcer.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "sasl-nil-credentials-guard",
@@ -3320,10 +3320,10 @@
       "Add unit test for nil store handling",
       "Run auth tests and fix failures"
     ],
+    "completed": true,
     "scope": [
       "internal/auth/sasl.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "test-sasl-acl-end-to-end",
@@ -3334,9 +3334,285 @@
       "Validate allowed and denied operations via ACLs with real protocol requests",
       "Run integration tests, fix failures, and re-run"
     ],
+    "completed": true,
     "scope": [
       "tests/integration"
+    ]
+  },
+  {
+    "id": "unify-flexible-header-version-matrix",
+    "category": "refactor",
+    "description": "Align flexible-header version mapping with the authoritative supported API matrix to avoid drift when adding APIs or versions.",
+    "steps": [
+      "Move/derive flexible-header mapping from the supported API matrix in `internal/protocol/api_versions.go`",
+      "Update server header parsing to use the shared mapping",
+      "Add a unit test asserting the mapping matches the supported API matrix",
+      "Run protocol/server tests and fix any failures"
     ],
-    "completed": true
+    "scope": [
+      "internal/server",
+      "internal/protocol"
+    ],
+    "completed": false
+  },
+  {
+    "id": "log-iceberg-topic-lifecycle-errors",
+    "category": "observability",
+    "description": "Log Iceberg create/drop failures in topic lifecycle handlers instead of silently swallowing them.",
+    "steps": [
+      "Add structured logging for Iceberg create/drop errors in topic create/delete handlers",
+      "Ensure logs include topic name and error details",
+      "Add a test or logger capture to assert errors are logged on failure paths",
+      "Run protocol tests and fix any failures"
+    ],
+    "scope": [
+      "internal/protocol"
+    ],
+    "completed": false
+  },
+  {
+    "id": "return-kafka-error-on-handler-failure",
+    "category": "reliability",
+    "description": "Ensure server returns a Kafka error response when a handler fails instead of closing the connection without a response.",
+    "steps": [
+      "Introduce a fallback error response per API key when handler returns an error",
+      "Map internal errors to a safe Kafka error code and include correlationId",
+      "Add a unit/integration test that forces a handler error and asserts a response is sent",
+      "Run server/protocol tests and fix any failures"
+    ],
+    "scope": [
+      "internal/server",
+      "internal/protocol"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wal-writer-reject-duplicate-stream-chunks",
+    "category": "bug",
+    "description": "Prevent multiple chunks for the same StreamID in a single WAL or merge them deterministically to avoid overwriting chunk offsets.",
+    "steps": [
+      "Detect duplicate StreamID entries during WAL flush and return an error or merge consistently",
+      "Update chunk index construction to guarantee one entry per StreamID",
+      "Add a unit test that submits duplicate StreamID chunks and validates behavior",
+      "Run WAL tests and fix any failures"
+    ],
+    "scope": [
+      "internal/wal"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wal-encoder-no-panic-on-layout-mismatch",
+    "category": "reliability",
+    "description": "Replace WAL encoder panics on layout mismatch with a returned error to avoid broker crashes.",
+    "steps": [
+      "Convert panic paths in WAL encoder to error returns",
+      "Thread the error back to callers and handle it safely",
+      "Add a unit test that triggers layout mismatch and asserts error handling",
+      "Run WAL tests and fix any failures"
+    ],
+    "scope": [
+      "internal/wal"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wal-encoder-handle-short-writes",
+    "category": "bug",
+    "description": "Ensure WAL encoder detects and retries or fails on short writes instead of treating them as success.",
+    "steps": [
+      "Wrap writes with io.WriteFull or explicit short-write checks",
+      "Return a clear error when short writes occur",
+      "Add a unit test using a short writer to validate error behavior",
+      "Run WAL tests and fix any failures"
+    ],
+    "scope": [
+      "internal/wal"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wal-encoder-chunk-length-overflow-check",
+    "category": "reliability",
+    "description": "Add overflow checks when accumulating chunk lengths to prevent uint32 wrap on large chunks.",
+    "steps": [
+      "Validate accumulated chunk length does not exceed math.MaxUint32 before encoding",
+      "Return a clear error when the limit is exceeded",
+      "Add a unit test with oversized chunk to verify error behavior",
+      "Run WAL tests and fix any failures"
+    ],
+    "scope": [
+      "internal/wal"
+    ],
+    "completed": false
+  },
+  {
+    "id": "config-cluster-id-and-namespace",
+    "category": "bug",
+    "description": "Introduce a cluster identifier in config and use it to construct the Oxia namespace as dray/<cluster_id>.",
+    "steps": [
+      "Add cluster_id to config with validation (non-empty) and document defaults",
+      "Update Oxia namespace construction to use dray/<cluster_id>",
+      "Add unit tests for config parsing and namespace formatting",
+      "Run metadata/config tests and fix any failures"
+    ],
+    "scope": [
+      "internal/config",
+      "internal/metadata/oxia"
+    ],
+    "completed": false
+  },
+  {
+    "id": "broker-registration-ephemeral-cas",
+    "category": "reliability",
+    "description": "Prevent silent broker registration overwrites by using expect-not-exists or version checks for ephemeral keys.",
+    "steps": [
+      "Add expected-version or CAS semantics to broker registration writes",
+      "Return a clear error if brokerId is already registered",
+      "Add a unit test that simulates duplicate brokerId registration",
+      "Run routing/server tests and fix any failures"
+    ],
+    "scope": [
+      "internal/routing",
+      "internal/server"
+    ],
+    "completed": false
+  },
+  {
+    "id": "lease-manager-synchronization",
+    "category": "reliability",
+    "description": "Make LeaseManager thread-safe to prevent concurrent map access races.",
+    "steps": [
+      "Protect heldLeases map with a mutex or sync.Map and guard all accesses",
+      "Add a concurrency-focused test or run existing tests with -race to verify",
+      "Ensure sweeper and Acquire/Release paths are safe",
+      "Run groups tests with -race and fix any failures"
+    ],
+    "scope": [
+      "internal/groups"
+    ],
+    "completed": false
+  },
+  {
+    "id": "list-groups-prefix-scope",
+    "category": "performance",
+    "description": "Reduce ListGroups scan scope to avoid O(all group keys) overhead at scale.",
+    "steps": [
+      "Refactor ListGroups to scan only group state/type keys instead of full /groups prefix",
+      "Add or adjust key layout/helpers if needed to support scoped listing",
+      "Add a unit test to ensure ListGroups does not read member/offset keys",
+      "Run groups tests and fix any failures"
+    ],
+    "scope": [
+      "internal/groups"
+    ],
+    "completed": false
+  },
+  {
+    "id": "iceberg-catalog-remove-files-support",
+    "category": "api",
+    "description": "Add Iceberg catalog support for remove/replace file commits to enable Parquet rewrite compactions.",
+    "steps": [
+      "Extend catalog interface to support file removals (replace or delete ops)",
+      "Implement the remove/replace operation in the REST catalog client",
+      "Update compaction logic to use remove+append on rewrite compactions",
+      "Add tests covering rewrite compaction with file removal semantics",
+      "Run Iceberg/compaction tests and fix any failures"
+    ],
+    "scope": [
+      "internal/iceberg",
+      "internal/compaction"
+    ],
+    "completed": false
+  },
+  {
+    "id": "retention-refcount-atomicity",
+    "category": "reliability",
+    "description": "Decrement WAL refcounts in the same transaction that removes index entries during retention to avoid leaks.",
+    "steps": [
+      "Move WAL refcount decrement into the retention index deletion transaction",
+      "Ensure retries are idempotent and handle version conflicts",
+      "Add a unit test that simulates retention failure and validates refcount consistency",
+      "Run GC/retention tests and fix any failures"
+    ],
+    "scope": [
+      "internal/gc"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wal-gc-pagination",
+    "category": "reliability",
+    "description": "Paginate WAL GC scans to avoid starvation when early entries are ineligible.",
+    "steps": [
+      "Add pagination to WAL GC listing and iterate until no more eligible entries",
+      "Ensure ordering and cutoff logic still works with paging",
+      "Add a unit test with multiple pages where early entries are not eligible",
+      "Run GC tests and fix any failures"
+    ],
+    "scope": [
+      "internal/gc"
+    ],
+    "completed": false
+  },
+  {
+    "id": "acl-watch-log-backoff",
+    "category": "observability",
+    "description": "Log ACL notification watch errors and add backoff to avoid tight loops on failures.",
+    "steps": [
+      "Add structured logging for non-context errors in ACL watch loop",
+      "Introduce a bounded exponential backoff on repeated errors",
+      "Add a unit test with a failing notification stream to assert logging/backoff",
+      "Run auth tests and fix any failures"
+    ],
+    "scope": [
+      "internal/auth"
+    ],
+    "completed": false
+  },
+  {
+    "id": "metrics-server-log-serve-error",
+    "category": "observability",
+    "description": "Log metrics server Serve errors to avoid silent failures.",
+    "steps": [
+      "Add structured logging for Serve errors in metrics server",
+      "Ensure shutdown/expected errors are filtered appropriately",
+      "Add a unit test or logger capture to confirm error logging",
+      "Run metrics tests and fix any failures"
+    ],
+    "scope": [
+      "internal/metrics"
+    ],
+    "completed": false
+  },
+  {
+    "id": "compaction-metrics-log-scan-errors",
+    "category": "observability",
+    "description": "Log compaction backlog scan errors so stale metrics are visible.",
+    "steps": [
+      "Add structured logging when compaction backlog scans fail",
+      "Include scan scope and error details in logs",
+      "Add a unit test with a failing scanner to verify logging",
+      "Run metrics tests and fix any failures"
+    ],
+    "scope": [
+      "internal/metrics"
+    ],
+    "completed": false
+  },
+  {
+    "id": "gc-metrics-log-scan-errors",
+    "category": "observability",
+    "description": "Log GC backlog scan errors to avoid silent metrics stalls.",
+    "steps": [
+      "Add structured logging when GC backlog scans fail",
+      "Include provider and error details in logs",
+      "Add a unit test with a failing provider to verify logging",
+      "Run metrics tests and fix any failures"
+    ],
+    "scope": [
+      "internal/metrics"
+    ],
+    "completed": false
   }
 ]
