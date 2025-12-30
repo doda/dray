@@ -52,6 +52,11 @@ type PendingRequest struct {
 
 	// Result contains the assigned offset information after successful flush.
 	Result *RequestResult
+
+	// Deadline is the request context deadline, if any.
+	Deadline time.Time
+	// HasDeadline indicates whether Deadline is set.
+	HasDeadline bool
 }
 
 // RequestResult contains offset information for a successfully flushed request.
@@ -185,6 +190,7 @@ func (b *Buffer) Add(ctx context.Context, streamID string, batches []wal.BatchEn
 	b.mu.Unlock()
 
 	// Create the pending request
+	deadline, hasDeadline := ctx.Deadline()
 	req := &PendingRequest{
 		StreamID:       parseStreamID(streamID),
 		StreamIDStr:    streamID,
@@ -194,6 +200,8 @@ func (b *Buffer) Add(ctx context.Context, streamID string, batches []wal.BatchEn
 		MaxTimestampMs: maxTs,
 		Size:           size,
 		Done:           make(chan struct{}),
+		Deadline:       deadline,
+		HasDeadline:    hasDeadline,
 	}
 
 	// Add to domain buffer
@@ -316,8 +324,20 @@ func (b *Buffer) flushDomain(ctx context.Context, domain metadata.MetaDomain) {
 	db.size = 0
 	db.mu.Unlock()
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	flushCtx := ctx
+	if deadline, ok := earliestDeadline(requests); ok {
+		if existing, ok := ctx.Deadline(); !ok || deadline.Before(existing) {
+			var cancel context.CancelFunc
+			flushCtx, cancel = context.WithDeadline(ctx, deadline)
+			defer cancel()
+		}
+	}
+
 	// Call the flush handler first - space is only freed after flush completes
-	err := b.config.OnFlush(ctx, domain, requests)
+	err := b.config.OnFlush(flushCtx, domain, requests)
 
 	// Update total size after flush completes
 	b.sizeMu.Lock()
@@ -334,6 +354,22 @@ func (b *Buffer) flushDomain(ctx context.Context, domain metadata.MetaDomain) {
 		}
 		close(req.Done)
 	}
+}
+
+func earliestDeadline(requests []*PendingRequest) (time.Time, bool) {
+	var earliest time.Time
+	for _, req := range requests {
+		if !req.HasDeadline {
+			continue
+		}
+		if earliest.IsZero() || req.Deadline.Before(earliest) {
+			earliest = req.Deadline
+		}
+	}
+	if earliest.IsZero() {
+		return time.Time{}, false
+	}
+	return earliest, true
 }
 
 // Flush forces a flush of all domain buffers.

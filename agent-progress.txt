@@ -1369,3 +1369,13 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+- Task request-timeout-enforcement: PASS.
+- Implemented per-request produce timeouts with context deadlines and timeout error mapping.
+- Propagated request deadlines into produce buffer flush context selection.
+- Added stalled-flush timeout test for Produce handler.
+- Files changed: internal/protocol/produce.go.
+- Files changed: internal/produce/buffer.go.
+- Files changed: internal/protocol/produce_test.go.
+- Files changed: task_list.json.
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/server ./internal/protocol -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
