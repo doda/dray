@@ -3179,7 +3179,7 @@
     "scope": [
       "internal/protocol/produce.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "request-timeout-enforcement",

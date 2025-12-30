@@ -57,11 +57,11 @@ func TestProduceHandler_ValidateTopicAndPartition(t *testing.T) {
 	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer)
 
 	tests := []struct {
-		name           string
-		topic          string
-		partition      int32
-		wantTopicErr   bool
-		wantPartErr    bool
+		name         string
+		topic        string
+		partition    int32
+		wantTopicErr bool
+		wantPartErr  bool
 	}{
 		{
 			name:      "valid topic and partition",
@@ -451,9 +451,9 @@ func TestProduceHandler_RejectIdempotentMultiplePartitions(t *testing.T) {
 // TestExtractProducerId tests the extractProducerId function directly.
 func TestExtractProducerId(t *testing.T) {
 	tests := []struct {
-		name       string
-		data       []byte
-		wantId     int64
+		name   string
+		data   []byte
+		wantId int64
 	}{
 		{
 			name:   "idempotent producer (id=1234)",
@@ -1283,6 +1283,129 @@ func TestProduceHandler_InvalidCompressedPayload(t *testing.T) {
 	}
 }
 
+func TestProduceHandler_CompressedBatchTooLarge(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx := context.Background()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{StartOffset: 0, EndOffset: int64(req.RecordCount)}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer)
+
+	records := buildFranzRecordsWithValueSize(1, int(maxDecompressedBatchBytes)+1024)
+	batch := buildFranzCompressedBatchWithRecords(t, records, compressionGzip, time.Now().UnixMilli(), 1)
+
+	req := kmsg.NewPtrProduceRequest()
+	req.Acks = -1
+	req.SetVersion(9)
+
+	topicReq := kmsg.NewProduceRequestTopic()
+	topicReq.Topic = "test-topic"
+
+	partReq := kmsg.NewProduceRequestTopicPartition()
+	partReq.Partition = 0
+	partReq.Records = batch
+
+	topicReq.Partitions = append(topicReq.Partitions, partReq)
+	req.Topics = append(req.Topics, topicReq)
+
+	resp := handler.Handle(ctx, 9, req)
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != errUnsupportedForMessageFormat {
+		t.Errorf("expected UNSUPPORTED_FOR_MESSAGE_FORMAT error (%d), got %d", errUnsupportedForMessageFormat, partResp.ErrorCode)
+	}
+}
+
+func TestProduceHandler_CompressedRequestTooLarge(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx := context.Background()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			for _, req := range requests {
+				req.Result = &produce.RequestResult{StartOffset: 0, EndOffset: int64(req.RecordCount)}
+			}
+			return nil
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer)
+
+	batchSize := int(maxDecompressedBatchBytes) - 1024
+	records := buildFranzRecordsWithValueSize(1, batchSize)
+	batch := buildFranzCompressedBatchWithRecords(t, records, compressionGzip, time.Now().UnixMilli(), 1)
+	batchCount := int(maxDecompressedRequestBytes/int64(batchSize)) + 1
+
+	var combined []byte
+	for i := 0; i < batchCount; i++ {
+		combined = append(combined, batch...)
+	}
+
+	req := kmsg.NewPtrProduceRequest()
+	req.Acks = -1
+	req.SetVersion(9)
+
+	topicReq := kmsg.NewProduceRequestTopic()
+	topicReq.Topic = "test-topic"
+
+	partReq := kmsg.NewProduceRequestTopicPartition()
+	partReq.Partition = 0
+	partReq.Records = combined
+
+	topicReq.Partitions = append(topicReq.Partitions, partReq)
+	req.Topics = append(req.Topics, topicReq)
+
+	resp := handler.Handle(ctx, 9, req)
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != errUnsupportedForMessageFormat {
+		t.Errorf("expected UNSUPPORTED_FOR_MESSAGE_FORMAT error (%d), got %d", errUnsupportedForMessageFormat, partResp.ErrorCode)
+	}
+}
+
 func TestParseRecordBatches_Compressed(t *testing.T) {
 	compressionTypes := []struct {
 		name string
@@ -1384,6 +1507,12 @@ func buildFranzCompressedBatch(t *testing.T, recordCount int, compressionType in
 	t.Helper()
 
 	records := buildFranzRecords(recordCount)
+	return buildFranzCompressedBatchWithRecords(t, records, compressionType, ts, int32(recordCount))
+}
+
+func buildFranzCompressedBatchWithRecords(t *testing.T, records []byte, compressionType int, ts int64, recordCount int32) []byte {
+	t.Helper()
+
 	compressed := records
 	if compressionType != compressionNone {
 		codec, err := compressionCodecForType(compressionType)
@@ -1400,7 +1529,7 @@ func buildFranzCompressedBatch(t *testing.T, recordCount int, compressionType in
 
 	lastOffsetDelta := int32(-1)
 	if recordCount > 0 {
-		lastOffsetDelta = int32(recordCount - 1)
+		lastOffsetDelta = recordCount - 1
 	}
 
 	recordBatch := kmsg.RecordBatch{
@@ -1416,7 +1545,7 @@ func buildFranzCompressedBatch(t *testing.T, recordCount int, compressionType in
 		ProducerID:           -1,
 		ProducerEpoch:        -1,
 		FirstSequence:        -1,
-		NumRecords:           int32(recordCount),
+		NumRecords:           recordCount,
 		Records:              compressed,
 	}
 
@@ -1437,6 +1566,23 @@ func buildFranzRecords(recordCount int) []byte {
 		body = kbin.AppendVarint(body, int32(i))
 		body = kbin.AppendVarintBytes(body, []byte("k"))
 		body = kbin.AppendVarintBytes(body, []byte("v"))
+		body = kbin.AppendVarint(body, 0)
+		records = kbin.AppendVarint(records, int32(len(body)))
+		records = append(records, body...)
+	}
+	return records
+}
+
+func buildFranzRecordsWithValueSize(recordCount int, valueSize int) []byte {
+	value := bytes.Repeat([]byte("v"), valueSize)
+	var records []byte
+	for i := 0; i < recordCount; i++ {
+		var body []byte
+		body = kbin.AppendInt8(body, 0)
+		body = kbin.AppendVarlong(body, 0)
+		body = kbin.AppendVarint(body, int32(i))
+		body = kbin.AppendVarintBytes(body, []byte("k"))
+		body = kbin.AppendVarintBytes(body, value)
 		body = kbin.AppendVarint(body, 0)
 		records = kbin.AppendVarint(records, int32(len(body)))
 		records = append(records, body...)
