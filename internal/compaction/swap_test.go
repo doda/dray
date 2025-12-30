@@ -367,6 +367,70 @@ func TestIndexSwapper_Swap_MultipleWALEntries(t *testing.T) {
 	}
 }
 
+func TestIndexSwapper_Swap_DoesNotScheduleParquetGCBeforeDone(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMockStore()
+	swapper := NewIndexSwapper(meta)
+
+	streamID := "test-stream-parquet-gc"
+
+	oldParquet := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      0,
+		EndOffset:        100,
+		FileType:         index.FileTypeParquet,
+		RecordCount:      100,
+		MessageCount:     100,
+		MinTimestampMs:   1000,
+		MaxTimestampMs:   2000,
+		CreatedAtMs:      time.Now().UnixMilli(),
+		ParquetPath:      "/parquet/test-stream-parquet-gc/old-001.parquet",
+		ParquetSizeBytes: 400,
+	}
+	oldParquetBytes, _ := json.Marshal(oldParquet)
+	oldParquetKey, _ := keys.OffsetIndexKeyPath(streamID, oldParquet.EndOffset, int64(oldParquet.ParquetSizeBytes))
+	meta.Put(ctx, oldParquetKey, oldParquetBytes)
+
+	newParquet := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      0,
+		EndOffset:        100,
+		FileType:         index.FileTypeParquet,
+		RecordCount:      100,
+		MessageCount:     100,
+		MinTimestampMs:   1000,
+		MaxTimestampMs:   2000,
+		CreatedAtMs:      time.Now().UnixMilli(),
+		ParquetPath:      "/parquet/test-stream-parquet-gc/new-002.parquet",
+		ParquetSizeBytes: 300,
+	}
+
+	result, err := swapper.Swap(ctx, SwapRequest{
+		StreamID:         streamID,
+		ParquetIndexKeys: []string{oldParquetKey},
+		ParquetEntry:     newParquet,
+	})
+	if err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	if len(result.ParquetGCCandidates) != 1 {
+		t.Fatalf("expected 1 Parquet GC candidate, got %d", len(result.ParquetGCCandidates))
+	}
+	if result.ParquetGCCandidates[0].Path != oldParquet.ParquetPath {
+		t.Fatalf("expected Parquet GC candidate %s, got %s", oldParquet.ParquetPath, result.ParquetGCCandidates[0].Path)
+	}
+	if result.ParquetGCGracePeriodMs <= 0 {
+		t.Fatalf("expected Parquet GC grace period to be set, got %d", result.ParquetGCGracePeriodMs)
+	}
+
+	gcKey := keys.ParquetGCKeyPath(streamID, "old-001")
+	gcResult, _ := meta.Get(ctx, gcKey)
+	if gcResult.Exists {
+		t.Error("Parquet GC record should not be created before job reaches DONE")
+	}
+}
+
 func TestIndexSwapper_Swap_CumulativeSizeWithPreviousEntry(t *testing.T) {
 	ctx := context.Background()
 	meta := metadata.NewMockStore()

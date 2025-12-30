@@ -3267,7 +3267,7 @@
     "scope": [
       "internal/compaction/swap.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "wire-iceberg-removal-confirmation",
