@@ -1446,3 +1446,13 @@ Start with project-setup, then follow spec phases:
 - Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/gc -count=1 (pass)
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass)
 - Challenges: gofmt not available in PATH.
+[2025-12-30T14:35:00Z] Completed test-iceberg-recompaction-gc-ordering: PASS
+- Added integration test covering Parquet re-compaction with Iceberg enabled, tracking index swap and Iceberg removal ordering.
+- Asserted GC markers are only scheduled after job DONE and Parquet deletion is gated on Iceberg removal confirmation.
+- Files changed: tests/integration/iceberg_recompaction_gc_ordering_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./tests/integration -run TestIcebergRecompactionGCOrdering -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: gofmt not available in PATH.
+- Resolution: kept formatting consistent and avoided gofmt for the new test file.
+- Follow-ups: none

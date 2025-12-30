@@ -3295,7 +3295,7 @@
     "scope": [
       "tests/integration"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "acl-enforcer-fail-closed",
