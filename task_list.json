@@ -25,13 +25,13 @@
       "Confirm all config fields have sensible defaults",
       "Verify config validation rejects invalid values"
     ],
+    "completed": true,
     "depends_on": [
       "project-setup"
     ],
     "scope": [
       "internal/config/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "logging-framework",
@@ -44,13 +44,13 @@
       "Confirm log levels can be configured via config",
       "Verify logs include file/line information in debug mode"
     ],
+    "completed": true,
     "depends_on": [
       "project-setup"
     ],
     "scope": [
       "internal/logging/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "metrics-skeleton",
@@ -63,13 +63,13 @@
       "Verify metrics endpoint returns Prometheus format",
       "Confirm metrics can be scraped by prometheus client"
     ],
+    "completed": true,
     "depends_on": [
       "project-setup"
     ],
     "scope": [
       "internal/metrics/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "metadata-store-interface",
@@ -82,13 +82,13 @@
       "Add context support for all operations",
       "Write interface documentation with usage examples"
     ],
+    "completed": true,
     "depends_on": [
       "project-setup"
     ],
     "scope": [
       "internal/metadata/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "object-store-interface",
@@ -101,13 +101,13 @@
       "Include context and error types",
       "Write interface documentation"
     ],
+    "completed": true,
     "depends_on": [
       "project-setup"
     ],
     "scope": [
       "internal/objectstore/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "iceberg-catalog-interface",
@@ -120,13 +120,13 @@
       "Add context support for all operations",
       "Write interface documentation"
     ],
+    "completed": true,
     "depends_on": [
       "project-setup"
     ],
     "scope": [
       "internal/iceberg/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "oxia-client-wrapper",
@@ -139,13 +139,13 @@
       "Verify connection to Oxia cluster works",
       "Test basic Get/Put operations"
     ],
+    "completed": true,
     "depends_on": [
       "metadata-store-interface"
     ],
     "scope": [
       "internal/metadata/oxia/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "oxia-embedded-tests",
@@ -158,13 +158,13 @@
       "Ensure the server is closed via t.Cleanup",
       "Verify tests exercise real Oxia behavior (not mocks)"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-client-wrapper"
     ],
     "scope": [
       "internal/metadata/oxia/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "oxia-cas-transactions",
@@ -177,13 +177,13 @@
       "Verify transaction rollback on partial failure",
       "Test concurrent writers see version conflicts"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-client-wrapper"
     ],
     "scope": [
       "internal/metadata/oxia/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "oxia-notifications",
@@ -196,13 +196,13 @@
       "Test notification stream restart recovers",
       "Confirm no notifications are missed after subscription"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-client-wrapper"
     ],
     "scope": [
       "internal/metadata/oxia/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "oxia-ephemeral-keys",
@@ -214,13 +214,13 @@
       "Test key survives while session is active",
       "Confirm session renewal keeps key alive"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-client-wrapper"
     ],
     "scope": [
       "internal/metadata/oxia/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "keyspace-encoders",
@@ -233,13 +233,13 @@
       "Test lexicographic ordering is preserved",
       "Verify key decoding extracts correct values"
     ],
+    "completed": true,
     "depends_on": [
       "metadata-store-interface"
     ],
     "scope": [
       "internal/metadata/keys/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "keyspace-schema",
@@ -253,13 +253,13 @@
       "Define key templates for /wal/ and /compaction/",
       "Write unit tests for all key formats"
     ],
+    "completed": true,
     "depends_on": [
       "keyspace-encoders"
     ],
     "scope": [
       "internal/metadata/keys/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "s3-object-store-adapter",
@@ -275,13 +275,13 @@
       "Implement multipart upload for large objects",
       "Test against MinIO or LocalStack"
     ],
+    "completed": true,
     "depends_on": [
       "object-store-interface"
     ],
     "scope": [
       "internal/objectstore/s3/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-format-encoder",
@@ -296,13 +296,13 @@
       "Implement chunk body encoding with batch entries",
       "Add CRC32C footer calculation"
     ],
+    "completed": true,
     "depends_on": [
       "project-setup"
     ],
     "scope": [
       "internal/wal/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-format-decoder",
@@ -315,13 +315,13 @@
       "Validate CRC32C footer",
       "Return structured WAL data with all fields"
     ],
+    "completed": true,
     "depends_on": [
       "wal-format-encoder"
     ],
     "scope": [
       "internal/wal/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-roundtrip-test",
@@ -334,13 +334,13 @@
       "Verify all fields match original",
       "Test with various batch sizes and stream counts"
     ],
+    "completed": true,
     "depends_on": [
       "wal-format-decoder"
     ],
     "scope": [
       "internal/wal/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-fuzz-test",
@@ -352,13 +352,13 @@
       "Verify no panics on malformed input",
       "Verify decoder returns errors for invalid data"
     ],
+    "completed": true,
     "depends_on": [
       "wal-format-decoder"
     ],
     "scope": [
       "internal/wal/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-writer",
@@ -371,14 +371,14 @@
       "Write WAL object to object storage",
       "Return WAL metadata (walId, path, offsets)"
     ],
+    "completed": true,
     "depends_on": [
       "wal-format-encoder",
       "s3-object-store-adapter"
     ],
     "scope": [
       "internal/wal/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-metadomain-isolation",
@@ -389,13 +389,13 @@
       "Verify error is returned rejecting mixed domains",
       "Confirm single-domain WAL writes succeed"
     ],
+    "completed": true,
     "depends_on": [
       "wal-writer"
     ],
     "scope": [
       "internal/wal/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-staging-marker",
@@ -407,14 +407,14 @@
       "Value contains path, createdAt, sizeBytes",
       "Delete staging key in commit transaction"
     ],
+    "completed": true,
     "depends_on": [
       "wal-writer",
       "oxia-client-wrapper"
     ],
     "scope": [
       "internal/wal/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "metadomain-calculation",
@@ -426,13 +426,13 @@
       "Configure NumDomains via config",
       "Test same streamId always maps to same domain"
     ],
+    "completed": true,
     "depends_on": [
       "config-system"
     ],
     "scope": [
       "internal/metadata/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "stream-creation",
@@ -444,14 +444,14 @@
       "Store stream metadata in partition key",
       "Return streamId for partition"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-cas-transactions",
       "keyspace-schema"
     ],
     "scope": [
       "internal/index/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "hwm-maintenance",
@@ -463,14 +463,14 @@
       "Cache hwm with revision stamping",
       "Invalidate cache on notification"
     ],
+    "completed": true,
     "depends_on": [
       "stream-creation",
       "oxia-notifications"
     ],
     "scope": [
       "internal/index/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "offset-index-append",
@@ -483,14 +483,14 @@
       "Create IndexEntry value with all fields per spec 6.3.3",
       "Atomically update hwm and create index entry in transaction"
     ],
+    "completed": true,
     "depends_on": [
       "hwm-maintenance",
       "keyspace-encoders"
     ],
     "scope": [
       "internal/index/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "offset-index-lookup",
@@ -502,13 +502,13 @@
       "Handle case where offset is beyond hwm",
       "Support WAL and Parquet entry types"
     ],
+    "completed": true,
     "depends_on": [
       "offset-index-append"
     ],
     "scope": [
       "internal/index/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "index-cache",
@@ -520,14 +520,14 @@
       "Bound cache by memory limit",
       "Invalidate on notification or revision mismatch"
     ],
+    "completed": true,
     "depends_on": [
       "offset-index-lookup",
       "oxia-notifications"
     ],
     "scope": [
       "internal/index/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "concurrent-append-test",
@@ -539,13 +539,13 @@
       "Verify no offset ranges overlap",
       "Verify total records equals sum of all appends"
     ],
+    "completed": true,
     "depends_on": [
       "offset-index-append"
     ],
     "scope": [
       "internal/index/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "tcp-server",
@@ -559,14 +559,14 @@
       "Route to appropriate handler",
       "Write framed response"
     ],
+    "completed": true,
     "depends_on": [
       "config-system",
       "logging-framework"
     ],
     "scope": [
       "internal/server/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "kmsg-integration",
@@ -579,13 +579,13 @@
       "Create response encoder using kmsg types",
       "Test decode/encode round-trip for sample requests"
     ],
+    "completed": true,
     "depends_on": [
       "tcp-server"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "api-versions-handler",
@@ -598,13 +598,13 @@
       "Exclude inter-broker APIs per spec 14.4",
       "Test response matches Kafka v4 client expectations"
     ],
+    "completed": true,
     "depends_on": [
       "kmsg-integration"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "metadata-handler",
@@ -617,14 +617,14 @@
       "Apply zone filtering based on client.id zone_id",
       "Set appropriate error codes for missing topics"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "topic-metadata-storage"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "produce-handler",
@@ -638,6 +638,7 @@
       "Return offsets only after WAL + metadata commit",
       "Set appropriate per-partition error codes"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "produce-buffer",
@@ -645,8 +646,7 @@
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "produce-buffer",
@@ -659,14 +659,14 @@
       "Trigger flush on size threshold",
       "Trigger flush on linger timeout"
     ],
+    "completed": true,
     "depends_on": [
       "metadomain-calculation",
       "wal-writer"
     ],
     "scope": [
       "internal/produce/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "produce-commit",
@@ -683,6 +683,7 @@
       "Delete staging marker",
       "Return assigned offsets"
     ],
+    "completed": true,
     "depends_on": [
       "produce-buffer",
       "offset-index-append",
@@ -690,8 +691,7 @@
     ],
     "scope": [
       "internal/produce/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "produce-validation",
@@ -704,13 +704,13 @@
       "Reject idempotent requests with appropriate error",
       "Validate record batch format"
     ],
+    "completed": true,
     "depends_on": [
       "produce-handler"
     ],
     "scope": [
       "internal/produce/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "produce-idempotence-rejection",
@@ -722,13 +722,13 @@
       "Log clear message about deferred feature",
       "Verify Kafka clients handle rejection gracefully"
     ],
+    "completed": true,
     "depends_on": [
       "produce-validation"
     ],
     "scope": [
       "internal/produce/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "produce-failure-wal-write",
@@ -740,13 +740,13 @@
       "Verify produce error is returned to client",
       "Verify buffer retries or discards appropriately"
     ],
+    "completed": true,
     "depends_on": [
       "produce-commit"
     ],
     "scope": [
       "internal/produce/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "produce-failure-metadata-commit",
@@ -758,13 +758,13 @@
       "Verify WAL staging marker remains for orphan GC",
       "Verify no index entries created"
     ],
+    "completed": true,
     "depends_on": [
       "produce-commit"
     ],
     "scope": [
       "internal/produce/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "fetch-handler",
@@ -779,6 +779,7 @@
       "Return batches up to maxBytes",
       "Set high watermark in response"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "offset-index-lookup",
@@ -787,8 +788,7 @@
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "fetch-longpoll",
@@ -800,14 +800,14 @@
       "Wake on hwm increase or timeout",
       "Return empty if timeout and no new data"
     ],
+    "completed": true,
     "depends_on": [
       "fetch-handler",
       "oxia-notifications"
     ],
     "scope": [
       "internal/fetch/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "fetch-wal-reader",
@@ -820,14 +820,14 @@
       "Use batchIndex for efficient offset seeking",
       "Return raw batch bytes for patching"
     ],
+    "completed": true,
     "depends_on": [
       "wal-format-decoder",
       "s3-object-store-adapter"
     ],
     "scope": [
       "internal/fetch/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "fetch-parquet-reader",
@@ -840,14 +840,14 @@
       "Handle headers as ordered list correctly",
       "Return uncompressed batches (v1 acceptable)"
     ],
+    "completed": true,
     "depends_on": [
       "s3-object-store-adapter",
       "parquet-reader"
     ],
     "scope": [
       "internal/fetch/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "record-batch-patching",
@@ -860,13 +860,13 @@
       "Validate record offset deltas are 0..n-1",
       "Test round-trip: produce -> WAL -> fetch returns correct offsets"
     ],
+    "completed": true,
     "depends_on": [
       "fetch-wal-reader"
     ],
     "scope": [
       "internal/fetch/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "list-offsets-handler",
@@ -879,6 +879,7 @@
       "Use Parquet file stats when available",
       "Fallback to WAL batchIndex timestamps"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "hwm-maintenance",
@@ -886,8 +887,7 @@
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "list-offsets-timestamp-test",
@@ -899,14 +899,14 @@
       "Verify returned offset is first record >= timestamp",
       "Test edge cases: before first, after last"
     ],
+    "completed": true,
     "depends_on": [
       "list-offsets-handler",
       "produce-handler"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "read-your-writes-test",
@@ -918,14 +918,14 @@
       "Verify fetched records include just-produced data",
       "Verify offsets match acked offsets"
     ],
+    "completed": true,
     "depends_on": [
       "produce-handler",
       "fetch-handler"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "produce-fetch-integration-test",
@@ -938,14 +938,14 @@
       "Verify message content matches",
       "Verify offsets are monotonically increasing"
     ],
+    "completed": true,
     "depends_on": [
       "produce-handler",
       "fetch-handler"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "topic-metadata-storage",
@@ -957,14 +957,14 @@
       "Store partition entries at /dray/v1/topics/<topicName>/partitions/<p>",
       "Include streamId, state, createdAt per partition"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-cas-transactions",
       "keyspace-schema"
     ],
     "scope": [
       "internal/topics/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "create-topics-handler",
@@ -977,6 +977,7 @@
       "Create Iceberg table if duality mode enabled",
       "Return success or per-topic error codes"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "topic-metadata-storage",
@@ -984,8 +985,7 @@
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "delete-topics-handler",
@@ -997,14 +997,14 @@
       "Remove topic from Iceberg catalog if enabled",
       "Return success or error codes"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "topic-metadata-storage"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "topic-config-storage",
@@ -1017,13 +1017,13 @@
       "Validate config values",
       "Store in topic metadata"
     ],
+    "completed": true,
     "depends_on": [
       "topic-metadata-storage"
     ],
     "scope": [
       "internal/topics/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "describe-configs-handler",
@@ -1035,14 +1035,14 @@
       "Set read-only flag for immutable configs",
       "Return UNKNOWN_TOPIC_OR_PARTITION for missing resources"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "topic-config-storage"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "alter-configs-handler",
@@ -1054,14 +1054,14 @@
       "Return error for invalid configs",
       "Support incremental updates"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "topic-config-storage"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "describe-cluster-handler",
@@ -1072,14 +1072,14 @@
       "Return broker list with endpoints",
       "Return controller ID (any broker for Dray)"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "broker-registration"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "broker-registration",
@@ -1091,14 +1091,14 @@
       "Key expires when broker session ends",
       "Other brokers discover via List"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-ephemeral-keys",
       "keyspace-schema"
     ],
     "scope": [
       "internal/server/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "zone-id-parsing",
@@ -1110,13 +1110,13 @@
       "Store zone in connection context",
       "Handle missing or invalid zone_id gracefully"
     ],
+    "completed": true,
     "depends_on": [
       "tcp-server"
     ],
     "scope": [
       "internal/server/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "zone-filtered-metadata",
@@ -1128,6 +1128,7 @@
       "Fallback to all brokers if no zone match",
       "Assign partition leaders from same zone"
     ],
+    "completed": true,
     "depends_on": [
       "metadata-handler",
       "zone-id-parsing",
@@ -1135,8 +1136,7 @@
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "zone-filtered-coordinator",
@@ -1147,14 +1147,14 @@
       "Use deterministic hash for consistency",
       "Fallback to any broker if zone has none"
     ],
+    "completed": true,
     "depends_on": [
       "find-coordinator-handler",
       "zone-id-parsing"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "partition-affinity-mapping",
@@ -1166,14 +1166,14 @@
       "Return affinity broker as partition leader",
       "Update on broker membership changes"
     ],
+    "completed": true,
     "depends_on": [
       "zone-filtered-metadata",
       "broker-registration"
     ],
     "scope": [
       "internal/routing/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "zone-filtering-test",
@@ -1185,14 +1185,14 @@
       "Verify Metadata returns only same-zone brokers",
       "Verify FindCoordinator returns same-zone coordinator"
     ],
+    "completed": true,
     "depends_on": [
       "zone-filtered-metadata",
       "zone-filtered-coordinator"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "find-coordinator-handler",
@@ -1204,14 +1204,14 @@
       "Use deterministic hash to select broker",
       "Return broker from client's zone if possible"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "broker-registration"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "group-state-storage",
@@ -1224,14 +1224,14 @@
       "Store /dray/v1/groups/<groupId>/assignment/<memberId>",
       "Use atomic transactions for state changes"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-cas-transactions",
       "keyspace-schema"
     ],
     "scope": [
       "internal/groups/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "group-coordinator-lease",
@@ -1243,14 +1243,14 @@
       "Only lease holder runs session timeouts",
       "Transfer lease on broker failure"
     ],
+    "completed": true,
     "depends_on": [
       "group-state-storage",
       "oxia-ephemeral-keys"
     ],
     "scope": [
       "internal/groups/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "join-group-handler",
@@ -1263,6 +1263,7 @@
       "Return member list to leader",
       "Handle session timeouts"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "group-state-storage",
@@ -1270,8 +1271,7 @@
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "sync-group-handler",
@@ -1283,13 +1283,13 @@
       "Store assignment in metadata",
       "Return assignment to requesting member"
     ],
+    "completed": true,
     "depends_on": [
       "join-group-handler"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "heartbeat-handler",
@@ -1301,13 +1301,13 @@
       "Return error if rebalance in progress",
       "Return error if member unknown"
     ],
+    "completed": true,
     "depends_on": [
       "join-group-handler"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "leave-group-handler",
@@ -1319,13 +1319,13 @@
       "Clear member assignment",
       "Return success"
     ],
+    "completed": true,
     "depends_on": [
       "join-group-handler"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "describe-groups-handler",
@@ -1337,13 +1337,13 @@
       "Return member assignments",
       "Handle UNKNOWN_MEMBER error"
     ],
+    "completed": true,
     "depends_on": [
       "group-state-storage"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "list-groups-handler",
@@ -1354,13 +1354,13 @@
       "Return group IDs and protocol types",
       "Support state filter if provided"
     ],
+    "completed": true,
     "depends_on": [
       "group-state-storage"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "delete-groups-handler",
@@ -1371,13 +1371,13 @@
       "Return error if group has active members",
       "Clean up offsets for deleted group"
     ],
+    "completed": true,
     "depends_on": [
       "group-state-storage"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "classic-range-assignor",
@@ -1389,13 +1389,13 @@
       "Handle remainder partitions",
       "Return assignment per member"
     ],
+    "completed": true,
     "depends_on": [
       "sync-group-handler"
     ],
     "scope": [
       "internal/groups/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "classic-roundrobin-assignor",
@@ -1406,13 +1406,13 @@
       "Assign partitions round-robin to consumers",
       "Return assignment per member"
     ],
+    "completed": true,
     "depends_on": [
       "sync-group-handler"
     ],
     "scope": [
       "internal/groups/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "session-timeout-sweep",
@@ -1424,14 +1424,14 @@
       "Remove members exceeding session timeout",
       "Trigger rebalance on member removal"
     ],
+    "completed": true,
     "depends_on": [
       "heartbeat-handler",
       "group-coordinator-lease"
     ],
     "scope": [
       "internal/groups/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "classic-group-rebalance-test",
@@ -1445,6 +1445,7 @@
       "Remove one consumer",
       "Verify rebalance redistributes partitions"
     ],
+    "completed": true,
     "depends_on": [
       "join-group-handler",
       "sync-group-handler",
@@ -1452,8 +1453,7 @@
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "kip848-heartbeat-handler",
@@ -1465,14 +1465,14 @@
       "Handle server-driven rebalance",
       "Update member metadata"
     ],
+    "completed": true,
     "depends_on": [
       "group-state-storage",
       "group-coordinator-lease"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "kip848-describe-handler",
@@ -1483,13 +1483,13 @@
       "Include member epochs and assignments",
       "Return authorized operations"
     ],
+    "completed": true,
     "depends_on": [
       "group-state-storage"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "kip848-uniform-assignor",
@@ -1500,13 +1500,13 @@
       "Minimize partition movement on rebalance",
       "Support sticky behavior"
     ],
+    "completed": true,
     "depends_on": [
       "kip848-heartbeat-handler"
     ],
     "scope": [
       "internal/groups/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "kip848-range-assignor",
@@ -1516,13 +1516,13 @@
       "Assign partitions by range per topic",
       "Support server-side assignment"
     ],
+    "completed": true,
     "depends_on": [
       "kip848-heartbeat-handler"
     ],
     "scope": [
       "internal/groups/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "kip848-protocol-interop",
@@ -1534,14 +1534,14 @@
       "Return MISMATCHED_ENDPOINT_TYPE for wrong protocol",
       "Log clear error message"
     ],
+    "completed": true,
     "depends_on": [
       "join-group-handler",
       "kip848-heartbeat-handler"
     ],
     "scope": [
       "internal/groups/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "kip848-integration-test",
@@ -1554,14 +1554,14 @@
       "Add/remove members",
       "Verify incremental rebalance"
     ],
+    "completed": true,
     "depends_on": [
       "kip848-heartbeat-handler",
       "kip848-uniform-assignor"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "offset-commit-handler",
@@ -1573,14 +1573,14 @@
       "Support retention_time_ms",
       "Validate group membership"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler",
       "group-state-storage"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "offset-fetch-handler",
@@ -1592,13 +1592,13 @@
       "Handle missing offsets gracefully",
       "Support fetching for all topics"
     ],
+    "completed": true,
     "depends_on": [
       "offset-commit-handler"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "offset-roundtrip-test",
@@ -1610,14 +1610,14 @@
       "Verify offset matches committed value",
       "Test with metadata field"
     ],
+    "completed": true,
     "depends_on": [
       "offset-commit-handler",
       "offset-fetch-handler"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "offset-retention-sweeper",
@@ -1628,14 +1628,14 @@
       "Delete offsets older than retention time",
       "Only run on coordinator lease holder"
     ],
+    "completed": true,
     "depends_on": [
       "offset-commit-handler",
       "group-coordinator-lease"
     ],
     "scope": [
       "internal/groups/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "compaction-planner",
@@ -1647,14 +1647,14 @@
       "Apply max age, size, and file count policies",
       "Return list of index entries to compact"
     ],
+    "completed": true,
     "depends_on": [
       "offset-index-lookup",
       "config-system"
     ],
     "scope": [
       "internal/compaction/planner/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "compaction-lock",
@@ -1666,13 +1666,13 @@
       "Release lock on completion or failure",
       "Handle lock contention gracefully"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-ephemeral-keys"
     ],
     "scope": [
       "internal/compaction/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "parquet-writer",
@@ -1686,13 +1686,13 @@
       "Include nulls for producer_id, producer_epoch, base_sequence",
       "Populate file-level min/max stats"
     ],
+    "completed": true,
     "depends_on": [
       "project-setup"
     ],
     "scope": [
       "internal/compaction/worker/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "parquet-reader",
@@ -1704,14 +1704,14 @@
       "Handle headers list correctly",
       "Support row group filtering by offset"
     ],
+    "completed": true,
     "depends_on": [
       "parquet-writer",
       "s3-object-store-adapter"
     ],
     "scope": [
       "internal/fetch/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-to-parquet-converter",
@@ -1724,14 +1724,14 @@
       "Extract records and convert to Parquet schema",
       "Write Parquet file to object storage"
     ],
+    "completed": true,
     "depends_on": [
       "fetch-wal-reader",
       "parquet-writer"
     ],
     "scope": [
       "internal/compaction/worker/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "compaction-saga-state",
@@ -1743,14 +1743,14 @@
       "Persist state transitions atomically",
       "Support recovery from any state"
     ],
+    "completed": true,
     "depends_on": [
       "compaction-lock",
       "oxia-cas-transactions"
     ],
     "scope": [
       "internal/compaction/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "compaction-index-swap",
@@ -1763,14 +1763,14 @@
       "Update cumulative size correctly",
       "Decrement WAL object refcounts"
     ],
+    "completed": true,
     "depends_on": [
       "compaction-saga-state",
       "offset-index-append"
     ],
     "scope": [
       "internal/compaction/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "compaction-fetch-consistency-test",
@@ -1783,14 +1783,14 @@
       "Fetch again",
       "Verify data is byte-for-byte identical"
     ],
+    "completed": true,
     "depends_on": [
       "compaction-index-swap",
       "fetch-handler"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "compaction-crash-recovery-test",
@@ -1802,13 +1802,13 @@
       "Crash after INDEX_SWAPPED, verify retry marks DONE",
       "Verify no data loss or duplication"
     ],
+    "completed": true,
     "depends_on": [
       "compaction-saga-state"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "iceberg-rest-catalog-client",
@@ -1820,13 +1820,13 @@
       "Handle authentication (basic, OAuth)",
       "Parse snapshot and schema responses"
     ],
+    "completed": true,
     "depends_on": [
       "iceberg-catalog-interface"
     ],
     "scope": [
       "internal/iceberg/catalog/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "iceberg-table-creation",
@@ -1838,14 +1838,14 @@
       "Set table properties (dray.topic, dray.cluster_id)",
       "Handle table already exists gracefully"
     ],
+    "completed": true,
     "depends_on": [
       "iceberg-rest-catalog-client",
       "create-topics-handler"
     ],
     "scope": [
       "internal/iceberg/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "iceberg-append-files",
@@ -1857,14 +1857,14 @@
       "Handle commit conflicts with retry",
       "Verify snapshot is updated"
     ],
+    "completed": true,
     "depends_on": [
       "iceberg-rest-catalog-client",
       "parquet-writer"
     ],
     "scope": [
       "internal/iceberg/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "iceberg-commit-idempotency",
@@ -1876,14 +1876,14 @@
       "Skip commit if already applied",
       "Log clear message on idempotent skip"
     ],
+    "completed": true,
     "depends_on": [
       "iceberg-append-files",
       "compaction-saga-state"
     ],
     "scope": [
       "internal/iceberg/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "iceberg-lock",
@@ -1894,13 +1894,13 @@
       "Release after commit completes",
       "Handle lock contention with retry"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-ephemeral-keys"
     ],
     "scope": [
       "internal/iceberg/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "iceberg-parquet-match-test",
@@ -1912,14 +1912,14 @@
       "Query Iceberg table snapshot",
       "Verify data files cover expected offsets"
     ],
+    "completed": true,
     "depends_on": [
       "iceberg-append-files",
       "compaction-index-swap"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "duality-mode-config",
@@ -1931,13 +1931,13 @@
       "Skip Iceberg commits when disabled",
       "Allow per-topic override"
     ],
+    "completed": true,
     "depends_on": [
       "config-system"
     ],
     "scope": [
       "internal/iceberg/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "produce-iceberg-down-test",
@@ -1950,6 +1950,7 @@
       "Fetch records successfully",
       "Verify compaction fails gracefully"
     ],
+    "completed": true,
     "depends_on": [
       "produce-handler",
       "fetch-handler",
@@ -1957,8 +1958,7 @@
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-refcount-management",
@@ -1970,14 +1970,14 @@
       "Track refCount at /wal/objects/<metaDomain>/<walId>",
       "Mark for GC when refCount reaches 0"
     ],
+    "completed": true,
     "depends_on": [
       "produce-commit",
       "compaction-index-swap"
     ],
     "scope": [
       "internal/wal/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-gc-worker",
@@ -1989,14 +1989,14 @@
       "Delete object from object storage",
       "Delete GC marker from metadata"
     ],
+    "completed": true,
     "depends_on": [
       "wal-refcount-management",
       "s3-object-store-adapter"
     ],
     "scope": [
       "internal/gc/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-orphan-gc",
@@ -2008,14 +2008,14 @@
       "Delete orphaned WAL objects",
       "Delete staging markers"
     ],
+    "completed": true,
     "depends_on": [
       "wal-staging-marker",
       "s3-object-store-adapter"
     ],
     "scope": [
       "internal/gc/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "parquet-gc",
@@ -2027,14 +2027,14 @@
       "Apply grace period before deletion",
       "Delete from object storage"
     ],
+    "completed": true,
     "depends_on": [
       "compaction-saga-state",
       "s3-object-store-adapter"
     ],
     "scope": [
       "internal/gc/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "gc-safety-test",
@@ -2047,14 +2047,14 @@
       "Trigger GC",
       "Verify fetch still works after GC"
     ],
+    "completed": true,
     "depends_on": [
       "wal-gc-worker",
       "parquet-gc"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "retention-policy",
@@ -2066,14 +2066,14 @@
       "Track cumulative bytes and delete beyond retention.bytes",
       "Update index to remove deleted ranges"
     ],
+    "completed": true,
     "depends_on": [
       "topic-config-storage",
       "wal-gc-worker"
     ],
     "scope": [
       "internal/gc/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "tls-support",
@@ -2085,14 +2085,14 @@
       "Support certificate reload without restart",
       "Test with Kafka client over TLS"
     ],
+    "completed": true,
     "depends_on": [
       "tcp-server",
       "config-system"
     ],
     "scope": [
       "internal/server/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "sasl-plain-auth",
@@ -2104,14 +2104,14 @@
       "Validate against configured credentials",
       "Support credential sources (file, env)"
     ],
+    "completed": true,
     "depends_on": [
       "tcp-server",
       "config-system"
     ],
     "scope": [
       "internal/auth/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "acl-storage",
@@ -2123,13 +2123,13 @@
       "Implement simple allow/deny rules",
       "Cache ACLs with notification invalidation"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-cas-transactions"
     ],
     "scope": [
       "internal/auth/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "acl-enforcement",
@@ -2141,14 +2141,14 @@
       "Return GROUP_AUTHORIZATION_FAILED for denied group access",
       "Log denied access attempts"
     ],
+    "completed": true,
     "depends_on": [
       "acl-storage",
       "sasl-plain-auth"
     ],
     "scope": [
       "internal/auth/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "health-liveness-endpoint",
@@ -2159,13 +2159,13 @@
       "Check critical goroutines are running",
       "Return 503 if broker is shutting down"
     ],
+    "completed": true,
     "depends_on": [
       "tcp-server"
     ],
     "scope": [
       "internal/server/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "health-readiness-endpoint",
@@ -2177,6 +2177,7 @@
       "Check compactor is healthy (if running)",
       "Return 503 if any dependency is unhealthy"
     ],
+    "completed": true,
     "depends_on": [
       "health-liveness-endpoint",
       "oxia-client-wrapper",
@@ -2184,8 +2185,7 @@
     ],
     "scope": [
       "internal/server/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "produce-latency-metrics",
@@ -2196,14 +2196,14 @@
       "Break down by success/failure",
       "Expose via Prometheus endpoint"
     ],
+    "completed": true,
     "depends_on": [
       "metrics-skeleton",
       "produce-handler"
     ],
     "scope": [
       "internal/metrics/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "fetch-latency-metrics",
@@ -2214,14 +2214,14 @@
       "Break down by WAL vs Parquet source",
       "Expose via Prometheus endpoint"
     ],
+    "completed": true,
     "depends_on": [
       "metrics-skeleton",
       "fetch-handler"
     ],
     "scope": [
       "internal/metrics/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-metrics",
@@ -2232,14 +2232,14 @@
       "Record WAL flush latency histogram",
       "Track WAL objects created per second"
     ],
+    "completed": true,
     "depends_on": [
       "metrics-skeleton",
       "wal-writer"
     ],
     "scope": [
       "internal/metrics/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "compaction-backlog-metrics",
@@ -2250,14 +2250,14 @@
       "Track WAL files pending compaction",
       "Alert when backlog exceeds threshold"
     ],
+    "completed": true,
     "depends_on": [
       "metrics-skeleton",
       "compaction-planner"
     ],
     "scope": [
       "internal/metrics/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "gc-backlog-metrics",
@@ -2268,14 +2268,14 @@
       "Track pending WAL deletes",
       "Track pending Parquet deletes"
     ],
+    "completed": true,
     "depends_on": [
       "metrics-skeleton",
       "wal-gc-worker"
     ],
     "scope": [
       "internal/metrics/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "oxia-latency-metrics",
@@ -2286,14 +2286,14 @@
       "Track retry counts",
       "Break down by operation type"
     ],
+    "completed": true,
     "depends_on": [
       "metrics-skeleton",
       "oxia-client-wrapper"
     ],
     "scope": [
       "internal/metrics/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "object-store-latency-metrics",
@@ -2304,14 +2304,14 @@
       "Record Get/GetRange latency histogram",
       "Track bytes transferred"
     ],
+    "completed": true,
     "depends_on": [
       "metrics-skeleton",
       "s3-object-store-adapter"
     ],
     "scope": [
       "internal/metrics/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "connection-metrics",
@@ -2322,14 +2322,14 @@
       "Track requests per second by API type",
       "Track request error rate"
     ],
+    "completed": true,
     "depends_on": [
       "metrics-skeleton",
       "tcp-server"
     ],
     "scope": [
       "internal/metrics/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "drayd-broker-mode",
@@ -2341,14 +2341,14 @@
       "Register broker with Oxia",
       "Handle graceful shutdown"
     ],
+    "completed": true,
     "depends_on": [
       "tcp-server",
       "broker-registration"
     ],
     "scope": [
       "cmd/drayd/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "drayd-compactor-mode",
@@ -2360,6 +2360,7 @@
       "Process streams based on triggers",
       "Handle graceful shutdown"
     ],
+    "completed": true,
     "depends_on": [
       "compaction-planner",
       "wal-to-parquet-converter",
@@ -2367,8 +2368,7 @@
     ],
     "scope": [
       "cmd/drayd/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "drayd-admin-cli",
@@ -2380,13 +2380,13 @@
       "Implement config management commands",
       "Implement diagnostic commands"
     ],
+    "completed": true,
     "depends_on": [
       "project-setup"
     ],
     "scope": [
       "cmd/drayd/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "invariant-i1-test",
@@ -2397,14 +2397,14 @@
       "Verify all offsets are strictly increasing",
       "Test with concurrent producers"
     ],
+    "completed": true,
     "depends_on": [
       "produce-handler",
       "fetch-handler"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "invariant-i3-test",
@@ -2416,13 +2416,13 @@
       "Restart broker",
       "Verify records are not visible via fetch"
     ],
+    "completed": true,
     "depends_on": [
       "produce-failure-metadata-commit"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "invariant-i4-test",
@@ -2434,13 +2434,13 @@
       "Client retries produce",
       "Verify duplicates may exist but offsets are monotonic"
     ],
+    "completed": true,
     "depends_on": [
       "produce-handler"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "invariant-i5-test",
@@ -2453,14 +2453,14 @@
       "Verify fetch never sees partial index state",
       "Verify all records are returned correctly"
     ],
+    "completed": true,
     "depends_on": [
       "compaction-index-swap",
       "fetch-handler"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "invariant-i6-test",
@@ -2472,13 +2472,13 @@
       "Verify only same-zone brokers returned",
       "Verify fallback to all when no zone match"
     ],
+    "completed": true,
     "depends_on": [
       "zone-filtering-test"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "compatibility-harness",
@@ -2491,6 +2491,7 @@
       "Create test cases for admin operations",
       "Verify results match expected Kafka semantics"
     ],
+    "completed": true,
     "depends_on": [
       "produce-handler",
       "fetch-handler",
@@ -2498,8 +2499,7 @@
     ],
     "scope": [
       "tests/compatibility/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "golden-test-produce-fetch",
@@ -2510,13 +2510,13 @@
       "Run same scenarios against Dray",
       "Compare response fields match"
     ],
+    "completed": true,
     "depends_on": [
       "compatibility-harness"
     ],
     "scope": [
       "tests/compatibility/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "golden-test-groups",
@@ -2527,13 +2527,13 @@
       "Run same sequences against Dray",
       "Compare state transitions and responses"
     ],
+    "completed": true,
     "depends_on": [
       "compatibility-harness"
     ],
     "scope": [
       "tests/compatibility/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "property-test-offset-index",
@@ -2545,14 +2545,14 @@
       "Verify lookups return correct entries",
       "Test with concurrent operations"
     ],
+    "completed": true,
     "depends_on": [
       "offset-index-append",
       "offset-index-lookup"
     ],
     "scope": [
       "tests/property/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "property-test-groups",
@@ -2563,14 +2563,14 @@
       "Verify state machine invariants hold",
       "Test with concurrent member operations"
     ],
+    "completed": true,
     "depends_on": [
       "join-group-handler",
       "heartbeat-handler"
     ],
     "scope": [
       "tests/property/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "transaction-api-rejection",
@@ -2583,13 +2583,13 @@
       "Handle TxnOffsetCommit, return UNSUPPORTED_VERSION",
       "Log clear message about deferred feature"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "inter-broker-api-rejection",
@@ -2601,13 +2601,13 @@
       "Handle UpdateMetadata, return UNSUPPORTED_VERSION",
       "Do not advertise these in ApiVersions"
     ],
+    "completed": true,
     "depends_on": [
       "api-versions-handler"
     ],
     "scope": [
       "internal/protocol/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "broker-crash-mid-rebalance-test",
@@ -2620,14 +2620,14 @@
       "Verify rebalance completes successfully",
       "Verify no data loss"
     ],
+    "completed": true,
     "depends_on": [
       "classic-group-rebalance-test",
       "group-coordinator-lease"
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "object-range-cache",
@@ -2639,13 +2639,13 @@
       "Implement LRU or similar eviction",
       "Invalidate on notification"
     ],
+    "completed": true,
     "depends_on": [
       "fetch-wal-reader"
     ],
     "scope": [
       "internal/fetch/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "notification-stream-restart",
@@ -2657,14 +2657,14 @@
       "Ensure no updates are missed",
       "Log reconnection events"
     ],
+    "completed": true,
     "depends_on": [
       "oxia-notifications",
       "hwm-maintenance"
     ],
     "scope": [
       "internal/metadata/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "graceful-shutdown",
@@ -2677,6 +2677,7 @@
       "Deregister from broker list",
       "Close Oxia and object store connections"
     ],
+    "completed": true,
     "depends_on": [
       "tcp-server",
       "produce-buffer",
@@ -2684,8 +2685,7 @@
     ],
     "scope": [
       "internal/server/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "multi-zone-deployment-test",
@@ -2698,6 +2698,7 @@
       "Verify cross-zone fallback works",
       "Verify produce/fetch across zones"
     ],
+    "completed": true,
     "depends_on": [
       "zone-filtering-test",
       "produce-handler",
@@ -2705,8 +2706,7 @@
     ],
     "scope": [
       "tests/integration/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "batch-index-efficient-lookup",
@@ -2718,14 +2718,14 @@
       "Avoid scanning whole chunk for offset",
       "Test with large chunks"
     ],
+    "completed": true,
     "depends_on": [
       "offset-index-append",
       "fetch-wal-reader"
     ],
     "scope": [
       "internal/fetch/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "non-owner-request-handling",
@@ -2737,13 +2737,13 @@
       "Return 'not leader' error when enforce mode enabled",
       "Log affinity violations"
     ],
+    "completed": true,
     "depends_on": [
       "partition-affinity-mapping"
     ],
     "scope": [
       "internal/routing/"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "fix-listoffsets-timestamp-nonmonotonic",
@@ -3151,5 +3151,192 @@
     "scope": [
       "internal/routing/broker.go"
     ]
+  },
+  {
+    "id": "wal-fetch-range-bounds",
+    "category": "security",
+    "description": "Bound WAL fetch reads to requested maxBytes by range-reading only the needed batch slices instead of loading entire chunks into memory.",
+    "steps": [
+      "Update WAL fetch path to compute minimal byte ranges using batchIndex and maxBytes",
+      "Add unit test that requests small maxBytes against a large chunk and asserts bounded memory/bytes read",
+      "Run fetch unit tests and fix any regressions"
+    ],
+    "scope": [
+      "internal/fetch/wal_reader.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "produce-decompression-cap",
+    "category": "security",
+    "description": "Add size caps and safeguards for decompressing record batches in produce validation to prevent decompression bombs.",
+    "steps": [
+      "Introduce maximum decompressed size limits per batch and per request",
+      "Return a safe error for oversized or malformed compressed batches",
+      "Add tests with oversized/compressed payloads that validate rejection",
+      "Run protocol/produce tests and fix failures"
+    ],
+    "scope": [
+      "internal/protocol/produce.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "request-timeout-enforcement",
+    "category": "reliability",
+    "description": "Enforce per-request timeouts in server handling and produce flush waits to avoid indefinite hangs.",
+    "steps": [
+      "Thread request timeouts into handler contexts and buffer flush waits",
+      "Add tests that simulate stalled flush and verify deadline expiry returns an error",
+      "Run server/protocol tests and fix failures"
+    ],
+    "scope": [
+      "internal/server/server.go",
+      "internal/protocol/produce.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "s3-delete-idempotent",
+    "category": "bug",
+    "description": "Make S3 Delete treat 404/NoSuchKey as success to keep GC and retries idempotent.",
+    "steps": [
+      "Update S3 Delete to swallow not-found errors",
+      "Add unit test for Delete on missing object",
+      "Run objectstore tests and fix failures"
+    ],
+    "scope": [
+      "internal/objectstore/s3/store.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wal-writer-flush-populates-chunk-offsets",
+    "category": "bug",
+    "description": "Populate ChunkOffset.ByteOffset/ByteLength in Writer.Flush for non-staging usage so index entries can be constructed correctly.",
+    "steps": [
+      "Set chunk offset/length fields during flush for all streams",
+      "Add unit test that validates chunk offsets/lengths are populated after flush",
+      "Run WAL tests and fix failures"
+    ],
+    "scope": [
+      "internal/wal/writer.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "oxia-atomic-transactions",
+    "category": "bug",
+    "description": "Implement true atomic multi-key transactions in Oxia metadata adapter or enforce atomicity guarantees via Oxia APIs, removing the current sequential no-rollback behavior.",
+    "steps": [
+      "Replace sequential Txn with Oxia transaction API or equivalent atomic primitive",
+      "Add tests proving multi-key atomicity and rollback on partial failure",
+      "Run metadata tests and fix failures"
+    ],
+    "scope": [
+      "internal/metadata/oxia/transaction.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "hwm-index-atomic-commit",
+    "category": "bug",
+    "description": "Ensure HWM updates and offset index entry creation are atomic to prevent HWM advancing without a visible index entry.",
+    "steps": [
+      "Update append logic to commit HWM and index entry in one atomic transaction",
+      "Add failure-injection test that verifies HWM does not advance on index write failure",
+      "Run index tests and fix failures"
+    ],
+    "depends_on": [
+      "oxia-atomic-transactions"
+    ],
+    "scope": [
+      "internal/index/entry.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "compaction-gc-only-after-done",
+    "category": "bug",
+    "description": "Delay Parquet GC scheduling until compaction job reaches DONE to avoid premature deletion after index swap.",
+    "steps": [
+      "Move GC scheduling behind DONE state or add a DONE gate check",
+      "Add unit test that ensures GC entries are not created before DONE",
+      "Run compaction and GC tests and fix failures"
+    ],
+    "scope": [
+      "internal/compaction/swap.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wire-iceberg-removal-confirmation",
+    "category": "bug",
+    "description": "Invoke ConfirmParquetIcebergRemoval in production paths so old Parquet files are eligible for deletion after Iceberg removal is confirmed.",
+    "steps": [
+      "Call ConfirmParquetIcebergRemoval from compaction/GC flow when Iceberg enabled",
+      "Add unit test that simulates Iceberg removal confirmation gating GC eligibility",
+      "Run GC tests and fix failures"
+    ],
+    "scope": [
+      "internal/gc/parquet_gc.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "test-iceberg-recompaction-gc-ordering",
+    "category": "test",
+    "description": "Add integration test for Parquet re-compaction with Iceberg enabled to assert Iceberg commit/removal ordering and GC safety.",
+    "steps": [
+      "Add integration test that performs Parquet re-compaction with Iceberg enabled and records index swap + Iceberg removal events",
+      "Assert GC does not delete files until Iceberg removal is confirmed and job reaches DONE",
+      "Run integration tests, fix any failures, and re-run"
+    ],
+    "scope": [
+      "tests/integration"
+    ],
+    "completed": false
+  },
+  {
+    "id": "acl-enforcer-fail-closed",
+    "category": "security",
+    "description": "Fail closed when ACL enforcement is enabled but cache is nil to avoid unintended allow-all behavior.",
+    "steps": [
+      "Return authorization failure when ACL cache is missing and ACLs are enabled",
+      "Add unit test for nil cache enforcement path",
+      "Run auth tests and fix failures"
+    ],
+    "scope": [
+      "internal/auth/enforcer.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "sasl-nil-credentials-guard",
+    "category": "reliability",
+    "description": "Guard SASL authentication against nil credential store to prevent broker panics and return clean auth errors.",
+    "steps": [
+      "Check credential store pointer before use and return an auth error if missing",
+      "Add unit test for nil store handling",
+      "Run auth tests and fix failures"
+    ],
+    "scope": [
+      "internal/auth/sasl.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "test-sasl-acl-end-to-end",
+    "category": "test",
+    "description": "Add end-to-end broker integration tests for SASL/PLAIN authentication and ACL enforcement using real connections.",
+    "steps": [
+      "Add integration test that authenticates with SASL/PLAIN over a real broker connection",
+      "Validate allowed and denied operations via ACLs with real protocol requests",
+      "Run integration tests, fix failures, and re-run"
+    ],
+    "scope": [
+      "tests/integration"
+    ],
+    "completed": false
   }
 ]
