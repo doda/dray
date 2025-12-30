@@ -3414,7 +3414,6 @@
     "scope": [
       "internal/wal"
     ],
-    "passes": true,
     "completed": true
   },
   {
@@ -3430,7 +3429,6 @@
     "scope": [
       "internal/wal"
     ],
-    "passes": true,
     "completed": true
   },
   {
@@ -3446,8 +3444,7 @@
     "scope": [
       "internal/wal"
     ],
-    "completed": true,
-    "passes": true
+    "completed": true
   },
   {
     "id": "config-cluster-id-and-namespace",
@@ -3463,8 +3460,7 @@
       "internal/config",
       "internal/metadata/oxia"
     ],
-    "completed": true,
-    "passes": true
+    "completed": true
   },
   {
     "id": "broker-registration-ephemeral-cas",
@@ -3480,8 +3476,7 @@
       "internal/routing",
       "internal/server"
     ],
-    "completed": true,
-    "passes": true
+    "completed": true
   },
   {
     "id": "lease-manager-synchronization",
@@ -3496,8 +3491,7 @@
     "scope": [
       "internal/groups"
     ],
-    "completed": true,
-    "passes": true
+    "completed": true
   },
   {
     "id": "list-groups-prefix-scope",
