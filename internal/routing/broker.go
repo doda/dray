@@ -118,6 +118,8 @@ func NewRegistry(store metadata.MetadataStore, config RegistryConfig) *Registry 
 		logger = logging.DefaultLogger()
 	}
 
+	config.AdvertisedListeners = cloneAdvertisedListeners(config.AdvertisedListeners)
+
 	return &Registry{
 		store:     store,
 		config:    config,
@@ -258,7 +260,7 @@ func (r *Registry) BrokerInfo() BrokerInfo {
 		BrokerID:            r.config.BrokerID,
 		NodeID:              r.config.NodeID,
 		ZoneID:              r.config.ZoneID,
-		AdvertisedListeners: r.config.AdvertisedListeners,
+		AdvertisedListeners: cloneAdvertisedListeners(r.config.AdvertisedListeners),
 		StartedAt:           r.startedAt,
 		BuildInfo:           r.config.BuildInfo,
 	}
@@ -290,4 +292,11 @@ func ParseZoneID(clientID string) string {
 	}
 
 	return ""
+}
+
+func cloneAdvertisedListeners(listeners []string) []string {
+	if len(listeners) == 0 {
+		return nil
+	}
+	return append([]string(nil), listeners...)
 }

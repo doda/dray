@@ -3146,7 +3146,7 @@
       "Add a race-focused test or rerun existing tests with -race to verify",
       "Run routing tests with -race and confirm no data races"
     ],
-    "completed": false,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/routing/broker.go"
