@@ -37,6 +37,7 @@ const (
 	errInvalidTransactionalState   int16 = 73
 	errTransactionalIDNotFound     int16 = 90
 	errNotLeaderOrFollower         int16 = 6
+	errRequestTimedOut             int16 = 7
 )
 
 // ProduceHandlerConfig configures the produce handler.
@@ -69,6 +70,9 @@ type ProduceHandler struct {
 
 // NewProduceHandler creates a new Produce handler.
 func NewProduceHandler(cfg ProduceHandlerConfig, topicStore *topics.Store, buffer *produce.Buffer) *ProduceHandler {
+	if cfg.TimeoutMs <= 0 {
+		cfg.TimeoutMs = 15000
+	}
 	return &ProduceHandler{
 		cfg:        cfg,
 		topicStore: topicStore,
@@ -97,6 +101,11 @@ func (h *ProduceHandler) WithMetrics(m *metrics.ProduceMetrics) *ProduceHandler 
 // 5. Returns offsets only after WAL + metadata commit
 func (h *ProduceHandler) Handle(ctx context.Context, version int16, req *kmsg.ProduceRequest) (resp *kmsg.ProduceResponse) {
 	startTime := time.Now()
+	reqCtx, cancel := h.requestContext(ctx, req.TimeoutMillis)
+	if cancel != nil {
+		defer cancel()
+	}
+	ctx = reqCtx
 
 	resp = kmsg.NewPtrProduceResponse()
 	resp.SetVersion(version)
@@ -261,8 +270,10 @@ func (h *ProduceHandler) processPartition(ctx context.Context, version int16, to
 	// Add to produce buffer and wait for completion
 	pending, err := h.buffer.Add(ctx, partMeta.StreamID, batches, recordCount, minTs, maxTs)
 	if err != nil {
-		if errors.Is(err, produce.ErrBufferFull) {
-			resp.ErrorCode = errClusterAuthorizationFailed // Use appropriate error
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			resp.ErrorCode = errRequestTimedOut
+		} else if errors.Is(err, produce.ErrBufferFull) {
+			resp.ErrorCode = errClusterAuthorizationFailed
 		} else {
 			resp.ErrorCode = errUnknownTopicOrPartitionErr
 		}
@@ -274,7 +285,11 @@ func (h *ProduceHandler) processPartition(ctx context.Context, version int16, to
 	select {
 	case <-pending.Done:
 		if pending.Err != nil {
-			resp.ErrorCode = errUnknownTopicOrPartitionErr
+			if errors.Is(pending.Err, context.DeadlineExceeded) || errors.Is(pending.Err, context.Canceled) {
+				resp.ErrorCode = errRequestTimedOut
+			} else {
+				resp.ErrorCode = errUnknownTopicOrPartitionErr
+			}
 			resp.BaseOffset = -1
 			return resp
 		}
@@ -285,7 +300,7 @@ func (h *ProduceHandler) processPartition(ctx context.Context, version int16, to
 			resp.BaseOffset = 0
 		}
 	case <-ctx.Done():
-		resp.ErrorCode = errUnknownTopicOrPartitionErr
+		resp.ErrorCode = errRequestTimedOut
 		resp.BaseOffset = -1
 		return resp
 	}
@@ -337,6 +352,23 @@ func (h *ProduceHandler) responseHasError(resp *kmsg.ProduceResponse) bool {
 		}
 	}
 	return false
+}
+
+func (h *ProduceHandler) requestContext(ctx context.Context, timeoutMillis int32) (context.Context, context.CancelFunc) {
+	timeoutMs := timeoutMillis
+	if timeoutMs <= 0 {
+		timeoutMs = h.cfg.TimeoutMs
+	}
+	if timeoutMs <= 0 {
+		return ctx, nil
+	}
+
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= timeout {
+		return ctx, nil
+	}
+
+	return context.WithTimeout(ctx, timeout)
 }
 
 // errInvalidRecordBatch indicates the record batch format is invalid.

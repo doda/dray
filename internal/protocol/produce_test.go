@@ -665,6 +665,48 @@ func TestProduceHandler_BufferAndFlush(t *testing.T) {
 	}
 }
 
+func TestProduceHandler_RequestTimeout(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	ctx := context.Background()
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush: func(ctx context.Context, domain metadata.MetaDomain, requests []*produce.PendingRequest) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	})
+	defer buffer.Close()
+
+	handler := NewProduceHandler(ProduceHandlerConfig{}, topicStore, buffer)
+
+	req := buildProduceRequest("test-topic", 0)
+	req.TimeoutMillis = 50
+
+	resp := handler.Handle(ctx, 9, req)
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != errRequestTimedOut {
+		t.Errorf("expected REQUEST_TIMED_OUT error (%d), got %d", errRequestTimedOut, partResp.ErrorCode)
+	}
+}
+
 // TestProduceHandler_AcksZero tests that acks=0 doesn't wait for commit.
 func TestProduceHandler_AcksZero(t *testing.T) {
 	store := metadata.NewMockStore()
