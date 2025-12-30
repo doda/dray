@@ -16,6 +16,9 @@ var (
 	// ErrMetaDomainMismatch is returned when trying to add a chunk from a different MetaDomain.
 	ErrMetaDomainMismatch = errors.New("wal: metadomain mismatch - all chunks must be from the same metadomain")
 
+	// ErrDuplicateStreamID is returned when multiple chunks share the same StreamID in a single WAL.
+	ErrDuplicateStreamID = errors.New("wal: duplicate stream ID in WAL")
+
 	// ErrEmptyWAL is returned when trying to flush a WAL with no chunks.
 	ErrEmptyWAL = errors.New("wal: cannot flush empty WAL")
 

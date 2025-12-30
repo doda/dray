@@ -3399,7 +3399,7 @@
     "scope": [
       "internal/wal"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "wal-encoder-no-panic-on-layout-mismatch",

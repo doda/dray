@@ -1535,3 +1535,14 @@ Start with project-setup, then follow spec phases:
 - Challenges: go not in PATH for tests.
 - Resolution: ran tests with PATH override.
 - Follow-ups: none
+[2025-12-30T10:30:38Z] Completed wal-writer-reject-duplicate-stream-chunks: PASS
+- Added duplicate StreamID validation during WAL encoding to reject duplicate chunks before index construction.
+- Added writer flush test covering duplicate StreamID rejection and ensured no object write on failure.
+- Files changed: internal/wal/encoder.go
+- Files changed: internal/wal/writer.go
+- Files changed: internal/wal/writer_test.go
+- Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./internal/wal -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: go not in PATH for tests.
+- Resolution: ran tests with PATH override.
+- Follow-ups: none

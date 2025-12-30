@@ -291,6 +291,34 @@ func TestWriterFlushError(t *testing.T) {
 	}
 }
 
+func TestWriterFlushDuplicateStreamID(t *testing.T) {
+	store := newMockStore()
+	w := NewWriter(store, nil)
+	defer w.Close()
+
+	chunk1 := Chunk{
+		StreamID:    7,
+		RecordCount: 3,
+		Batches:     []BatchEntry{{Data: []byte("first")}},
+	}
+	chunk2 := Chunk{
+		StreamID:    7,
+		RecordCount: 2,
+		Batches:     []BatchEntry{{Data: []byte("second")}},
+	}
+
+	w.AddChunk(chunk1, 0)
+	w.AddChunk(chunk2, 0)
+
+	_, err := w.Flush(context.Background())
+	if !errors.Is(err, ErrDuplicateStreamID) {
+		t.Fatalf("expected ErrDuplicateStreamID, got %v", err)
+	}
+	if len(store.objects) != 0 {
+		t.Errorf("expected no objects written, got %d", len(store.objects))
+	}
+}
+
 func TestWriterClosed(t *testing.T) {
 	store := newMockStore()
 	w := NewWriter(store, nil)
