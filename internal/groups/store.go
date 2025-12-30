@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
@@ -274,6 +275,7 @@ func (s *Store) CreateGroup(ctx context.Context, req CreateGroupRequest) (*Group
 
 	typeKey := keys.GroupTypeKeyPath(req.GroupID)
 	stateKey := keys.GroupStateKeyPath(req.GroupID)
+	listKey := keys.GroupStateListKeyPath(req.GroupID)
 	countKey := keys.GroupMembersCountKeyPath(req.GroupID)
 
 	err = s.meta.Txn(ctx, typeKey, func(txn metadata.Txn) error {
@@ -291,6 +293,7 @@ func (s *Store) CreateGroup(ctx context.Context, req CreateGroupRequest) (*Group
 
 		// Create state key
 		txn.Put(stateKey, stateData)
+		txn.Put(listKey, stateData)
 		txn.Put(countKey, formatMemberCount(0))
 
 		return nil
@@ -323,6 +326,7 @@ func (s *Store) UpdateGroupState(ctx context.Context, req UpdateGroupStateReques
 	}
 
 	stateKey := keys.GroupStateKeyPath(req.GroupID)
+	listKey := keys.GroupStateListKeyPath(req.GroupID)
 	var updatedState *GroupState
 
 	err := s.meta.Txn(ctx, stateKey, func(txn metadata.Txn) error {
@@ -356,6 +360,7 @@ func (s *Store) UpdateGroupState(ctx context.Context, req UpdateGroupStateReques
 		}
 
 		txn.PutWithVersion(stateKey, stateData, version)
+		txn.Put(listKey, stateData)
 		updatedState = &state
 		return nil
 	})
@@ -374,6 +379,7 @@ func (s *Store) IncrementGeneration(ctx context.Context, groupID string, nowMs i
 	}
 
 	stateKey := keys.GroupStateKeyPath(groupID)
+	listKey := keys.GroupStateListKeyPath(groupID)
 	var updatedState *GroupState
 
 	err := s.meta.Txn(ctx, stateKey, func(txn metadata.Txn) error {
@@ -399,6 +405,7 @@ func (s *Store) IncrementGeneration(ctx context.Context, groupID string, nowMs i
 		}
 
 		txn.PutWithVersion(stateKey, stateData, version)
+		txn.Put(listKey, stateData)
 		updatedState = &state
 		return nil
 	})
@@ -424,6 +431,7 @@ func (s *Store) DeleteGroup(ctx context.Context, groupID string) error {
 
 	typeKey := keys.GroupTypeKeyPath(groupID)
 	stateKey := keys.GroupStateKeyPath(groupID)
+	listKey := keys.GroupStateListKeyPath(groupID)
 	countKey := keys.GroupMembersCountKeyPath(groupID)
 
 	return s.meta.Txn(ctx, typeKey, func(txn metadata.Txn) error {
@@ -439,6 +447,7 @@ func (s *Store) DeleteGroup(ctx context.Context, groupID string) error {
 		// Delete type and state
 		txn.Delete(typeKey)
 		txn.Delete(stateKey)
+		txn.Delete(listKey)
 		txn.Delete(countKey)
 
 		return nil
@@ -1042,6 +1051,7 @@ func (s *Store) TransitionState(ctx context.Context, req TransitionStateRequest)
 	}
 
 	stateKey := keys.GroupStateKeyPath(req.GroupID)
+	listKey := keys.GroupStateListKeyPath(req.GroupID)
 	var updatedState *GroupState
 
 	// If we need to clear assignments, get them first
@@ -1098,6 +1108,7 @@ func (s *Store) TransitionState(ctx context.Context, req TransitionStateRequest)
 		}
 
 		txn.PutWithVersion(stateKey, stateData, version)
+		txn.Put(listKey, stateData)
 
 		// Clear assignments if requested
 		if req.ClearAssignments {
@@ -1120,20 +1131,18 @@ func (s *Store) TransitionState(ctx context.Context, req TransitionStateRequest)
 
 // ListGroups returns all consumer groups.
 func (s *Store) ListGroups(ctx context.Context) ([]GroupState, error) {
-	// List all type keys to find all groups
-	prefix := keys.GroupsPrefix + "/"
+	// List all group state listing keys to find all groups
+	prefix := keys.GroupStateListPrefix()
 	kvs, err := s.meta.List(ctx, prefix, "", 0)
 	if err != nil {
 		return nil, fmt.Errorf("groups: list groups: %w", err)
 	}
 
-	// Track seen groups to avoid duplicates from multiple key types
-	seen := make(map[string]bool)
 	var groups []GroupState
 
 	for _, kv := range kvs {
 		// Only process state keys
-		if !isGroupStateKey(kv.Key) {
+		if !isGroupStateListKey(kv.Key) {
 			continue
 		}
 
@@ -1142,25 +1151,21 @@ func (s *Store) ListGroups(ctx context.Context) ([]GroupState, error) {
 			continue
 		}
 
-		if !seen[state.GroupID] {
-			seen[state.GroupID] = true
-			groups = append(groups, state)
-		}
+		groups = append(groups, state)
 	}
 
 	return groups, nil
 }
 
-// isGroupStateKey checks if a key is a group state key.
-func isGroupStateKey(key string) bool {
-	// Format: /dray/v1/groups/<groupId>/state
-	prefix := keys.GroupsPrefix + "/"
+// isGroupStateListKey checks if a key is a group state listing key.
+func isGroupStateListKey(key string) bool {
+	// Format: /dray/v1/groups-state/<groupId>
+	prefix := keys.GroupStateListPrefix()
 	if len(key) <= len(prefix) {
 		return false
 	}
 	rest := key[len(prefix):]
-	// Check if it ends with /state and has no other slashes in between
-	return len(rest) > 6 && rest[len(rest)-6:] == "/state"
+	return !strings.Contains(rest, "/")
 }
 
 // =============================================================================
