@@ -3222,7 +3222,7 @@
     "scope": [
       "internal/wal/writer.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "oxia-atomic-transactions",

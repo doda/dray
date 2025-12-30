@@ -1389,3 +1389,14 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass)
 - Challenges: none
 - Follow-ups: none
+[2025-12-30T10:12:00Z] Completed wal-writer-flush-populates-chunk-offsets: PASS
+- Implemented chunk byte offset/length population in WAL writer flush using calculated layouts.
+- Extended writer chunk offsets test to assert byte offsets/lengths for each stream.
+- Files changed: internal/wal/writer.go
+- Files changed: internal/wal/writer_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/wal -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: gofmt not available in PATH.
+- Resolution: kept formatting consistent with existing file style.
+- Follow-ups: none

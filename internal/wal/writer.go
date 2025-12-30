@@ -208,13 +208,22 @@ func (w *Writer) Flush(ctx context.Context) (*WriteResult, error) {
 		ChunkOffsets:    make([]ChunkOffset, len(w.chunks)),
 	}
 
+	layouts := CalculateChunkLayouts(wal)
+	layoutByStream := make(map[uint64]ChunkLayout, len(layouts))
+	for _, layout := range layouts {
+		layoutByStream[layout.StreamID] = layout
+	}
+
 	for i, chunk := range w.chunks {
+		layout := layoutByStream[chunk.StreamID]
 		result.ChunkOffsets[i] = ChunkOffset{
 			StreamID:       chunk.StreamID,
 			RecordCount:    chunk.RecordCount,
 			BatchCount:     uint32(len(chunk.Batches)),
 			MinTimestampMs: chunk.MinTimestampMs,
 			MaxTimestampMs: chunk.MaxTimestampMs,
+			ByteOffset:     layout.ByteOffset,
+			ByteLength:     layout.ByteLength,
 		}
 	}
 

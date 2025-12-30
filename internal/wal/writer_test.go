@@ -490,6 +490,36 @@ func TestWriterChunkOffsetsPreserved(t *testing.T) {
 			t.Errorf("ChunkOffsets[%d].MaxTimestampMs = %d, want %d", i, offset.MaxTimestampMs, chunk.MaxTimestampMs)
 		}
 	}
+
+	chunk100Len := uint32(4 + len("batch1"))
+	chunk200Len := uint32(4 + len("batch2a") + 4 + len("batch2b"))
+	chunk300Len := uint32(4 + len("batch3a") + 4 + len("batch3b") + 4 + len("batch3c"))
+	offset100 := uint64(HeaderSize)
+	offset200 := offset100 + uint64(chunk100Len)
+	offset300 := offset200 + uint64(chunk200Len)
+
+	expected := map[uint64]struct {
+		offset uint64
+		length uint32
+	}{
+		100: {offset: offset100, length: chunk100Len},
+		200: {offset: offset200, length: chunk200Len},
+		300: {offset: offset300, length: chunk300Len},
+	}
+
+	for i, chunk := range chunks {
+		offset := result.ChunkOffsets[i]
+		want, ok := expected[chunk.StreamID]
+		if !ok {
+			t.Fatalf("missing expected offsets for stream %d", chunk.StreamID)
+		}
+		if offset.ByteOffset != want.offset {
+			t.Errorf("ChunkOffsets[%d].ByteOffset = %d, want %d", i, offset.ByteOffset, want.offset)
+		}
+		if offset.ByteLength != want.length {
+			t.Errorf("ChunkOffsets[%d].ByteLength = %d, want %d", i, offset.ByteLength, want.length)
+		}
+	}
 }
 
 func TestWriterSortsByStreamId(t *testing.T) {
