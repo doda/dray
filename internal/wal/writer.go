@@ -211,7 +211,10 @@ func (w *Writer) Flush(ctx context.Context) (*WriteResult, error) {
 		ChunkOffsets:    make([]ChunkOffset, len(w.chunks)),
 	}
 
-	layouts := CalculateChunkLayouts(wal)
+	layouts, err := CalculateChunkLayouts(wal)
+	if err != nil {
+		return nil, fmt.Errorf("wal: chunk layout failed: %w", err)
+	}
 	layoutByStream := make(map[uint64]ChunkLayout, len(layouts))
 	for _, layout := range layouts {
 		layoutByStream[layout.StreamID] = layout

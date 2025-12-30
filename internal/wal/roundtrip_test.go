@@ -892,7 +892,10 @@ func TestRoundtripCalculatedSize(t *testing.T) {
 				}
 			}
 
-			calculatedSize := CalculateEncodedSize(wal)
+			calculatedSize, err := CalculateEncodedSize(wal)
+			if err != nil {
+				t.Fatalf("CalculateEncodedSize failed: %v", err)
+			}
 			encoded, err := EncodeToBytes(wal)
 			if err != nil {
 				t.Fatalf("EncodeToBytes failed: %v", err)
