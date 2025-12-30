@@ -1338,3 +1338,12 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenge: routing leader distribution test failed after streamId change.
 - Resolution: relaxed test to assert valid leaders for many stream IDs and added explicit streamId hashing check.
+[2025-12-30T03:15:00Z] Completed fix-routing-registry-race: PASS
+- Outcome: fixed registry data race by deep-copying advertised listeners on publication/return.
+- Added config slice cloning in registry constructor and BrokerInfo.
+- Key files changed: internal/routing/broker.go
+- Tests: PATH="/usr/local/go/bin:$PATH" go test -race ./internal/routing -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: none
+- Resolutions: none
+- Follow-ups: none
