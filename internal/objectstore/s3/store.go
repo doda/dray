@@ -232,7 +232,11 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		return s.wrapError("Delete", key, err)
+		wrapped := s.wrapError("Delete", key, err)
+		if errors.Is(wrapped, objectstore.ErrNotFound) {
+			return nil
+		}
+		return wrapped
 	}
 
 	return nil

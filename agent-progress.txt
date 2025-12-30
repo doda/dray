@@ -1379,3 +1379,13 @@ Start with project-setup, then follow spec phases:
 - Files changed: task_list.json.
 - Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/server ./internal/protocol -count=1 (pass).
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+[2025-12-30T07:53:54Z] Completed s3-delete-idempotent: PASS
+- Implemented S3 Delete handling to swallow not-found errors for idempotent retries.
+- Added httptest-backed unit test to simulate 404/NoSuchKey delete responses.
+- Files changed: internal/objectstore/s3/store.go
+- Files changed: internal/objectstore/s3/store_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/objectstore/... (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: none
+- Follow-ups: none

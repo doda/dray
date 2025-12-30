@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/dray-io/dray/internal/objectstore"
 )
@@ -396,6 +399,60 @@ func TestDelete(t *testing.T) {
 	err = store.Delete(ctx, key)
 	if err != nil {
 		t.Errorf("delete of nonexistent key should succeed, got: %v", err)
+	}
+}
+
+func TestDeleteMissingObject(t *testing.T) {
+	ctx := context.Background()
+	type requestInfo struct {
+		method string
+		path   string
+	}
+	reqCh := make(chan requestInfo, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCh <- requestInfo{method: r.Method, path: r.URL.Path}
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+  <Code>NoSuchKey</Code>
+  <Message>The specified key does not exist.</Message>
+  <Key>missing.txt</Key>
+</Error>`)
+	}))
+	defer server.Close()
+
+	cfg := aws.Config{
+		Region:      "us-east-1",
+		HTTPClient:  server.Client(),
+		Credentials: aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider("test", "test", "")),
+	}
+
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(server.URL)
+		o.UsePathStyle = true
+	})
+
+	store := &Store{
+		client: client,
+		bucket: "test-bucket",
+	}
+
+	if err := store.Delete(ctx, "missing.txt"); err != nil {
+		t.Fatalf("Delete should swallow not found: %v", err)
+	}
+
+	select {
+	case req := <-reqCh:
+		if req.method != http.MethodDelete {
+			t.Fatalf("expected DELETE request, got %s", req.method)
+		}
+		if req.path != "/test-bucket/missing.txt" {
+			t.Fatalf("unexpected request path: %s", req.path)
+		}
+	default:
+		t.Fatal("expected delete request to be made")
 	}
 }
 
