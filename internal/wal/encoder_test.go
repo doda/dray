@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
+	"io"
 	"testing"
 
 	"github.com/google/uuid"
@@ -350,6 +351,31 @@ func TestEncoderWriter(t *testing.T) {
 	}
 }
 
+func TestEncoderShortWriteFails(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 1, 1700000000000)
+	wal.AddChunk(Chunk{
+		StreamID:       42,
+		Batches:        []BatchEntry{{Data: []byte("test")}},
+		RecordCount:    1,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 1000,
+	})
+
+	writer := &shortWriter{maxOnce: 8}
+	encoder := NewEncoder(writer)
+	n, err := encoder.Encode(wal)
+	if err == nil {
+		t.Fatal("expected short write error")
+	}
+	if !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("expected io.ErrShortWrite, got %v", err)
+	}
+	if n != int64(writer.maxOnce) {
+		t.Errorf("returned size = %d, want %d", n, writer.maxOnce)
+	}
+}
+
 func TestEncodeLayoutMismatchReturnsError(t *testing.T) {
 	walID := uuid.New()
 	wal := NewWAL(walID, 1, 1700000000000)
@@ -384,6 +410,22 @@ func TestEncodeLayoutMismatchReturnsError(t *testing.T) {
 	if !errors.Is(err, ErrLayoutMismatch) {
 		t.Fatalf("expected ErrLayoutMismatch, got %v", err)
 	}
+}
+
+type shortWriter struct {
+	maxOnce int
+	calls   int
+}
+
+func (w *shortWriter) Write(p []byte) (int, error) {
+	w.calls++
+	if w.calls == 1 {
+		if len(p) <= w.maxOnce {
+			return len(p), nil
+		}
+		return w.maxOnce, nil
+	}
+	return 0, nil
 }
 
 func TestCalculateEncodedSize(t *testing.T) {

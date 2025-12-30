@@ -94,8 +94,7 @@ func (e *Encoder) Encode(wal *WAL) (int64, error) {
 	offset += FooterSize
 
 	// Write to underlying writer
-	n, err := e.w.Write(buf)
-	return int64(n), err
+	return writeFull(e.w, buf)
 }
 
 // EncodeToBytes encodes a WAL and returns the bytes.
@@ -319,4 +318,22 @@ func validateSortedChunks(chunks []Chunk) error {
 		}
 	}
 	return nil
+}
+
+func writeFull(w io.Writer, buf []byte) (int64, error) {
+	var written int
+	for len(buf) > 0 {
+		n, err := w.Write(buf)
+		if n > 0 {
+			written += n
+			buf = buf[n:]
+		}
+		if err != nil {
+			return int64(written), fmt.Errorf("wal: write failed after %d bytes: %w", written, err)
+		}
+		if n == 0 {
+			return int64(written), fmt.Errorf("wal: short write after %d bytes: %w", written, io.ErrShortWrite)
+		}
+	}
+	return int64(written), nil
 }
