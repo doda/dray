@@ -95,6 +95,12 @@ func (a *SASLAuthenticator) HandleSASLAuthenticate(version int16, req *kmsg.SASL
 		return resp
 	}
 
+	if a.credentials == nil {
+		resp.ErrorCode = ErrorCodeSASLAuthenticationFailed
+		resp.ErrorMessage = strPtr("authentication failed")
+		return resp
+	}
+
 	// Validate credentials
 	if err := a.credentials.Validate(username, password); err != nil {
 		resp.ErrorCode = ErrorCodeSASLAuthenticationFailed

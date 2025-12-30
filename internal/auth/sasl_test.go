@@ -172,6 +172,23 @@ func TestSASLAuthenticator_HandleSASLAuthenticate(t *testing.T) {
 	}
 }
 
+func TestSASLAuthenticator_HandleSASLAuthenticate_NilStore(t *testing.T) {
+	auth := NewSASLAuthenticator(nil, MechanismPLAIN)
+
+	req := kmsg.NewPtrSASLAuthenticateRequest()
+	req.SetVersion(0)
+	req.SASLAuthBytes = buildPlainAuth("", "alice", "secret123")
+
+	resp := auth.HandleSASLAuthenticate(0, req, MechanismPLAIN)
+
+	if resp.ErrorCode != ErrorCodeSASLAuthenticationFailed {
+		t.Errorf("ErrorCode = %d, want %d", resp.ErrorCode, ErrorCodeSASLAuthenticationFailed)
+	}
+	if resp.ErrorMessage == nil || *resp.ErrorMessage == "" {
+		t.Errorf("ErrorMessage is empty, want non-empty")
+	}
+}
+
 func TestParsePlainAuth(t *testing.T) {
 	tests := []struct {
 		name       string
