@@ -3446,7 +3446,8 @@
     "scope": [
       "internal/wal"
     ],
-    "completed": false
+    "completed": true,
+    "passes": true
   },
   {
     "id": "config-cluster-id-and-namespace",

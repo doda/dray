@@ -1567,3 +1567,17 @@ Start with project-setup, then follow spec phases:
 - Challenges: init.sh required longer timeout.
 - Resolution: reran init.sh with 600s timeout.
 - Follow-ups: none.
+[2025-12-30T19:10:00Z] Completed wal-encoder-chunk-length-overflow-check: PASS
+- Added chunk body size overflow checks during WAL encoding/layout calculation to prevent uint32 wrap.
+- Propagated layout/size errors through writer and staging paths.
+- Added oversized chunk unit test for overflow handling without large allocations.
+- Files changed: internal/wal/encoder.go.
+- Files changed: internal/wal/writer.go.
+- Files changed: internal/wal/staging.go.
+- Files changed: internal/wal/encoder_test.go.
+- Files changed: internal/wal/roundtrip_test.go.
+- Files changed: task_list.json.
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/wal -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: go vet flagged unsafe pointer usage in overflow test.
+- Resolution: switched to unsafe.Slice with a real pointer to avoid vet warning.

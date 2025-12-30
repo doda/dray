@@ -195,7 +195,10 @@ func (w *StagingWriter) Flush(ctx context.Context) (*StagingWriteResult, error) 
 	}
 
 	// Calculate chunk layouts to get byte offsets and lengths
-	layouts := CalculateChunkLayouts(wal)
+	layouts, err := CalculateChunkLayouts(wal)
+	if err != nil {
+		return nil, fmt.Errorf("wal: chunk layout failed: %w", err)
+	}
 
 	result := &StagingWriteResult{
 		WriteResult: WriteResult{

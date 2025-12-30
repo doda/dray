@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"sort"
 )
 
@@ -13,6 +14,7 @@ import (
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
 var ErrLayoutMismatch = errors.New("wal: encoder layout mismatch")
+var ErrChunkBodyTooLarge = errors.New("wal: chunk body length exceeds max uint32")
 
 // Encoder writes WAL objects to an io.Writer.
 type Encoder struct {
@@ -53,7 +55,10 @@ func (e *Encoder) Encode(wal *WAL) (int64, error) {
 
 	for i, chunk := range sortedChunks {
 		layouts[i].offset = currentOffset
-		size := calculateChunkBodySize(chunk)
+		size, err := calculateChunkBodySize(chunk)
+		if err != nil {
+			return 0, err
+		}
 		layouts[i].length = size
 		currentOffset += uint64(size)
 	}
@@ -121,7 +126,10 @@ func EncodeToBytes(wal *WAL) ([]byte, error) {
 
 	for i, chunk := range sortedChunks {
 		layouts[i].offset = currentOffset
-		size := calculateChunkBodySize(chunk)
+		size, err := calculateChunkBodySize(chunk)
+		if err != nil {
+			return nil, err
+		}
 		layouts[i].length = size
 		currentOffset += uint64(size)
 	}
@@ -242,25 +250,32 @@ func encodeChunkBody(buf []byte, chunk Chunk) int {
 }
 
 // calculateChunkBodySize returns the size in bytes of a chunk body.
-func calculateChunkBodySize(chunk Chunk) uint32 {
-	var size uint32
+func calculateChunkBodySize(chunk Chunk) (uint32, error) {
+	var size uint64
 	for _, batch := range chunk.Batches {
 		size += 4 // batch length field
-		size += uint32(len(batch.Data))
+		size += uint64(len(batch.Data))
+		if size > math.MaxUint32 {
+			return 0, fmt.Errorf("%w: stream %d size %d", ErrChunkBodyTooLarge, chunk.StreamID, size)
+		}
 	}
-	return size
+	return uint32(size), nil
 }
 
 // CalculateEncodedSize returns the expected size of an encoded WAL.
-func CalculateEncodedSize(wal *WAL) uint64 {
+func CalculateEncodedSize(wal *WAL) (uint64, error) {
 	var chunkBodySize uint64
 	for _, chunk := range wal.Chunks {
-		chunkBodySize += uint64(calculateChunkBodySize(chunk))
+		size, err := calculateChunkBodySize(chunk)
+		if err != nil {
+			return 0, err
+		}
+		chunkBodySize += uint64(size)
 	}
 	return uint64(HeaderSize) +
 		chunkBodySize +
 		uint64(ChunkIndexEntrySize*len(wal.Chunks)) +
-		FooterSize
+		FooterSize, nil
 }
 
 // ChunkLayout describes the position of a chunk within an encoded WAL.
@@ -283,7 +298,7 @@ type ChunkLayout struct {
 
 // CalculateChunkLayouts calculates the byte offset and length for each chunk
 // when encoding the WAL. Chunks are sorted by StreamID before calculating positions.
-func CalculateChunkLayouts(wal *WAL) []ChunkLayout {
+func CalculateChunkLayouts(wal *WAL) ([]ChunkLayout, error) {
 	// Sort chunks by StreamID as required by spec
 	sortedChunks := make([]Chunk, len(wal.Chunks))
 	copy(sortedChunks, wal.Chunks)
@@ -295,7 +310,10 @@ func CalculateChunkLayouts(wal *WAL) []ChunkLayout {
 	currentOffset := uint64(HeaderSize)
 
 	for i, chunk := range sortedChunks {
-		bodySize := calculateChunkBodySize(chunk)
+		bodySize, err := calculateChunkBodySize(chunk)
+		if err != nil {
+			return nil, err
+		}
 		layouts[i] = ChunkLayout{
 			StreamID:       chunk.StreamID,
 			ByteOffset:     currentOffset,
@@ -308,7 +326,7 @@ func CalculateChunkLayouts(wal *WAL) []ChunkLayout {
 		currentOffset += uint64(bodySize)
 	}
 
-	return layouts
+	return layouts, nil
 }
 
 func validateSortedChunks(chunks []Chunk) error {

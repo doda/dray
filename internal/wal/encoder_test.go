@@ -6,7 +6,9 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"math"
 	"testing"
+	"unsafe"
 
 	"github.com/google/uuid"
 )
@@ -433,7 +435,10 @@ func TestCalculateEncodedSize(t *testing.T) {
 	wal := NewWAL(walID, 1, 1700000000000)
 
 	// Empty WAL
-	size := CalculateEncodedSize(wal)
+	size, err := CalculateEncodedSize(wal)
+	if err != nil {
+		t.Fatalf("CalculateEncodedSize failed: %v", err)
+	}
 	data, _ := EncodeToBytes(wal)
 	if size != uint64(len(data)) {
 		t.Errorf("calculated size = %d, actual = %d", size, len(data))
@@ -448,7 +453,10 @@ func TestCalculateEncodedSize(t *testing.T) {
 		MaxTimestampMs: 1000,
 	})
 
-	size = CalculateEncodedSize(wal)
+	size, err = CalculateEncodedSize(wal)
+	if err != nil {
+		t.Fatalf("CalculateEncodedSize failed: %v", err)
+	}
 	data, _ = EncodeToBytes(wal)
 	if size != uint64(len(data)) {
 		t.Errorf("calculated size = %d, actual = %d", size, len(data))
@@ -466,10 +474,36 @@ func TestCalculateEncodedSize(t *testing.T) {
 		MaxTimestampMs: 3000,
 	})
 
-	size = CalculateEncodedSize(wal)
+	size, err = CalculateEncodedSize(wal)
+	if err != nil {
+		t.Fatalf("CalculateEncodedSize failed: %v", err)
+	}
 	data, _ = EncodeToBytes(wal)
 	if size != uint64(len(data)) {
 		t.Errorf("calculated size = %d, actual = %d", size, len(data))
+	}
+}
+
+func TestChunkBodyLengthOverflow(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 1, 1700000000000)
+
+	dummy := new(byte)
+	oversized := unsafe.Slice(dummy, int(math.MaxUint32))
+	wal.AddChunk(Chunk{
+		StreamID:       1,
+		Batches:        []BatchEntry{{Data: oversized}},
+		RecordCount:    1,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 1000,
+	})
+
+	_, err := EncodeToBytes(wal)
+	if err == nil {
+		t.Fatal("expected overflow error")
+	}
+	if !errors.Is(err, ErrChunkBodyTooLarge) {
+		t.Fatalf("expected ErrChunkBodyTooLarge, got %v", err)
 	}
 }
 
