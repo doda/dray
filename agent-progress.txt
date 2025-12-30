@@ -1592,3 +1592,14 @@ Start with project-setup, then follow spec phases:
 - Files changed: task_list.json
 - Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/config ./internal/metadata/oxia -count=1 (pass); ./init.sh > .looper-init.log 2>&1 (pass)
 - Challenge: init.sh failed due to removed metadata namespace field; fixed by using config.OxiaNamespace in admin init.
+[2025-12-30T11:14:14Z] Completed broker-registration-ephemeral-cas: PASS
+- Implemented broker registration CAS with expect-not-exists and explicit duplicate broker error.
+- Added unit test for duplicate brokerId registration and updated integration test to expect rejection.
+- Files changed: internal/routing/broker.go.
+- Files changed: internal/routing/broker_test.go.
+- Files changed: internal/routing/broker_integration_test.go.
+- Files changed: task_list.json.
+- Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./internal/routing ./internal/server -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenge: go not in PATH for initial test run.
+- Resolution: re-ran tests with PATH override.

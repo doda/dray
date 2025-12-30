@@ -4,6 +4,7 @@ package routing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -111,6 +112,10 @@ type Registry struct {
 	startedAt  int64
 }
 
+// ErrBrokerAlreadyRegistered is returned when a broker attempts to register
+// with a brokerId that is already registered.
+var ErrBrokerAlreadyRegistered = errors.New("routing: broker already registered")
+
 // NewRegistry creates a new broker registry.
 func NewRegistry(store metadata.MetadataStore, config RegistryConfig) *Registry {
 	logger := config.Logger
@@ -150,8 +155,11 @@ func (r *Registry) Register(ctx context.Context) error {
 
 	key := keys.BrokerKeyPath(r.config.ClusterID, r.config.BrokerID)
 
-	_, err = r.store.PutEphemeral(ctx, key, data)
+	_, err = r.store.PutEphemeral(ctx, key, data, metadata.WithEphemeralExpectNotExists())
 	if err != nil {
+		if errors.Is(err, metadata.ErrVersionMismatch) {
+			return fmt.Errorf("broker %s already registered: %w", r.config.BrokerID, ErrBrokerAlreadyRegistered)
+		}
 		return fmt.Errorf("failed to register broker: %w", err)
 	}
 
