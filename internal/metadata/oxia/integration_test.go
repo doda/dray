@@ -269,6 +269,44 @@ func TestIntegration_TransactionConflict(t *testing.T) {
 	}
 }
 
+func TestIntegration_TransactionRollbackOnPartialFailure(t *testing.T) {
+	store := newIntegrationTestStore(t)
+	ctx := context.Background()
+
+	key1 := "/test/txn-rollback/key1"
+	key2 := "/test/txn-rollback/key2"
+
+	version, err := store.Put(ctx, key2, []byte("value2"))
+	if err != nil {
+		t.Fatalf("Put key2 failed: %v", err)
+	}
+
+	err = store.Txn(ctx, key1, func(txn metadata.Txn) error {
+		txn.Put(key1, []byte("value1"))
+		txn.PutWithVersion(key2, []byte("value2-updated"), version+1)
+		return nil
+	})
+	if err != metadata.ErrTxnConflict {
+		t.Fatalf("expected ErrTxnConflict, got %v", err)
+	}
+
+	result1, err := store.Get(ctx, key1)
+	if err != nil {
+		t.Fatalf("Get key1 failed: %v", err)
+	}
+	if result1.Exists {
+		t.Errorf("expected key1 to be absent after rollback, got %q", result1.Value)
+	}
+
+	result2, err := store.Get(ctx, key2)
+	if err != nil {
+		t.Fatalf("Get key2 failed: %v", err)
+	}
+	if string(result2.Value) != "value2" {
+		t.Errorf("expected key2 to be unchanged, got %q", result2.Value)
+	}
+}
+
 func TestIntegration_Ephemeral(t *testing.T) {
 	server := StartTestServer(t)
 	addr := server.Addr()

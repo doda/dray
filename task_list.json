@@ -3236,7 +3236,7 @@
     "scope": [
       "internal/metadata/oxia/transaction.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "hwm-index-atomic-commit",
