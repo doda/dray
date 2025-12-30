@@ -3480,7 +3480,8 @@
       "internal/routing",
       "internal/server"
     ],
-    "completed": false
+    "completed": true,
+    "passes": true
   },
   {
     "id": "lease-manager-synchronization",

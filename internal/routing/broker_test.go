@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -69,6 +70,60 @@ func TestRegistry_Register(t *testing.T) {
 	}
 	if info.BuildInfo.Version != "0.1.0" {
 		t.Errorf("Version mismatch: got %q, want %q", info.BuildInfo.Version, "0.1.0")
+	}
+}
+
+func TestRegistry_RegisterDuplicateBrokerID(t *testing.T) {
+	store := metadata.NewMockStore()
+	defer store.Close()
+
+	cfg1 := RegistryConfig{
+		ClusterID:           "cluster-1",
+		BrokerID:            "broker-1",
+		NodeID:              1,
+		ZoneID:              "us-east-1a",
+		AdvertisedListeners: []string{"broker-1.example.com:9092"},
+	}
+	cfg2 := RegistryConfig{
+		ClusterID:           "cluster-1",
+		BrokerID:            "broker-1",
+		NodeID:              2,
+		ZoneID:              "us-east-1b",
+		AdvertisedListeners: []string{"broker-1-new.example.com:9092"},
+	}
+
+	reg1 := NewRegistry(store, cfg1)
+	reg2 := NewRegistry(store, cfg2)
+
+	ctx := context.Background()
+	if err := reg1.Register(ctx); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	if err := reg2.Register(ctx); err == nil {
+		t.Fatal("expected duplicate registration to fail")
+	} else if !errors.Is(err, ErrBrokerAlreadyRegistered) {
+		t.Fatalf("expected ErrBrokerAlreadyRegistered, got %v", err)
+	}
+
+	key := keys.BrokerKeyPath("cluster-1", "broker-1")
+	result, err := store.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if !result.Exists {
+		t.Fatal("broker key should exist after registration")
+	}
+
+	var info BrokerInfo
+	if err := json.Unmarshal(result.Value, &info); err != nil {
+		t.Fatalf("failed to unmarshal broker info: %v", err)
+	}
+	if info.NodeID != 1 {
+		t.Errorf("NodeID mismatch: got %d, want %d", info.NodeID, 1)
+	}
+	if len(info.AdvertisedListeners) != 1 || info.AdvertisedListeners[0] != "broker-1.example.com:9092" {
+		t.Errorf("AdvertisedListeners mismatch: got %v", info.AdvertisedListeners)
 	}
 }
 

@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -169,9 +170,9 @@ func TestBrokerRegistration_MultipleBrokersDiscovery(t *testing.T) {
 	}
 }
 
-// TestBrokerRegistration_UpdateRegistration tests that a broker can update
-// its registration.
-func TestBrokerRegistration_UpdateRegistration(t *testing.T) {
+// TestBrokerRegistration_DuplicateRegistrationRejected tests that duplicate
+// broker registrations fail instead of overwriting existing entries.
+func TestBrokerRegistration_DuplicateRegistrationRejected(t *testing.T) {
 	server := oxia.StartTestServer(t)
 	addr := server.Addr()
 
@@ -205,8 +206,10 @@ func TestBrokerRegistration_UpdateRegistration(t *testing.T) {
 
 	regConfig.AdvertisedListeners = []string{"broker-1-new:9092"}
 	registry2 := NewRegistry(store, regConfig)
-	if err := registry2.Register(ctx); err != nil {
-		t.Fatalf("second Register failed: %v", err)
+	if err := registry2.Register(ctx); err == nil {
+		t.Fatal("expected second Register to fail")
+	} else if !errors.Is(err, ErrBrokerAlreadyRegistered) {
+		t.Fatalf("expected ErrBrokerAlreadyRegistered, got %v", err)
 	}
 
 	broker, exists, err := registry2.GetBroker(ctx, "broker-1")
@@ -216,7 +219,7 @@ func TestBrokerRegistration_UpdateRegistration(t *testing.T) {
 	if !exists {
 		t.Fatal("broker should exist")
 	}
-	if len(broker.AdvertisedListeners) != 1 || broker.AdvertisedListeners[0] != "broker-1-new:9092" {
-		t.Errorf("listeners not updated: got %v", broker.AdvertisedListeners)
+	if len(broker.AdvertisedListeners) != 1 || broker.AdvertisedListeners[0] != "broker-1:9092" {
+		t.Errorf("listeners should remain original: got %v", broker.AdvertisedListeners)
 	}
 }
