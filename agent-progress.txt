@@ -1347,3 +1347,4 @@ Start with project-setup, then follow spec phases:
 - Challenges: none
 - Resolutions: none
 - Follow-ups: none
+[2025-12-30T07:11:18.109Z] Audit (codex): FAIL, 5 area(s), 13 new, lens=safety.
