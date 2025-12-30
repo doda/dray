@@ -3208,7 +3208,7 @@
     "scope": [
       "internal/objectstore/s3/store.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "wal-writer-flush-populates-chunk-offsets",
