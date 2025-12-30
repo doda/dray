@@ -7,6 +7,7 @@ import (
 	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/iceberg/catalog"
 	"github.com/dray-io/dray/internal/index"
+	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -203,10 +204,15 @@ func (h *DeleteTopicsHandler) handleTopic(ctx context.Context, version int16, na
 			Namespace: namespace,
 			Name:      topicName,
 		}
-		_ = h.icebergCatalog.DropTable(ctx, tableID)
-		// Iceberg table drop failure should not fail topic deletion
-		// per spec - the topic is already deleted from metadata.
-		// TODO: Log this error when logging is wired in
+		if err := h.icebergCatalog.DropTable(ctx, tableID); err != nil {
+			// Iceberg table drop failure should not fail topic deletion
+			// per spec - the topic is already deleted from metadata.
+			logging.FromCtx(ctx).Errorf("failed to drop Iceberg table", map[string]any{
+				"topic":     topicName,
+				"namespace": namespace,
+				"error":     err.Error(),
+			})
+		}
 	}
 
 	// Success

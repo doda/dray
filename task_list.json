@@ -3368,7 +3368,7 @@
     "scope": [
       "internal/protocol"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "return-kafka-error-on-handler-failure",

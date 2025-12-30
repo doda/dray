@@ -1,11 +1,15 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/dray-io/dray/internal/iceberg/catalog"
 	"github.com/dray-io/dray/internal/index"
+	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -15,6 +19,7 @@ import (
 type mockIcebergCatalog struct {
 	tables      map[string]catalog.Table
 	createError error
+	dropError   error
 }
 
 func newMockIcebergCatalog() *mockIcebergCatalog {
@@ -52,6 +57,9 @@ func (m *mockIcebergCatalog) AppendDataFiles(ctx context.Context, identifier cat
 }
 
 func (m *mockIcebergCatalog) DropTable(ctx context.Context, identifier catalog.TableIdentifier) error {
+	if m.dropError != nil {
+		return m.dropError
+	}
 	delete(m.tables, identifier.String())
 	return nil
 }
@@ -549,7 +557,13 @@ func TestCreateTopicsHandler_WithIceberg(t *testing.T) {
 }
 
 func TestCreateTopicsHandler_IcebergFailureDoesNotBlockTopicCreation(t *testing.T) {
-	ctx := context.Background()
+	var buf bytes.Buffer
+	logger := logging.New(logging.Config{
+		Level:  logging.LevelInfo,
+		Format: logging.FormatJSON,
+		Output: &buf,
+	})
+	ctx := logging.WithLoggerCtx(context.Background(), logger)
 	store := metadata.NewMockStore()
 	topicStore := topics.NewStore(store)
 	streamManager := index.NewStreamManager(store)
@@ -586,6 +600,32 @@ func TestCreateTopicsHandler_IcebergFailureDoesNotBlockTopicCreation(t *testing.
 	if err != nil {
 		t.Errorf("topic should exist despite Iceberg failure: %v", err)
 	}
+
+	entry := decodeLastLogEntry(t, &buf)
+	if entry.Message != "failed to create Iceberg table" {
+		t.Fatalf("expected log message to mention Iceberg create failure, got %q", entry.Message)
+	}
+	if entry.Fields["topic"] != "iceberg-fail-topic" {
+		t.Fatalf("expected log to include topic name, got %v", entry.Fields["topic"])
+	}
+	if entry.Fields["error"] != catalog.ErrCatalogUnavailable.Error() {
+		t.Fatalf("expected log to include error details, got %v", entry.Fields["error"])
+	}
+}
+
+func decodeLastLogEntry(t *testing.T, buf *bytes.Buffer) logging.Entry {
+	t.Helper()
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) == 0 || lines[len(lines)-1] == "" {
+		t.Fatal("expected log entry but buffer was empty")
+	}
+
+	var entry logging.Entry
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
+		t.Fatalf("failed to parse log entry: %v", err)
+	}
+	return entry
 }
 
 func TestCreateTopicsHandler_TopicIDInV7Response(t *testing.T) {
