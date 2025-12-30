@@ -30,3 +30,6 @@ vendor/
 
 # Build artifacts
 dist/
+
+# Looper
+.looper-init.log
