@@ -592,6 +592,9 @@ func TestPrefixes(t *testing.T) {
 	if GroupsPrefix != "/dray/v1/groups" {
 		t.Errorf("GroupsPrefix = %q, want %q", GroupsPrefix, "/dray/v1/groups")
 	}
+	if GroupsStatePrefix != "/dray/v1/groups-state" {
+		t.Errorf("GroupsStatePrefix = %q, want %q", GroupsStatePrefix, "/dray/v1/groups-state")
+	}
 	if ACLsPrefix != "/dray/v1/acls" {
 		t.Errorf("ACLsPrefix = %q, want %q", ACLsPrefix, "/dray/v1/acls")
 	}
@@ -895,6 +898,22 @@ func TestGroupStateKeyPath(t *testing.T) {
 	want := "/dray/v1/groups/my-group/state"
 	if got != want {
 		t.Errorf("GroupStateKeyPath() = %q, want %q", got, want)
+	}
+}
+
+func TestGroupStateListKeyPath(t *testing.T) {
+	got := GroupStateListKeyPath("my-group")
+	want := "/dray/v1/groups-state/my-group"
+	if got != want {
+		t.Errorf("GroupStateListKeyPath() = %q, want %q", got, want)
+	}
+}
+
+func TestGroupStateListPrefix(t *testing.T) {
+	got := GroupStateListPrefix()
+	want := "/dray/v1/groups-state/"
+	if got != want {
+		t.Errorf("GroupStateListPrefix() = %q, want %q", got, want)
 	}
 }
 

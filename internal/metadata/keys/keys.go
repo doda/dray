@@ -43,6 +43,9 @@ const (
 
 	// GroupsPrefix is the prefix for consumer group keys.
 	GroupsPrefix = Prefix + "/groups"
+	// GroupsStatePrefix is the prefix for group state listing keys.
+	// Format: /dray/v1/groups-state/<groupId>
+	GroupsStatePrefix = Prefix + "/groups-state"
 
 	// ACLsPrefix is the prefix for ACL entries.
 	ACLsPrefix = Prefix + "/acls"
@@ -348,6 +351,17 @@ func ParseCompactionTaskKey(key string) (streamID, taskID string, err error) {
 // Format: /dray/v1/groups/<groupId>/state
 func GroupStateKeyPath(groupID string) string {
 	return fmt.Sprintf("%s/%s/state", GroupsPrefix, groupID)
+}
+
+// GroupStateListKeyPath returns the key for listing consumer group states.
+// Format: /dray/v1/groups-state/<groupId>
+func GroupStateListKeyPath(groupID string) string {
+	return fmt.Sprintf("%s/%s", GroupsStatePrefix, groupID)
+}
+
+// GroupStateListPrefix returns the prefix for listing all group state keys.
+func GroupStateListPrefix() string {
+	return GroupsStatePrefix + "/"
 }
 
 // GroupTypeKeyPath returns the key for consumer group type (classic|consumer).

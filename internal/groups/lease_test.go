@@ -2,6 +2,8 @@ package groups
 
 import (
 	"context"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -664,5 +666,72 @@ func TestLeaseManager_ReleaseDoesNotClobberNewLease(t *testing.T) {
 	// Verify broker-1's local state is cleared
 	if lm1.HoldsLease("test-group") {
 		t.Error("broker-1 should not think it holds the lease after release")
+	}
+}
+
+func TestLeaseManager_ConcurrentHeldLeaseAccess(t *testing.T) {
+	ctx := context.Background()
+	mockStore := metadata.NewMockStore()
+	lm := NewLeaseManager(mockStore, "broker-1")
+
+	groupIDs := []string{"group-a", "group-b", "group-c"}
+	for _, groupID := range groupIDs {
+		if _, err := lm.AcquireLease(ctx, groupID); err != nil {
+			t.Fatalf("failed to acquire lease for %s: %v", groupID, err)
+		}
+	}
+
+	start := make(chan struct{})
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+
+	readerCount := 4
+	readerLoops := 200
+	writerLoops := 150
+
+	for i := 0; i < readerCount; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			for j := 0; j < readerLoops; j++ {
+				_ = lm.HoldsLease(groupIDs[(idx+j)%len(groupIDs)])
+				_ = lm.ListHeldLeases()
+				runtime.Gosched()
+			}
+		}(i)
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < writerLoops; i++ {
+			groupID := groupIDs[i%len(groupIDs)]
+			if err := lm.ReleaseLease(ctx, groupID); err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+				return
+			}
+			if _, err := lm.AcquireLease(ctx, groupID); err != nil {
+				select {
+				case errCh <- err:
+				default:
+				}
+				return
+			}
+			runtime.Gosched()
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("concurrent lease operations failed: %v", err)
+	default:
 	}
 }
