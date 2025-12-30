@@ -49,10 +49,10 @@ type BrokerLister interface {
 // PartitionLeaderSelector provides deterministic partition-to-broker mapping
 // using rendezvous hashing. This enables zone-aware client connection affinity.
 type PartitionLeaderSelector interface {
-	// GetPartitionLeader returns the affinity broker for the given partition.
+	// GetPartitionLeader returns the affinity broker for the given stream.
 	// The zoneID filters to zone-specific brokers when non-empty.
 	// Returns the NodeID of the selected broker, or -1 if none available.
-	GetPartitionLeader(ctx context.Context, zoneID, topic string, partition int32) (int32, error)
+	GetPartitionLeader(ctx context.Context, zoneID, streamID string) (int32, error)
 }
 
 // MetadataHandler handles Metadata (key 3) requests.
@@ -263,7 +263,7 @@ func (h *MetadataHandler) buildPartitionMetadata(ctx context.Context, version in
 	if len(brokers) > 0 {
 		// Use rendezvous hashing when LeaderSelector is available
 		if h.cfg.LeaderSelector != nil {
-			leader, err := h.cfg.LeaderSelector.GetPartitionLeader(ctx, zoneID, topicName, p.Partition)
+			leader, err := h.cfg.LeaderSelector.GetPartitionLeader(ctx, zoneID, p.StreamID)
 			if err == nil && leader != -1 {
 				partition.Leader = leader
 			} else {

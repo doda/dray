@@ -14,7 +14,7 @@ type staticLeaderSelector struct {
 	leader int32
 }
 
-func (s staticLeaderSelector) GetPartitionLeader(_ context.Context, _ string, _ string, _ int32) (int32, error) {
+func (s staticLeaderSelector) GetPartitionLeader(_ context.Context, _ string, _ string) (int32, error) {
 	return s.leader, nil
 }
 

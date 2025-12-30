@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -732,12 +731,11 @@ func TestMetadataHandler_ZoneFilteredLeadersDistribution(t *testing.T) {
 
 // mockLeaderSelector implements PartitionLeaderSelector for testing.
 type mockLeaderSelector struct {
-	leaders map[string]int32 // key: "topic-partition"
+	leaders map[string]int32 // key: streamID
 }
 
-func (m *mockLeaderSelector) GetPartitionLeader(_ context.Context, zoneID, topic string, partition int32) (int32, error) {
-	key := fmt.Sprintf("%s-%d", topic, partition)
-	if leader, ok := m.leaders[key]; ok {
+func (m *mockLeaderSelector) GetPartitionLeader(_ context.Context, zoneID, streamID string) (int32, error) {
+	if leader, ok := m.leaders[streamID]; ok {
 		return leader, nil
 	}
 	return -1, nil
@@ -767,14 +765,25 @@ func TestMetadataHandler_WithLeaderSelector(t *testing.T) {
 		},
 	}
 
-	// Create a custom leader selector that assigns specific leaders
-	selector := &mockLeaderSelector{
-		leaders: map[string]int32{
-			"selector-test-0": 3, // partition 0 -> broker 3
-			"selector-test-1": 1, // partition 1 -> broker 1
-			"selector-test-2": 2, // partition 2 -> broker 2
-		},
+	partitions, err := topicStore.ListPartitions(ctx, "selector-test")
+	if err != nil {
+		t.Fatalf("failed to list partitions: %v", err)
 	}
+
+	leaderMap := make(map[string]int32, len(partitions))
+	for _, partition := range partitions {
+		switch partition.Partition {
+		case 0:
+			leaderMap[partition.StreamID] = 3
+		case 1:
+			leaderMap[partition.StreamID] = 1
+		case 2:
+			leaderMap[partition.StreamID] = 2
+		}
+	}
+
+	// Create a custom leader selector that assigns specific leaders
+	selector := &mockLeaderSelector{leaders: leaderMap}
 
 	handler := NewMetadataHandler(MetadataHandlerConfig{
 		ClusterID:      "test-cluster",
