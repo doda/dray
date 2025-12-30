@@ -13,6 +13,7 @@ import (
 
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/protocol"
+	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
 // echoHandler returns requests with correlation ID prepended
@@ -286,15 +287,24 @@ func TestServerHandlerError(t *testing.T) {
 		t.Fatalf("failed to write request: %v", err)
 	}
 
-	// Connection should be closed by server on handler error
-	conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	buf := make([]byte, 1)
-	_, err = conn.Read(buf)
-	if err != io.EOF {
-		// Either EOF or timeout is acceptable (connection closed)
-		if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
-			t.Errorf("expected EOF or timeout, got %v", err)
-		}
+	response, err := readKafkaResponse(conn)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+	if len(response) < 4 {
+		t.Fatalf("response too short")
+	}
+	correlationID := int32(binary.BigEndian.Uint32(response[:4]))
+	if correlationID != 1 {
+		t.Fatalf("expected correlation ID 1, got %d", correlationID)
+	}
+	resp := kmsg.NewPtrApiVersionsResponse()
+	resp.SetVersion(0)
+	if err := resp.ReadFrom(response[4:]); err != nil {
+		t.Fatalf("failed to decode fallback response: %v", err)
+	}
+	if resp.ErrorCode != -1 {
+		t.Fatalf("expected UNKNOWN_SERVER_ERROR (-1), got %d", resp.ErrorCode)
 	}
 }
 

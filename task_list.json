@@ -3384,7 +3384,7 @@
       "internal/server",
       "internal/protocol"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "wal-writer-reject-duplicate-stream-chunks",

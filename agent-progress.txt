@@ -1522,3 +1522,16 @@ Start with project-setup, then follow spec phases:
 - Challenges: gofmt not available in PATH.
 - Resolution: kept formatting consistent with existing files.
 - Follow-ups: none
+[2025-12-30T10:21:16Z] Completed return-kafka-error-on-handler-failure: PASS
+- Outcome: server now sends fallback Kafka error responses on handler failures with correlation IDs.
+- Added fallback response builder mapping API keys to UNKNOWN_SERVER_ERROR and reused request payloads.
+- Updated handler-error test to assert ApiVersions fallback response instead of connection close.
+- Files changed: internal/protocol/fallback_response.go
+- Files changed: internal/server/server.go
+- Files changed: internal/server/server_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/server ./internal/protocol (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: go not in PATH for tests.
+- Resolution: ran tests with PATH override.
+- Follow-ups: none
