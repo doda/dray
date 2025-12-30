@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/dray-io/dray/internal/metadata"
@@ -66,7 +67,8 @@ type LeaseManager struct {
 
 	// heldLeases tracks leases this broker currently holds.
 	// Key is groupID, value is the lease.
-	heldLeases map[string]*Lease
+	heldLeasesMu sync.RWMutex
+	heldLeases   map[string]*Lease
 }
 
 // NewLeaseManager creates a new lease manager for the given broker.
@@ -138,7 +140,9 @@ func (lm *LeaseManager) AcquireLease(ctx context.Context, groupID string) (*Acqu
 				return nil, fmt.Errorf("groups: renew lease: %w", err)
 			}
 
+			lm.heldLeasesMu.Lock()
 			lm.heldLeases[groupID] = &existingLease
+			lm.heldLeasesMu.Unlock()
 			return &AcquireResult{
 				Acquired: true,
 				Lease:    &existingLease,
@@ -177,7 +181,9 @@ func (lm *LeaseManager) AcquireLease(ctx context.Context, groupID string) (*Acqu
 		return nil, fmt.Errorf("groups: acquire lease: %w", err)
 	}
 
+	lm.heldLeasesMu.Lock()
 	lm.heldLeases[groupID] = &lease
+	lm.heldLeasesMu.Unlock()
 	return &AcquireResult{
 		Acquired: true,
 		Lease:    &lease,
@@ -248,7 +254,9 @@ func (lm *LeaseManager) ReacquireLease(ctx context.Context, groupID string) (*Ac
 				return nil, fmt.Errorf("groups: reacquire lease: %w", err)
 			}
 
+			lm.heldLeasesMu.Lock()
 			lm.heldLeases[groupID] = &existingLease
+			lm.heldLeasesMu.Unlock()
 			return &AcquireResult{
 				Acquired: true,
 				Lease:    &existingLease,
@@ -285,7 +293,9 @@ func (lm *LeaseManager) ReacquireLease(ctx context.Context, groupID string) (*Ac
 		return nil, fmt.Errorf("groups: acquire lease: %w", err)
 	}
 
+	lm.heldLeasesMu.Lock()
 	lm.heldLeases[groupID] = &lease
+	lm.heldLeasesMu.Unlock()
 	return &AcquireResult{
 		Acquired: true,
 		Lease:    &lease,
@@ -309,7 +319,9 @@ func (lm *LeaseManager) ReleaseLease(ctx context.Context, groupID string) error 
 	}
 
 	if !result.Exists {
+		lm.heldLeasesMu.Lock()
 		delete(lm.heldLeases, groupID)
+		lm.heldLeasesMu.Unlock()
 		return nil
 	}
 
@@ -320,7 +332,9 @@ func (lm *LeaseManager) ReleaseLease(ctx context.Context, groupID string) error 
 
 	// Only release if we hold it
 	if lease.BrokerID != lm.brokerID {
+		lm.heldLeasesMu.Lock()
 		delete(lm.heldLeases, groupID)
+		lm.heldLeasesMu.Unlock()
 		return nil
 	}
 
@@ -330,13 +344,17 @@ func (lm *LeaseManager) ReleaseLease(ctx context.Context, groupID string) error 
 		if errors.Is(err, metadata.ErrVersionMismatch) {
 			// The lease was modified (likely taken over by another broker).
 			// This is not an error - it just means we no longer hold it.
+			lm.heldLeasesMu.Lock()
 			delete(lm.heldLeases, groupID)
+			lm.heldLeasesMu.Unlock()
 			return nil
 		}
 		return fmt.Errorf("groups: delete lease: %w", err)
 	}
 
+	lm.heldLeasesMu.Lock()
 	delete(lm.heldLeases, groupID)
+	lm.heldLeasesMu.Unlock()
 	return nil
 }
 
@@ -369,7 +387,9 @@ func (lm *LeaseManager) GetLease(ctx context.Context, groupID string) (*Lease, e
 // This is a quick local check using the cached lease state.
 // For authoritative checks, use GetLease and compare BrokerID.
 func (lm *LeaseManager) HoldsLease(groupID string) bool {
+	lm.heldLeasesMu.RLock()
 	_, held := lm.heldLeases[groupID]
+	lm.heldLeasesMu.RUnlock()
 	return held
 }
 
@@ -391,7 +411,13 @@ func (lm *LeaseManager) IsLeaseHolder(ctx context.Context, groupID string) (bool
 // This should be called during graceful shutdown.
 func (lm *LeaseManager) ReleaseAllLeases(ctx context.Context) error {
 	var lastErr error
+	lm.heldLeasesMu.RLock()
+	groupIDs := make([]string, 0, len(lm.heldLeases))
 	for groupID := range lm.heldLeases {
+		groupIDs = append(groupIDs, groupID)
+	}
+	lm.heldLeasesMu.RUnlock()
+	for _, groupID := range groupIDs {
 		if err := lm.ReleaseLease(ctx, groupID); err != nil {
 			lastErr = err
 		}
@@ -401,11 +427,13 @@ func (lm *LeaseManager) ReleaseAllLeases(ctx context.Context) error {
 
 // ListHeldLeases returns a copy of all leases currently held by this broker.
 func (lm *LeaseManager) ListHeldLeases() []*Lease {
+	lm.heldLeasesMu.RLock()
 	leases := make([]*Lease, 0, len(lm.heldLeases))
 	for _, lease := range lm.heldLeases {
 		leaseCopy := *lease
 		leases = append(leases, &leaseCopy)
 	}
+	lm.heldLeasesMu.RUnlock()
 	return leases
 }
 

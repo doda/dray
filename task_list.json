@@ -3496,7 +3496,8 @@
     "scope": [
       "internal/groups"
     ],
-    "completed": false
+    "completed": true,
+    "passes": true
   },
   {
     "id": "list-groups-prefix-scope",
