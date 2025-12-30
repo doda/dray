@@ -1556,3 +1556,14 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass)
 - Challenges: none
 - Follow-ups: none
+[2025-12-30T18:05:00Z] Completed wal-encoder-handle-short-writes: PASS
+- Implemented write-full loop in WAL encoder to retry partial writes and return io.ErrShortWrite on no-progress.
+- Added short writer unit test to assert encoder errors and reports written byte count.
+- Files changed: internal/wal/encoder.go.
+- Files changed: internal/wal/encoder_test.go.
+- Files changed: task_list.json.
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/wal -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: init.sh required longer timeout.
+- Resolution: reran init.sh with 600s timeout.
+- Follow-ups: none.
