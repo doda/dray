@@ -27,6 +27,8 @@ var (
 	ErrOffsetMismatch = errors.New("compaction: offset range mismatch")
 )
 
+const defaultParquetGCGracePeriodMs int64 = 10 * 60 * 1000
+
 // SwapRequest contains parameters for the atomic index swap operation.
 type SwapRequest struct {
 	// StreamID is the stream whose index entries are being swapped.
@@ -71,6 +73,12 @@ type SwapResult struct {
 	// ParquetFilesScheduledForGC are Parquet file paths that were scheduled for GC.
 	// These are old Parquet files replaced during re-compaction.
 	ParquetFilesScheduledForGC []string
+
+	// ParquetGCCandidates are old Parquet files eligible for GC once the job reaches DONE.
+	ParquetGCCandidates []ParquetGCCandidate
+
+	// ParquetGCGracePeriodMs is the grace period to apply when scheduling GC at DONE.
+	ParquetGCGracePeriodMs int64
 }
 
 // IndexSwapper handles atomic index swaps during compaction.
@@ -251,37 +259,28 @@ func (s *IndexSwapper) Swap(ctx context.Context, req SwapRequest) (*SwapResult, 
 	}
 
 	result := &SwapResult{
-		NewIndexKey:               newIndexKey,
-		DecrementedWALObjects:     decrementedWALObjects,
-		WALObjectsReadyForGC:      walObjectsReadyForGC,
+		NewIndexKey:           newIndexKey,
+		DecrementedWALObjects: decrementedWALObjects,
+		WALObjectsReadyForGC:  walObjectsReadyForGC,
 		ParquetFilesScheduledForGC: make([]string, 0, len(parquetEntries)),
+		ParquetGCCandidates:         make([]ParquetGCCandidate, 0, len(parquetEntries)),
 	}
 
-	// Schedule old Parquet files for GC with grace period
 	if len(parquetEntries) > 0 {
 		gracePeriodMs := req.GracePeriodMs
 		if gracePeriodMs <= 0 {
-			gracePeriodMs = 10 * 60 * 1000 // 10 minutes default
+			gracePeriodMs = defaultParquetGCGracePeriodMs
 		}
-		deleteAfterMs := time.Now().UnixMilli() + gracePeriodMs
+		result.ParquetGCGracePeriodMs = gracePeriodMs
 
 		for _, entry := range parquetEntries {
-			gcRecord := gc.ParquetGCRecord{
-				Path:                     entry.ParquetPath,
-				DeleteAfterMs:            deleteAfterMs,
-				CreatedAt:                entry.CreatedAtMs,
-				SizeBytes:                int64(entry.ParquetSizeBytes),
-				StreamID:                 req.StreamID,
-				IcebergEnabled:           req.IcebergEnabled,
-				IcebergRemovalConfirmed:  req.IcebergRemovalConfirmed || !req.IcebergEnabled,
-			}
-
-			if err := gc.ScheduleParquetGC(ctx, s.meta, gcRecord); err != nil {
-				// Log error but don't fail - Parquet file will eventually be detected
-				// as orphaned if not cleaned up
-				continue
-			}
-			result.ParquetFilesScheduledForGC = append(result.ParquetFilesScheduledForGC, entry.ParquetPath)
+			result.ParquetGCCandidates = append(result.ParquetGCCandidates, ParquetGCCandidate{
+				Path:                    entry.ParquetPath,
+				CreatedAtMs:             entry.CreatedAtMs,
+				SizeBytes:               int64(entry.ParquetSizeBytes),
+				IcebergEnabled:          req.IcebergEnabled,
+				IcebergRemovalConfirmed: req.IcebergRemovalConfirmed || !req.IcebergEnabled,
+			})
 		}
 	}
 

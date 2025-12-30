@@ -167,7 +167,7 @@ func TestCrashRecovery_AfterParquetWritten(t *testing.T) {
 	}
 	t.Logf("Swapped index, new key: %s", swapResult.NewIndexKey)
 
-	recoveredJob, err = sagaManager2.MarkIndexSwapped(ctx, streamID, recoveredJob.JobID, swapResult.DecrementedWALObjects)
+	recoveredJob, err = sagaManager2.MarkIndexSwappedWithGC(ctx, streamID, recoveredJob.JobID, swapResult.DecrementedWALObjects, swapResult.ParquetGCCandidates, swapResult.ParquetGCGracePeriodMs)
 	if err != nil {
 		t.Fatalf("failed to mark index swapped: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestCrashRecovery_AfterIcebergCommitted(t *testing.T) {
 		t.Fatalf("failed to swap index: %v", err)
 	}
 
-	recoveredJob, err = sagaManager2.MarkIndexSwapped(ctx, streamID, recoveredJob.JobID, swapResult.DecrementedWALObjects)
+	recoveredJob, err = sagaManager2.MarkIndexSwappedWithGC(ctx, streamID, recoveredJob.JobID, swapResult.DecrementedWALObjects, swapResult.ParquetGCCandidates, swapResult.ParquetGCGracePeriodMs)
 	if err != nil {
 		t.Fatalf("failed to mark index swapped: %v", err)
 	}
@@ -469,7 +469,7 @@ func TestCrashRecovery_AfterIndexSwapped(t *testing.T) {
 		t.Fatalf("failed to swap index: %v", err)
 	}
 
-	job, err = sagaManager1.MarkIndexSwapped(ctx, streamID, job.JobID, swapResult.DecrementedWALObjects)
+	job, err = sagaManager1.MarkIndexSwappedWithGC(ctx, streamID, job.JobID, swapResult.DecrementedWALObjects, swapResult.ParquetGCCandidates, swapResult.ParquetGCGracePeriodMs)
 	if err != nil {
 		t.Fatalf("failed to mark index swapped: %v", err)
 	}
@@ -672,7 +672,7 @@ func TestCrashRecovery_NoDataLossOrDuplication(t *testing.T) {
 		t.Fatalf("failed to swap index: %v", err)
 	}
 
-	job, err = sagaManager.MarkIndexSwapped(ctx, streamID, job.JobID, swapResult.DecrementedWALObjects)
+	job, err = sagaManager.MarkIndexSwappedWithGC(ctx, streamID, job.JobID, swapResult.DecrementedWALObjects, swapResult.ParquetGCCandidates, swapResult.ParquetGCGracePeriodMs)
 	if err != nil {
 		t.Fatalf("failed to mark index swapped: %v", err)
 	}

@@ -1422,3 +1422,17 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass)
 - Challenges: none
 - Follow-ups: none
+[2025-12-30T13:22:30Z] Completed compaction-gc-only-after-done: PASS
+- Implemented Parquet GC candidate tracking in compaction jobs and deferred GC scheduling until DONE.
+- Swap now returns GC candidates + grace period instead of scheduling immediately; MarkDone schedules GC markers.
+- Files changed: internal/compaction/swap.go
+- Files changed: internal/compaction/saga.go
+- Files changed: internal/compaction/swap_test.go
+- Files changed: tests/integration/compaction_crash_recovery_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/compaction -count=1 (pass)
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/gc -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: go not in PATH for tests.
+- Resolution: ran tests with PATH override.
+- Follow-ups: none

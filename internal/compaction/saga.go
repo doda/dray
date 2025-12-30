@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dray-io/dray/internal/gc"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
 	"github.com/google/uuid"
@@ -142,6 +143,12 @@ type Job struct {
 	// Populated during planning, used during INDEX_SWAPPED cleanup.
 	WALObjectsToDecrement []string `json:"walObjectsToDecrement,omitempty"`
 
+	// ParquetGCCandidates are old Parquet files eligible for GC after the job reaches DONE.
+	ParquetGCCandidates []ParquetGCCandidate `json:"parquetGcCandidates,omitempty"`
+
+	// ParquetGCGracePeriodMs is the grace period applied when scheduling Parquet GC at DONE.
+	ParquetGCGracePeriodMs int64 `json:"parquetGcGracePeriodMs,omitempty"`
+
 	// ---- Error Handling Fields ----
 
 	// ErrorMessage contains the error message if the job failed.
@@ -149,6 +156,15 @@ type Job struct {
 
 	// RetryCount is the number of times this job has been retried.
 	RetryCount int `json:"retryCount,omitempty"`
+}
+
+// ParquetGCCandidate describes a Parquet file eligible for GC once compaction is DONE.
+type ParquetGCCandidate struct {
+	Path                    string `json:"path"`
+	CreatedAtMs             int64  `json:"createdAtMs"`
+	SizeBytes               int64  `json:"sizeBytes"`
+	IcebergEnabled          bool   `json:"icebergEnabled"`
+	IcebergRemovalConfirmed bool   `json:"icebergRemovalConfirmed"`
 }
 
 // NewJobID generates a new unique job ID.
@@ -433,15 +449,56 @@ func (sm *SagaManager) SkipIcebergCommit(ctx context.Context, streamID, jobID st
 
 // MarkIndexSwapped transitions a job to INDEX_SWAPPED state.
 func (sm *SagaManager) MarkIndexSwapped(ctx context.Context, streamID, jobID string, walObjectsToDecrement []string) (*Job, error) {
+	return sm.MarkIndexSwappedWithGC(ctx, streamID, jobID, walObjectsToDecrement, nil, 0)
+}
+
+// MarkIndexSwappedWithGC transitions a job to INDEX_SWAPPED and records Parquet GC candidates.
+func (sm *SagaManager) MarkIndexSwappedWithGC(ctx context.Context, streamID, jobID string, walObjectsToDecrement []string, parquetGCCandidates []ParquetGCCandidate, parquetGCGracePeriodMs int64) (*Job, error) {
 	return sm.TransitionState(ctx, streamID, jobID, JobStateIndexSwapped, func(j *Job) error {
 		j.WALObjectsToDecrement = walObjectsToDecrement
+		if len(parquetGCCandidates) > 0 {
+			j.ParquetGCCandidates = parquetGCCandidates
+		}
+		if parquetGCGracePeriodMs > 0 {
+			j.ParquetGCGracePeriodMs = parquetGCGracePeriodMs
+		}
 		return nil
 	})
 }
 
 // MarkDone transitions a job to DONE state.
 func (sm *SagaManager) MarkDone(ctx context.Context, streamID, jobID string) (*Job, error) {
-	return sm.TransitionState(ctx, streamID, jobID, JobStateDone, nil)
+	job, err := sm.TransitionState(ctx, streamID, jobID, JobStateDone, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(job.ParquetGCCandidates) == 0 {
+		return job, nil
+	}
+
+	gracePeriodMs := job.ParquetGCGracePeriodMs
+	if gracePeriodMs <= 0 {
+		gracePeriodMs = defaultParquetGCGracePeriodMs
+	}
+	deleteAfterMs := time.Now().UnixMilli() + gracePeriodMs
+
+	for _, candidate := range job.ParquetGCCandidates {
+		gcRecord := gc.ParquetGCRecord{
+			Path:                    candidate.Path,
+			DeleteAfterMs:           deleteAfterMs,
+			CreatedAt:               candidate.CreatedAtMs,
+			SizeBytes:               candidate.SizeBytes,
+			StreamID:                job.StreamID,
+			IcebergEnabled:          candidate.IcebergEnabled,
+			IcebergRemovalConfirmed: candidate.IcebergRemovalConfirmed || !candidate.IcebergEnabled,
+		}
+		if err := gc.ScheduleParquetGC(ctx, sm.meta, gcRecord); err != nil {
+			continue
+		}
+	}
+
+	return job, nil
 }
 
 // MarkFailed transitions a job to FAILED state with an error message.
