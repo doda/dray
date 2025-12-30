@@ -463,7 +463,7 @@ func (h *brokerHandler) HandleRequest(ctx context.Context, header *server.Reques
 			return nil, fmt.Errorf("failed to decode Metadata: %w", err)
 		}
 		metaReq := req.Inner().(*kmsg.MetadataRequest)
-		zoneID := server.ZoneIDFromContext(ctx)
+		zoneID := protocol.ZoneIDFromContext(ctx)
 		resp := h.metadata.Handle(ctx, version, metaReq, zoneID)
 		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
 
@@ -518,7 +518,7 @@ func (h *brokerHandler) HandleRequest(ctx context.Context, header *server.Reques
 			return nil, fmt.Errorf("failed to decode FindCoordinator: %w", err)
 		}
 		findReq := req.Inner().(*kmsg.FindCoordinatorRequest)
-		zoneID := server.ZoneIDFromContext(ctx)
+		zoneID := protocol.ZoneIDFromContext(ctx)
 		resp := h.findCoordinator.Handle(ctx, version, findReq, zoneID)
 		return h.encodeResponse(correlationID, version, protocol.WrapResponse(resp))
 

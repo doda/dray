@@ -3353,7 +3353,7 @@
       "internal/server",
       "internal/protocol"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "log-iceberg-topic-lifecycle-errors",

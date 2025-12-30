@@ -93,6 +93,8 @@ var saslAPIs = []APIVersionEntry{
 	{APIKey: 36, MinVersion: 0, MaxVersion: 2}, // SaslAuthenticate
 }
 
+var flexibleHeaderVersions = buildFlexibleHeaderVersions()
+
 // GetSupportedAPIs returns the list of APIs supported by this broker.
 // Does not include SASL APIs - use GetSupportedAPIsWithSASL for that.
 func GetSupportedAPIs() []APIVersionEntry {
@@ -107,6 +109,41 @@ func GetSupportedAPIsWithSASL() []APIVersionEntry {
 	result = append(result, supportedAPIs...)
 	result = append(result, saslAPIs...)
 	return result
+}
+
+// IsFlexibleRequestHeader returns true if the request header uses flexible encoding.
+// ApiVersions is special-cased to never use the flexible request header.
+func IsFlexibleRequestHeader(apiKey, version int16) bool {
+	if apiKey == 18 {
+		return false
+	}
+	minFlexibleVersion, ok := flexibleHeaderVersions[apiKey]
+	if !ok {
+		return false
+	}
+	return version >= minFlexibleVersion
+}
+
+func buildFlexibleHeaderVersions() map[int16]int16 {
+	apis := GetSupportedAPIsWithSASL()
+	versions := make(map[int16]int16, len(apis))
+	for _, api := range apis {
+		if api.APIKey == 18 {
+			continue
+		}
+		req, err := NewRequest(api.APIKey)
+		if err != nil {
+			continue
+		}
+		for version := api.MinVersion; version <= api.MaxVersion; version++ {
+			req.SetVersion(version)
+			if req.IsFlexible() {
+				versions[api.APIKey] = version
+				break
+			}
+		}
+	}
+	return versions
 }
 
 // IsAPISupported checks if a given API key is supported.

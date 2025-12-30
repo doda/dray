@@ -12,7 +12,6 @@ import (
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metrics"
-	"github.com/dray-io/dray/internal/server"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -196,7 +195,7 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 	}
 
 	if h.cfg.LeaderSelector != nil {
-		zoneID := server.ZoneIDFromContext(ctx)
+		zoneID := ZoneIDFromContext(ctx)
 		leader, err := h.cfg.LeaderSelector.GetPartitionLeader(ctx, zoneID, partMeta.StreamID)
 		if err == nil && leader != -1 && leader != h.cfg.LocalNodeID {
 			logging.FromCtx(ctx).Warnf("affinity violation: fetch request handled by non-owner broker", map[string]any{

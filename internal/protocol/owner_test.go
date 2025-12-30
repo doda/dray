@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/dray-io/dray/internal/logging"
-	"github.com/dray-io/dray/internal/server"
 )
 
 type staticLeaderSelector struct {
@@ -26,7 +25,7 @@ func newLogContext() (context.Context, *bytes.Buffer) {
 		Output: buf,
 	})
 	ctx := logging.WithLoggerCtx(context.Background(), logger)
-	ctx = server.WithZoneID(ctx, "zone-a")
+	ctx = WithZoneID(ctx, "zone-a")
 	return ctx, buf
 }
 

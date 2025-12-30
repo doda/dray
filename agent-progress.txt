@@ -1491,3 +1491,21 @@ Start with project-setup, then follow spec phases:
 - Resolution: treat SASLAuthenticate v2 as flexible in server header parsing.
 - Follow-ups: none
 [2025-12-30T09:42:40.200Z] Audit (codex): FAIL, 6 area(s), 18 new, lens=maintainability.
+[2025-12-30T17:25:00Z] Completed unify-flexible-header-version-matrix: PASS
+- Outcome: derived flexible request header mapping from supported API matrix and shared it with server parsing.
+- Added protocol zone context helpers to break server/protocol import cycle.
+- Files changed: internal/protocol/api_versions.go
+- Files changed: internal/server/server.go
+- Files changed: internal/protocol/api_versions_test.go
+- Files changed: internal/protocol/zone.go
+- Files changed: internal/protocol/produce.go
+- Files changed: internal/protocol/fetch.go
+- Files changed: internal/protocol/owner_test.go
+- Files changed: internal/server/server_test.go
+- Files changed: cmd/drayd/broker.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/protocol ./internal/server -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass; initial 120s timeout, reran with 600s)
+- Challenges: import cycle after server began importing protocol; init.sh default timeout.
+- Resolution: moved zone context helpers into protocol; reran init.sh with longer timeout.
+- Follow-ups: none.
