@@ -1581,3 +1581,14 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: go vet flagged unsafe pointer usage in overflow test.
 - Resolution: switched to unsafe.Slice with a real pointer to avoid vet warning.
+[2025-12-30T19:45:00Z] Completed config-cluster-id-and-namespace: PASS
+- Added config ClusterID with default and validation plus Oxia namespace helpers.
+- Updated config YAML/env parsing tests to include clusterId and namespace formatting assertions.
+- Swapped admin Oxia namespace construction to use config-derived dray/<cluster_id>.
+- Files changed: internal/config/config.go
+- Files changed: internal/config/config_test.go
+- Files changed: cmd/drayd/main.go
+- Files changed: cmd/drayd/admin.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/config ./internal/metadata/oxia -count=1 (pass); ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: init.sh failed due to removed metadata namespace field; fixed by using config.OxiaNamespace in admin init.

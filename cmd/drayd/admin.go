@@ -1107,10 +1107,7 @@ func initAdminOpts(configPath string) (*AdminOptions, func(), error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		namespace := cfg.Metadata.Namespace
-		if namespace == "" {
-			namespace = "dray"
-		}
+		namespace := cfg.OxiaNamespace()
 
 		oxiaStore, err := oxia.New(ctx, oxia.Config{
 			ServiceAddress: cfg.Metadata.OxiaEndpoint,
