@@ -963,3 +963,74 @@ func TestWALReader_ReadBatches_BatchIndexMaxBytes(t *testing.T) {
 		t.Errorf("expected 1 batch with maxBytes limit, got %d", len(result.Batches))
 	}
 }
+
+func TestWALReader_ReadBatches_BatchIndexMaxBytesRangeRead(t *testing.T) {
+	store := newMockStore()
+	reader := NewWALReader(store)
+
+	const batchCount = 25
+	batches := make([][]byte, batchCount)
+	batchIndex := make([]index.BatchIndexEntry, 0, batchCount)
+	var offsetDelta uint32
+	var chunkOffset uint32
+
+	for i := 0; i < batchCount; i++ {
+		batch := makeMinimalBatch(0, 1)
+		batches[i] = batch
+		batchIndex = append(batchIndex, index.BatchIndexEntry{
+			BatchStartOffsetDelta: offsetDelta,
+			BatchLastOffsetDelta:  offsetDelta,
+			BatchOffsetInChunk:    chunkOffset + 4,
+			BatchLength:           uint32(len(batch)),
+		})
+		offsetDelta++
+		chunkOffset += 4 + uint32(len(batch))
+	}
+
+	chunkData := makeChunkData(batches)
+	walPath := testWALPath("range-bounded")
+	store.objects[walPath] = chunkData
+
+	entry := &index.IndexEntry{
+		StreamID:    "stream1",
+		StartOffset: 100,
+		EndOffset:   100 + int64(batchCount),
+		FileType:    index.FileTypeWAL,
+		WalPath:     walPath,
+		ChunkOffset: 0,
+		ChunkLength: uint32(len(chunkData)),
+		BatchIndex:  batchIndex,
+	}
+
+	maxBytes := int64(len(batches[0]))
+	fetchOffset := entry.StartOffset + 10
+	result, err := reader.ReadBatches(context.Background(), entry, fetchOffset, maxBytes)
+	if err != nil {
+		t.Fatalf("ReadBatches failed: %v", err)
+	}
+	if len(result.Batches) != 1 {
+		t.Errorf("expected 1 batch with maxBytes limit, got %d", len(result.Batches))
+	}
+	if result.StartOffset != fetchOffset {
+		t.Errorf("expected StartOffset %d, got %d", fetchOffset, result.StartOffset)
+	}
+
+	store.mu.Lock()
+	rangeBytes := store.getRangeBytes
+	rangeCalls := store.getRangeCalls
+	getCalls := store.getCalls
+	store.mu.Unlock()
+
+	if getCalls != 0 {
+		t.Errorf("expected no full-object Get calls, got %d", getCalls)
+	}
+	if rangeCalls != 1 {
+		t.Errorf("expected 1 range call, got %d", rangeCalls)
+	}
+	if rangeBytes > maxBytes {
+		t.Errorf("expected range bytes <= %d, got %d", maxBytes, rangeBytes)
+	}
+	if rangeBytes >= int64(len(chunkData)) {
+		t.Errorf("expected range bytes < full chunk %d, got %d", len(chunkData), rangeBytes)
+	}
+}

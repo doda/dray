@@ -1348,3 +1348,14 @@ Start with project-setup, then follow spec phases:
 - Resolutions: none
 - Follow-ups: none
 [2025-12-30T07:11:18.109Z] Audit (codex): FAIL, 5 area(s), 13 new, lens=safety.
+[2025-12-30T08:15:00Z] Completed wal-fetch-range-bounds: PASS
+- Updated WAL fetch path to range-read only indexed batch bytes based on maxBytes instead of loading full chunks.
+- Added unit test asserting range bytes stay below maxBytes for batchIndex fetches.
+- Files changed: internal/fetch/wal_reader.go.
+- Files changed: internal/fetch/wal_reader_test.go.
+- Files changed: task_list.json.
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/fetch -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenge: go not in PATH on first test run.
+- Resolution: invoked go with PATH override.
+- Follow-ups: none.

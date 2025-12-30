@@ -3164,7 +3164,7 @@
     "scope": [
       "internal/fetch/wal_reader.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "produce-decompression-cap",
