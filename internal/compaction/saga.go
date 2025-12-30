@@ -484,6 +484,7 @@ func (sm *SagaManager) MarkDone(ctx context.Context, streamID, jobID string) (*J
 	deleteAfterMs := time.Now().UnixMilli() + gracePeriodMs
 
 	for _, candidate := range job.ParquetGCCandidates {
+		icebergRemovalConfirmed := !candidate.IcebergEnabled
 		gcRecord := gc.ParquetGCRecord{
 			Path:                    candidate.Path,
 			DeleteAfterMs:           deleteAfterMs,
@@ -491,10 +492,16 @@ func (sm *SagaManager) MarkDone(ctx context.Context, streamID, jobID string) (*J
 			SizeBytes:               candidate.SizeBytes,
 			StreamID:                job.StreamID,
 			IcebergEnabled:          candidate.IcebergEnabled,
-			IcebergRemovalConfirmed: candidate.IcebergRemovalConfirmed || !candidate.IcebergEnabled,
+			IcebergRemovalConfirmed: icebergRemovalConfirmed,
 		}
 		if err := gc.ScheduleParquetGC(ctx, sm.meta, gcRecord); err != nil {
 			continue
+		}
+
+		if candidate.IcebergEnabled && candidate.IcebergRemovalConfirmed {
+			if err := gc.ConfirmParquetIcebergRemoval(ctx, sm.meta, job.StreamID, candidate.Path); err != nil {
+				continue
+			}
 		}
 	}
 

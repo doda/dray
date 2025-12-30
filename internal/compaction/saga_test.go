@@ -2,10 +2,12 @@ package compaction
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/dray-io/dray/internal/gc"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
 )
@@ -371,6 +373,68 @@ func TestSagaManager_FullLifecycle(t *testing.T) {
 	}
 	if !job.IsTerminal() {
 		t.Error("job should be terminal")
+	}
+}
+
+func TestSagaManager_MarkDone_ConfirmsIcebergRemoval(t *testing.T) {
+	ctx := context.Background()
+	store := metadata.NewMockStore()
+	sm := NewSagaManager(store, "compactor-1")
+
+	job, err := sm.CreateJob(ctx, "stream-iceberg", WithJobID("job-iceberg-confirm"))
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	_, err = sm.MarkParquetWritten(ctx, "stream-iceberg", job.JobID, "/p", 1, 1)
+	if err != nil {
+		t.Fatalf("MarkParquetWritten failed: %v", err)
+	}
+
+	_, err = sm.MarkIcebergCommitted(ctx, "stream-iceberg", job.JobID, 123)
+	if err != nil {
+		t.Fatalf("MarkIcebergCommitted failed: %v", err)
+	}
+
+	candidatePath := "streams/stream-iceberg/parquet/old-file.parquet"
+	candidates := []ParquetGCCandidate{
+		{
+			Path:                    candidatePath,
+			CreatedAtMs:             time.Now().Add(-time.Hour).UnixMilli(),
+			SizeBytes:               128,
+			IcebergEnabled:          true,
+			IcebergRemovalConfirmed: true,
+		},
+	}
+
+	_, err = sm.MarkIndexSwappedWithGC(ctx, "stream-iceberg", job.JobID, nil, candidates, 1)
+	if err != nil {
+		t.Fatalf("MarkIndexSwappedWithGC failed: %v", err)
+	}
+
+	_, err = sm.MarkDone(ctx, "stream-iceberg", job.JobID)
+	if err != nil {
+		t.Fatalf("MarkDone failed: %v", err)
+	}
+
+	gcKey := keys.ParquetGCKeyPath("stream-iceberg", "old-file")
+	result, err := store.Get(ctx, gcKey)
+	if err != nil {
+		t.Fatalf("Get Parquet GC marker failed: %v", err)
+	}
+	if !result.Exists {
+		t.Fatal("expected Parquet GC marker to exist")
+	}
+
+	var record gc.ParquetGCRecord
+	if err := json.Unmarshal(result.Value, &record); err != nil {
+		t.Fatalf("unmarshal Parquet GC record failed: %v", err)
+	}
+	if !record.IcebergEnabled {
+		t.Error("expected IcebergEnabled=true")
+	}
+	if !record.IcebergRemovalConfirmed {
+		t.Error("expected IcebergRemovalConfirmed=true")
 	}
 }
 

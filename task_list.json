@@ -3281,7 +3281,7 @@
     "scope": [
       "internal/gc/parquet_gc.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "test-iceberg-recompaction-gc-ordering",
