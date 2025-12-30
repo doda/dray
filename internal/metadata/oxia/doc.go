@@ -32,9 +32,8 @@
 //
 // Transactions:
 //
-// While the Txn interface provides transaction semantics, Oxia only provides per-key
-// atomicity. Multi-key operations are executed sequentially with version checks to
-// detect conflicts. For true atomicity, callers should ensure keys share a partition.
+// Transactions use Oxia's shard-scoped write batch API to provide atomic multi-key
+// updates within a single shard (PartitionKey scope).
 //
 // Notifications:
 //

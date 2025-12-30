@@ -37,6 +37,8 @@ type Store struct {
 	client oxiaclient.SyncClient
 	config Config
 
+	txnCoordinator *txnCoordinator
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -66,9 +68,16 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("oxia: failed to create client: %w", err)
 	}
 
+	txnCoordinator, err := newTxnCoordinator(context.Background(), cfg)
+	if err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("oxia: failed to create transaction coordinator: %w", err)
+	}
+
 	return &Store{
-		client: client,
-		config: cfg,
+		client:         client,
+		config:         cfg,
+		txnCoordinator: txnCoordinator,
 	}, nil
 }
 
@@ -221,9 +230,6 @@ func (s *Store) List(ctx context.Context, startKey, endKey string, limit int) ([
 }
 
 // Txn executes an atomic transaction within a single shard domain.
-// Note: Oxia does not natively support multi-key transactions.
-// This implementation provides best-effort atomicity using single-key CAS operations.
-// For true atomicity, all operations in the transaction should share the same partition key.
 func (s *Store) Txn(ctx context.Context, scopeKey string, fn func(metadata.Txn) error) error {
 	s.mu.RLock()
 	if s.closed {
@@ -236,6 +242,7 @@ func (s *Store) Txn(ctx context.Context, scopeKey string, fn func(metadata.Txn) 
 		store:    s,
 		ctx:      ctx,
 		scopeKey: scopeKey,
+		reads:    make(map[string]txnRead),
 	}
 
 	// Execute the transaction function
@@ -309,7 +316,12 @@ func (s *Store) Close() error {
 	}
 	s.closed = true
 
-	return s.client.Close()
+	txnErr := s.txnCoordinator.Close()
+	clientErr := s.client.Close()
+	if txnErr != nil {
+		return txnErr
+	}
+	return clientErr
 }
 
 // prefixEnd returns the key that is lexicographically greater than all keys

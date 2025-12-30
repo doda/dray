@@ -1400,3 +1400,16 @@ Start with project-setup, then follow spec phases:
 - Challenge: gofmt not available in PATH.
 - Resolution: kept formatting consistent with existing file style.
 - Follow-ups: none
+[2025-12-30T12:45:00Z] Completed oxia-atomic-transactions: PASS
+- Implemented shard-scoped transactional write path using Oxia write batch API with shard assignment routing and rollback handling on conflict.
+- Added transaction rollback integration test to ensure no partial updates when a later op fails.
+- Files changed: internal/metadata/oxia/transaction.go
+- Files changed: internal/metadata/oxia/txn_coordinator.go
+- Files changed: internal/metadata/oxia/store.go
+- Files changed: internal/metadata/oxia/integration_test.go
+- Files changed: internal/metadata/oxia/doc.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/metadata/... -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: git fetch failed due to missing GitHub credentials; left repo on origin/main per local status.
+- Follow-ups: none

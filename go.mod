@@ -14,6 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.95.0
 	github.com/golang/snappy v1.0.0
 	github.com/klauspost/compress v1.18.2
+	github.com/oxia-db/oxia/common v0.15.0
 	github.com/oxia-db/oxia/oxia v0.15.0
 	github.com/oxia-db/oxia/oxiad v0.0.0-20251125232015-a9521079bd70
 	github.com/parquet-go/parquet-go v0.26.3
@@ -24,6 +25,7 @@ require (
 	github.com/twmb/franz-go v1.20.6
 	github.com/twmb/franz-go/pkg/kadm v1.17.1
 	github.com/twmb/franz-go/pkg/kmsg v1.12.0
+	google.golang.org/grpc v1.72.0
 )
 
 require (
@@ -75,7 +77,6 @@ require (
 	github.com/minio/minlz v1.0.1-0.20250507153514-87eb42fe8882 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/oxia-db/oxia/common v0.15.0 // indirect
 	github.com/parquet-go/bitpack v1.0.0 // indirect
 	github.com/parquet-go/jsonlite v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -100,6 +101,5 @@ require (
 	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/text v0.31.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250218202821-56aae31c358a // indirect
-	google.golang.org/grpc v1.72.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 )
