@@ -28,6 +28,9 @@ type indexTestStore struct {
 	lastListStartKey string
 	lastListEndKey   string
 	lastListLimit    int
+	failTxnOnKey     string
+	failTxnOnPrefix  string
+	failTxnErr       error
 }
 
 type indexTestKV struct {
@@ -143,6 +146,24 @@ func (m *indexTestStore) Txn(ctx context.Context, scopeKey string, fn func(metad
 	txn := &indexTestTxn{store: m, pending: make(map[string][]byte), deletes: make(map[string]bool)}
 	if err := fn(txn); err != nil {
 		return err
+	}
+	if m.failTxnErr != nil && (m.failTxnOnKey != "" || m.failTxnOnPrefix != "") {
+		for key := range txn.pending {
+			if m.failTxnOnKey != "" && key == m.failTxnOnKey {
+				return m.failTxnErr
+			}
+			if m.failTxnOnPrefix != "" && strings.HasPrefix(key, m.failTxnOnPrefix) {
+				return m.failTxnErr
+			}
+		}
+		for key := range txn.deletes {
+			if m.failTxnOnKey != "" && key == m.failTxnOnKey {
+				return m.failTxnErr
+			}
+			if m.failTxnOnPrefix != "" && strings.HasPrefix(key, m.failTxnOnPrefix) {
+				return m.failTxnErr
+			}
+		}
 	}
 	// Apply pending writes
 	for key, value := range txn.pending {
@@ -610,6 +631,51 @@ func TestAppendIndexEntry_TransactionUsed(t *testing.T) {
 	// Verify a transaction was used
 	if store.txnCount != txnCountBefore+1 {
 		t.Errorf("txnCount = %d, want %d", store.txnCount, txnCountBefore+1)
+	}
+}
+
+func TestAppendIndexEntry_HWMNotAdvancedOnIndexWriteFailure(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	errInjected := errors.New("index: injected index write failure")
+	store.failTxnOnPrefix = keys.OffsetIndexPrefix(streamID)
+	store.failTxnErr = errInjected
+
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    100,
+		ChunkSizeBytes: 4096,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		WalID:          uuid.New().String(),
+		WalPath:        "s3://bucket/wal/test.wo",
+		ChunkOffset:    0,
+		ChunkLength:    4096,
+	})
+	if !errors.Is(err, errInjected) {
+		t.Fatalf("AppendIndexEntry error = %v, want %v", err, errInjected)
+	}
+
+	hwm, _, err := sm.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("GetHWM failed: %v", err)
+	}
+	if hwm != 0 {
+		t.Errorf("HWM = %d, want 0", hwm)
+	}
+
+	entries, err := sm.ListIndexEntries(ctx, streamID, 0)
+	if err != nil {
+		t.Fatalf("ListIndexEntries failed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("len(entries) = %d, want 0", len(entries))
 	}
 }
 

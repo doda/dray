@@ -3253,7 +3253,7 @@
     "scope": [
       "internal/index/entry.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "compaction-gc-only-after-done",
