@@ -72,6 +72,10 @@ func (r *WALReader) ReadBatches(ctx context.Context, entry *index.IndexEntry, fe
 		return nil, fmt.Errorf("fetch: expected WAL entry, got %s", entry.FileType)
 	}
 
+	if len(entry.BatchIndex) > 0 {
+		return r.readBatchesWithIndex(ctx, entry, fetchOffset, maxBytes)
+	}
+
 	// Range-read the chunk data from object storage
 	// ChunkOffset and ChunkLength tell us exactly where the chunk is
 	startByte := int64(entry.ChunkOffset)
@@ -126,17 +130,76 @@ func (r *WALReader) readChunk(ctx context.Context, walPath string, startByte, en
 	return chunkData, nil
 }
 
+func (r *WALReader) readBatchesWithIndex(ctx context.Context, entry *index.IndexEntry, fetchOffset int64, maxBytes int64) (*FetchResult, error) {
+	startBatchIdx, endBatchIdx, err := r.batchRangeForFetch(entry, fetchOffset, maxBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	rangeStart := int64(entry.BatchIndex[startBatchIdx].BatchOffsetInChunk)
+	rangeEnd := int64(entry.BatchIndex[endBatchIdx].BatchOffsetInChunk) + int64(entry.BatchIndex[endBatchIdx].BatchLength) - 1
+	if rangeEnd < rangeStart {
+		return nil, fmt.Errorf("%w: invalid batch range", ErrInvalidChunk)
+	}
+
+	startByte := int64(entry.ChunkOffset) + rangeStart
+	endByte := int64(entry.ChunkOffset) + rangeEnd
+	chunkData, err := r.readChunk(ctx, entry.WalPath, startByte, endByte, int(rangeEnd-rangeStart+1))
+	if err != nil {
+		return nil, err
+	}
+
+	return r.extractBatchesWithIndexRange(chunkData, entry, startBatchIdx, endBatchIdx, rangeStart)
+}
+
+func (r *WALReader) batchRangeForFetch(entry *index.IndexEntry, fetchOffset int64, maxBytes int64) (int, int, error) {
+	if len(entry.BatchIndex) == 0 {
+		return -1, -1, ErrOffsetNotInChunk
+	}
+
+	// Find the first batch where lastOffset >= fetchOffset.
+	startBatchIdx := -1
+	targetDelta := fetchOffset - entry.StartOffset
+	lo, hi := 0, len(entry.BatchIndex)-1
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		batch := entry.BatchIndex[mid]
+		lastDelta := int64(batch.BatchLastOffsetDelta)
+
+		if lastDelta >= targetDelta {
+			startBatchIdx = mid
+			hi = mid - 1
+		} else {
+			lo = mid + 1
+		}
+	}
+
+	if startBatchIdx < 0 {
+		return -1, -1, ErrOffsetNotInChunk
+	}
+
+	endBatchIdx := startBatchIdx
+	var totalBytes int64
+	for i := startBatchIdx; i < len(entry.BatchIndex); i++ {
+		bi := entry.BatchIndex[i]
+
+		if maxBytes > 0 && totalBytes+int64(bi.BatchLength) > maxBytes && i > startBatchIdx {
+			break
+		}
+
+		totalBytes += int64(bi.BatchLength)
+		endBatchIdx = i
+	}
+
+	return startBatchIdx, endBatchIdx, nil
+}
+
 // extractBatches parses the chunk data and extracts batches starting from fetchOffset.
 // The chunk format is: [batchLen (4 bytes), batchData (batchLen bytes)] repeated.
 func (r *WALReader) extractBatches(chunkData []byte, entry *index.IndexEntry, fetchOffset int64, maxBytes int64) (*FetchResult, error) {
 	result := &FetchResult{
 		Batches:     make([][]byte, 0),
 		StartOffset: -1,
-	}
-
-	// If we have a batchIndex, use it for efficient seeking
-	if len(entry.BatchIndex) > 0 {
-		return r.extractBatchesWithIndex(chunkData, entry, fetchOffset, maxBytes)
 	}
 
 	// Without batchIndex, we need to scan through all batches
@@ -193,54 +256,34 @@ func (r *WALReader) extractBatches(chunkData []byte, entry *index.IndexEntry, fe
 	return result, nil
 }
 
-// extractBatchesWithIndex uses the batchIndex for efficient offset seeking.
-func (r *WALReader) extractBatchesWithIndex(chunkData []byte, entry *index.IndexEntry, fetchOffset int64, maxBytes int64) (*FetchResult, error) {
+func (r *WALReader) extractBatchesWithIndexRange(chunkData []byte, entry *index.IndexEntry, startBatchIdx int, endBatchIdx int, rangeStart int64) (*FetchResult, error) {
 	result := &FetchResult{
 		Batches:     make([][]byte, 0),
 		StartOffset: -1,
 	}
 
-	// Find the first batch where lastOffset >= fetchOffset.
-	startBatchIdx := -1
-	targetDelta := fetchOffset - entry.StartOffset
-	lo, hi := 0, len(entry.BatchIndex)-1
-	for lo <= hi {
-		mid := (lo + hi) / 2
-		batch := entry.BatchIndex[mid]
-		lastDelta := int64(batch.BatchLastOffsetDelta)
-
-		if lastDelta >= targetDelta {
-			startBatchIdx = mid
-			hi = mid - 1
-		} else {
-			lo = mid + 1
-		}
-	}
-
-	if startBatchIdx < 0 {
+	if startBatchIdx < 0 || endBatchIdx < startBatchIdx {
 		return nil, ErrOffsetNotInChunk
 	}
 
 	var totalBytes int64
 
-	// Extract batches starting from startBatchIdx
-	for i := startBatchIdx; i < len(entry.BatchIndex); i++ {
+	for i := startBatchIdx; i <= endBatchIdx; i++ {
 		bi := entry.BatchIndex[i]
-
-		// Check maxBytes limit
-		if maxBytes > 0 && totalBytes+int64(bi.BatchLength) > maxBytes && len(result.Batches) > 0 {
-			break
-		}
 
 		// Read the batch data using the batchIndex offsets.
 		// BatchOffsetInChunk is the offset to the batch data (after the length prefix).
-		actualStart := int(bi.BatchOffsetInChunk)
-		if actualStart+int(bi.BatchLength) > len(chunkData) {
+		actualStart := int64(bi.BatchOffsetInChunk) - rangeStart
+		if actualStart < 0 {
+			return nil, fmt.Errorf("%w: batch %d starts before range", ErrInvalidChunk, i)
+		}
+		actualEnd := actualStart + int64(bi.BatchLength)
+		if actualEnd > int64(len(chunkData)) {
 			return nil, fmt.Errorf("%w: batch %d overflows chunk", ErrInvalidChunk, i)
 		}
 
 		batchData := make([]byte, bi.BatchLength)
-		copy(batchData, chunkData[actualStart:actualStart+int(bi.BatchLength)])
+		copy(batchData, chunkData[int(actualStart):int(actualEnd)])
 		result.Batches = append(result.Batches, batchData)
 		totalBytes += int64(bi.BatchLength)
 
