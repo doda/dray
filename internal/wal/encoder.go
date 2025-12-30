@@ -2,6 +2,7 @@ package wal
 
 import (
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"sort"
@@ -29,6 +30,9 @@ func (e *Encoder) Encode(wal *WAL) (int64, error) {
 	sort.Slice(sortedChunks, func(i, j int) bool {
 		return sortedChunks[i].StreamID < sortedChunks[j].StreamID
 	})
+	if err := validateSortedChunks(sortedChunks); err != nil {
+		return 0, err
+	}
 
 	// Calculate layout: header -> chunk bodies -> chunk index -> footer
 	// We need to know chunk index offset before writing header
@@ -93,6 +97,9 @@ func EncodeToBytes(wal *WAL) ([]byte, error) {
 	sort.Slice(sortedChunks, func(i, j int) bool {
 		return sortedChunks[i].StreamID < sortedChunks[j].StreamID
 	})
+	if err := validateSortedChunks(sortedChunks); err != nil {
+		return nil, err
+	}
 
 	// Calculate layout
 	chunkBodiesOffset := uint64(HeaderSize)
@@ -285,4 +292,13 @@ func CalculateChunkLayouts(wal *WAL) []ChunkLayout {
 	}
 
 	return layouts
+}
+
+func validateSortedChunks(chunks []Chunk) error {
+	for i := 1; i < len(chunks); i++ {
+		if chunks[i].StreamID == chunks[i-1].StreamID {
+			return fmt.Errorf("%w: %d", ErrDuplicateStreamID, chunks[i].StreamID)
+		}
+	}
+	return nil
 }
