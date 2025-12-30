@@ -195,7 +195,7 @@ func (h *ProduceHandler) processPartition(ctx context.Context, version int16, to
 
 	if h.cfg.LeaderSelector != nil {
 		zoneID := server.ZoneIDFromContext(ctx)
-		leader, err := h.cfg.LeaderSelector.GetPartitionLeader(ctx, zoneID, topicMeta.Name, partData.Partition)
+		leader, err := h.cfg.LeaderSelector.GetPartitionLeader(ctx, zoneID, partMeta.StreamID)
 		if err == nil && leader != -1 && leader != h.cfg.LocalNodeID {
 			logging.FromCtx(ctx).Warnf("affinity violation: produce request handled by non-owner broker", map[string]any{
 				"topic":       topicMeta.Name,

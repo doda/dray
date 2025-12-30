@@ -2,6 +2,7 @@ package routing
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/dray-io/dray/internal/metadata"
@@ -182,13 +183,13 @@ func TestRegistryListerAdapter_GetPartitionLeader(t *testing.T) {
 	adapter := NewRegistryListerAdapter(registry)
 
 	t.Run("deterministic leader selection", func(t *testing.T) {
-		// Same topic-partition should always return the same leader
-		leader1, err := adapter.GetPartitionLeader(ctx, "", "topic-1", 0)
+		// Same stream ID should always return the same leader
+		leader1, err := adapter.GetPartitionLeader(ctx, "", "stream-1")
 		if err != nil {
 			t.Fatalf("GetPartitionLeader failed: %v", err)
 		}
 
-		leader2, err := adapter.GetPartitionLeader(ctx, "", "topic-1", 0)
+		leader2, err := adapter.GetPartitionLeader(ctx, "", "stream-1")
 		if err != nil {
 			t.Fatalf("GetPartitionLeader failed: %v", err)
 		}
@@ -198,26 +199,22 @@ func TestRegistryListerAdapter_GetPartitionLeader(t *testing.T) {
 		}
 	})
 
-	t.Run("different partitions may have different leaders", func(t *testing.T) {
-		// With 3 brokers and many partitions, we should see distribution
-		leaders := make(map[int32]int)
+	t.Run("different stream IDs return valid leaders", func(t *testing.T) {
 		for i := int32(0); i < 100; i++ {
-			leader, err := adapter.GetPartitionLeader(ctx, "", "topic-1", i)
+			streamID := fmt.Sprintf("stream-%d", i)
+			leader, err := adapter.GetPartitionLeader(ctx, "", streamID)
 			if err != nil {
 				t.Fatalf("GetPartitionLeader failed: %v", err)
 			}
-			leaders[leader]++
-		}
-
-		// Should have at least 2 different leaders
-		if len(leaders) < 2 {
-			t.Errorf("expected multiple leaders, got %d", len(leaders))
+			if leader < 1 || leader > 3 {
+				t.Errorf("expected leader 1-3 for stream %q, got %d", streamID, leader)
+			}
 		}
 	})
 
 	t.Run("zone-filtered leader selection", func(t *testing.T) {
 		// When filtering to us-east-1a, leader should be 1 or 2
-		leader, err := adapter.GetPartitionLeader(ctx, "us-east-1a", "topic-1", 0)
+		leader, err := adapter.GetPartitionLeader(ctx, "us-east-1a", "stream-1")
 		if err != nil {
 			t.Fatalf("GetPartitionLeader failed: %v", err)
 		}
@@ -228,7 +225,7 @@ func TestRegistryListerAdapter_GetPartitionLeader(t *testing.T) {
 	})
 
 	t.Run("fallback when zone has no brokers", func(t *testing.T) {
-		leader, err := adapter.GetPartitionLeader(ctx, "us-west-2a", "topic-1", 0)
+		leader, err := adapter.GetPartitionLeader(ctx, "us-west-2a", "stream-1")
 		if err != nil {
 			t.Fatalf("GetPartitionLeader failed: %v", err)
 		}
@@ -236,6 +233,24 @@ func TestRegistryListerAdapter_GetPartitionLeader(t *testing.T) {
 		// Should fall back to any broker
 		if leader < 1 || leader > 3 {
 			t.Errorf("expected valid leader, got %d", leader)
+		}
+	})
+
+	t.Run("uses stream ID for hashing", func(t *testing.T) {
+		streamID := "stream-xyz-123"
+		leader, err := adapter.GetPartitionLeader(ctx, "", streamID)
+		if err != nil {
+			t.Fatalf("GetPartitionLeader failed: %v", err)
+		}
+
+		brokers, err := registry.ListBrokers(ctx, "")
+		if err != nil {
+			t.Fatalf("ListBrokers failed: %v", err)
+		}
+
+		expected := RendezvousHash(brokers, streamID)
+		if leader != expected {
+			t.Errorf("expected leader %d for streamID %q, got %d", expected, streamID, leader)
 		}
 	})
 }
@@ -251,7 +266,7 @@ func TestRegistryListerAdapter_GetPartitionLeader_NoBrokers(t *testing.T) {
 	adapter := NewRegistryListerAdapter(registry)
 
 	ctx := context.Background()
-	leader, err := adapter.GetPartitionLeader(ctx, "", "topic-1", 0)
+	leader, err := adapter.GetPartitionLeader(ctx, "", "stream-1")
 	if err != nil {
 		t.Fatalf("GetPartitionLeader failed: %v", err)
 	}
@@ -295,7 +310,7 @@ func TestAffinityListerAdapter(t *testing.T) {
 	}
 
 	// Test GetPartitionLeader (inherited from RegistryListerAdapter)
-	leader, err := adapter.GetPartitionLeader(ctx, "", "topic-1", 0)
+	leader, err := adapter.GetPartitionLeader(ctx, "", "stream-1")
 	if err != nil {
 		t.Fatalf("GetPartitionLeader failed: %v", err)
 	}

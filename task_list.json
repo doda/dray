@@ -3131,7 +3131,7 @@
       "Add test demonstrating stable affinity when streamId differs from topic/partition mapping",
       "Run routing tests"
     ],
-    "completed": false,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/routing/adapter.go"

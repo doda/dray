@@ -2,7 +2,6 @@ package routing
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/dray-io/dray/internal/protocol"
 )
@@ -45,11 +44,10 @@ func (a *RegistryListerAdapter) ListBrokers(ctx context.Context, zoneID string) 
 //
 // Parameters:
 //   - zoneID: if non-empty, selects from brokers in this zone first
-//   - topic: the topic name
-//   - partition: the partition number
+//   - streamID: the partition's stable stream identifier
 //
 // Returns the NodeID of the affinity broker, or -1 if no brokers are available.
-func (a *RegistryListerAdapter) GetPartitionLeader(ctx context.Context, zoneID, topic string, partition int32) (int32, error) {
+func (a *RegistryListerAdapter) GetPartitionLeader(ctx context.Context, zoneID, streamID string) (int32, error) {
 	brokers, err := a.registry.ListBrokers(ctx, zoneID)
 	if err != nil {
 		return -1, err
@@ -67,8 +65,6 @@ func (a *RegistryListerAdapter) GetPartitionLeader(ctx context.Context, zoneID, 
 		return -1, nil
 	}
 
-	// Use topic-partition as the stream ID for rendezvous hashing
-	streamID := fmt.Sprintf("%s-%d", topic, partition)
 	return RendezvousHash(brokers, streamID), nil
 }
 
