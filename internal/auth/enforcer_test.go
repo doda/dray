@@ -48,13 +48,13 @@ func TestEnforcer_Authorize_Disabled(t *testing.T) {
 }
 
 func TestEnforcer_Authorize_NilCache(t *testing.T) {
-	// When cache is nil, authorization should pass
+	// When cache is nil, authorization should fail closed
 	enforcer := NewEnforcer(nil, EnforcerConfig{Enabled: true}, nil)
 
 	allowed := enforcer.Authorize(context.Background(),
 		ResourceTypeTopic, "test-topic", "User:alice", "*", OperationRead)
-	if !allowed {
-		t.Error("expected authorization to pass with nil cache")
+	if allowed {
+		t.Error("expected authorization to fail with nil cache")
 	}
 }
 

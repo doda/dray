@@ -1456,3 +1456,15 @@ Start with project-setup, then follow spec phases:
 - Challenges: gofmt not available in PATH.
 - Resolution: kept formatting consistent and avoided gofmt for the new test file.
 - Follow-ups: none
+[2025-12-30T15:10:00Z] Completed acl-enforcer-fail-closed: PASS
+- Outcome: deny authorization when ACLs enabled and cache is nil (fail-closed behavior).
+- Updated enforcer logic to return false on nil cache when enforcement enabled.
+- Added/updated unit test to assert nil cache denies authorization.
+- Files changed: internal/auth/enforcer.go
+- Files changed: internal/auth/enforcer_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/auth -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (initial timeout at 120s; reran with 600s timeout; pass)
+- Challenge: init.sh exceeded default timeout.
+- Resolution: reran init.sh with longer timeout.
+- Follow-ups: none

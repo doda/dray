@@ -3309,7 +3309,7 @@
     "scope": [
       "internal/auth/enforcer.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "sasl-nil-credentials-guard",

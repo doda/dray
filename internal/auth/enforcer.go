@@ -112,7 +112,7 @@ func (e *Enforcer) Authorize(ctx context.Context, resourceType ResourceType, res
 		return true
 	}
 	if e.cache == nil {
-		return true
+		return false
 	}
 	return e.cache.Authorize(resourceType, resourceName, principal, host, operation)
 }
