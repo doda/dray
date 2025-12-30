@@ -399,8 +399,28 @@ func (s *Server) handleConn(conn net.Conn) {
 				s.metrics.RecordFailure(apiName)
 				s.metrics.RecordError(apiName, "HANDLER_ERROR")
 			}
+			fallback, fallbackErr := protocol.BuildFallbackErrorResponse(
+				header.APIKey,
+				header.APIVersion,
+				header.CorrelationID,
+				payload,
+			)
+			if fallbackErr != nil {
+				reqLogger.Warnf("failed to build fallback response", map[string]any{"error": fallbackErr.Error()})
+				s.inflightWg.Done()
+				return
+			}
+			if s.cfg.WriteTimeout > 0 {
+				conn.SetWriteDeadline(time.Now().Add(s.cfg.WriteTimeout))
+			}
+			if err := s.writeResponse(conn, fallback); err != nil {
+				reqLogger.Warnf("write error", map[string]any{"error": err.Error()})
+				s.inflightWg.Done()
+				return
+			}
 			s.inflightWg.Done()
-			return
+			reqLogger.Warnf("fallback response sent", map[string]any{"error": err.Error()})
+			continue
 		}
 
 		// Record successful request
