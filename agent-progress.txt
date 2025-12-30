@@ -1413,3 +1413,12 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass)
 - Challenge: git fetch failed due to missing GitHub credentials; left repo on origin/main per local status.
 - Follow-ups: none
+[2025-12-30T08:32:52Z] Completed hwm-index-atomic-commit: PASS
+- Implemented failure-injection support in index test store to simulate index write failure and verify atomic rollback.
+- Added test ensuring HWM does not advance when index entry write fails.
+- Files changed: internal/index/entry_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/index -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: none
+- Follow-ups: none
