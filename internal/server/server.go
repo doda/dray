@@ -17,6 +17,7 @@ import (
 	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metrics"
+	"github.com/dray-io/dray/internal/protocol"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
@@ -62,23 +63,6 @@ type RequestHeader struct {
 	// If ClientID contains "zone_id=<value>", ZoneID will be set.
 	// Empty if not present or invalid.
 	ZoneID string
-}
-
-// zoneContextKey is the context key for storing the client's zone_id.
-type zoneContextKey struct{}
-
-// ZoneIDFromContext retrieves the zone_id from context.
-// Returns empty string if not set.
-func ZoneIDFromContext(ctx context.Context) string {
-	if v := ctx.Value(zoneContextKey{}); v != nil {
-		return v.(string)
-	}
-	return ""
-}
-
-// WithZoneID returns a new context with the given zone_id.
-func WithZoneID(ctx context.Context, zoneID string) context.Context {
-	return context.WithValue(ctx, zoneContextKey{}, zoneID)
 }
 
 // connState tracks per-connection authentication state.
@@ -397,7 +381,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 		// Store zone_id in context for handlers (per spec 7.1)
 		if header.ZoneID != "" {
-			ctx = WithZoneID(ctx, header.ZoneID)
+			ctx = protocol.WithZoneID(ctx, header.ZoneID)
 		}
 
 		apiName := APIKey(header.APIKey)
@@ -487,7 +471,7 @@ func parseRequestHeader(buf []byte) (*RequestHeader, int, error) {
 	offset := 8
 
 	// Determine if this request uses flexible encoding (request header v2)
-	flexible := isFlexibleRequest(header.APIKey, header.APIVersion)
+	flexible := protocol.IsFlexibleRequestHeader(header.APIKey, header.APIVersion)
 
 	// Parse clientId - always uses int16 length (nullable string) in both header v1 and v2.
 	// Despite what one might expect, request header v2 does NOT use compact string for clientId.
@@ -562,70 +546,6 @@ func readUvarint(buf []byte) (uint64, int) {
 		}
 	}
 	return x, len(buf)
-}
-
-// isFlexibleRequest returns true if the given API key and version uses flexible encoding
-// in the REQUEST HEADER (not the body). This is important because ApiVersions is special-cased
-// to always use the v1 request header format (non-flexible) even for v3+ requests.
-// Based on Kafka protocol specification for request header versions.
-func isFlexibleRequest(apiKey, version int16) bool {
-	// ApiVersions is special: it always uses the v1 request header format (non-flexible)
-	// because the broker needs to understand the request to negotiate versions.
-	// The REQUEST BODY still uses flexible encoding for v3+, but the HEADER does not.
-	if apiKey == 18 { // ApiVersions
-		return false // Always use non-flexible header
-	}
-
-	// This maps API keys to the version at which their HEADER becomes flexible.
-	// See: https://kafka.apache.org/protocol.html#protocol_api_keys
-	switch apiKey {
-	case 0: // Produce
-		return version >= 9
-	case 1: // Fetch
-		return version >= 12
-	case 2: // ListOffsets
-		return version >= 6
-	case 3: // Metadata
-		return version >= 9
-	case 8: // OffsetCommit
-		return version >= 8
-	case 9: // OffsetFetch
-		return version >= 6
-	case 10: // FindCoordinator
-		return version >= 3
-	case 11: // JoinGroup
-		return version >= 6
-	case 12: // Heartbeat
-		return version >= 4
-	case 13: // LeaveGroup
-		return version >= 4
-	case 14: // SyncGroup
-		return version >= 4
-	case 15: // DescribeGroups
-		return version >= 5
-	case 16: // ListGroups
-		return version >= 3
-	case 19: // CreateTopics
-		return version >= 5
-	case 20: // DeleteTopics
-		return version >= 4
-	case 32: // DescribeConfigs
-		return version >= 4
-	case 42: // DeleteGroups
-		return version >= 2
-	case 44: // IncrementalAlterConfigs
-		return version >= 1
-	case 60: // DescribeCluster
-		return version >= 0 // All versions are flexible
-	case 68: // ConsumerGroupHeartbeat
-		return version >= 0 // All versions are flexible
-	case 69: // ConsumerGroupDescribe
-		return version >= 0 // All versions are flexible
-	case 36: // SASLAuthenticate
-		return version >= 2
-	default:
-		return false
-	}
 }
 
 // writeResponse writes a Kafka response with the length prefix.

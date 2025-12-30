@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dray-io/dray/internal/logging"
+	"github.com/dray-io/dray/internal/protocol"
 )
 
 // echoHandler returns requests with correlation ID prepended
@@ -797,19 +798,19 @@ func TestZoneIDContext(t *testing.T) {
 	ctx := context.Background()
 
 	// Test empty context
-	if got := ZoneIDFromContext(ctx); got != "" {
+	if got := protocol.ZoneIDFromContext(ctx); got != "" {
 		t.Errorf("ZoneIDFromContext on empty context = %q, want empty", got)
 	}
 
 	// Test with zone set
-	ctx = WithZoneID(ctx, "us-east-1a")
-	if got := ZoneIDFromContext(ctx); got != "us-east-1a" {
+	ctx = protocol.WithZoneID(ctx, "us-east-1a")
+	if got := protocol.ZoneIDFromContext(ctx); got != "us-east-1a" {
 		t.Errorf("ZoneIDFromContext = %q, want %q", got, "us-east-1a")
 	}
 
 	// Test overwriting zone
-	ctx = WithZoneID(ctx, "eu-west-1b")
-	if got := ZoneIDFromContext(ctx); got != "eu-west-1b" {
+	ctx = protocol.WithZoneID(ctx, "eu-west-1b")
+	if got := protocol.ZoneIDFromContext(ctx); got != "eu-west-1b" {
 		t.Errorf("ZoneIDFromContext after overwrite = %q, want %q", got, "eu-west-1b")
 	}
 }

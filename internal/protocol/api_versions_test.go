@@ -150,6 +150,26 @@ func TestGetAPIVersionRange(t *testing.T) {
 	}
 }
 
+func TestFlexibleHeaderMappingMatchesSupportedMatrix(t *testing.T) {
+	apis := GetSupportedAPIsWithSASL()
+	for _, api := range apis {
+		req, err := NewRequest(api.APIKey)
+		if err != nil {
+			t.Fatalf("failed to build request for api %d: %v", api.APIKey, err)
+		}
+		for version := api.MinVersion; version <= api.MaxVersion; version++ {
+			req.SetVersion(version)
+			expected := req.IsFlexible()
+			if api.APIKey == 18 {
+				expected = false
+			}
+			if got := IsFlexibleRequestHeader(api.APIKey, version); got != expected {
+				t.Errorf("api %d version %d flexible header = %v, expected %v", api.APIKey, version, got, expected)
+			}
+		}
+	}
+}
+
 func TestHandleApiVersions(t *testing.T) {
 	tests := []struct {
 		version int16
