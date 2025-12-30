@@ -621,6 +621,8 @@ func isFlexibleRequest(apiKey, version int16) bool {
 		return version >= 0 // All versions are flexible
 	case 69: // ConsumerGroupDescribe
 		return version >= 0 // All versions are flexible
+	case 36: // SASLAuthenticate
+		return version >= 2
 	default:
 		return false
 	}

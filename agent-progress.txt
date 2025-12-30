@@ -1478,3 +1478,15 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (pass).
 - Challenges: none.
 - Follow-ups: none.
+[2025-12-30T09:33:42Z] Completed test-sasl-acl-end-to-end: PASS
+- Implemented SASL/PLAIN + ACL end-to-end integration test using real broker connections and franz-go clients.
+- Added SASL-capable test broker handler and SASL/PLAIN parsing helper for authenticated principals.
+- Updated server flexible header parsing to support SASLAuthenticate v2.
+- Files changed: tests/integration/sasl_acl_end_to_end_test.go
+- Files changed: internal/server/server.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./tests/integration -run TestSASLPlain_ACLEndToEnd -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenge: SASLAuthenticate decode failures due to flexible header mismatch.
+- Resolution: treat SASLAuthenticate v2 as flexible in server header parsing.
+- Follow-ups: none
