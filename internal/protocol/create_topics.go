@@ -8,6 +8,7 @@ import (
 	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/iceberg/catalog"
 	"github.com/dray-io/dray/internal/index"
+	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -229,7 +230,10 @@ func (h *CreateTopicsHandler) handleTopic(ctx context.Context, version int16, to
 			// Iceberg table creation failure should not fail topic creation
 			// per spec - produce/fetch should remain available when Iceberg is down.
 			// We just log the error and continue.
-			// TODO: Log this error when logging is wired in
+			logging.FromCtx(ctx).Errorf("failed to create Iceberg table", map[string]any{
+				"topic": topicReq.Topic,
+				"error": err.Error(),
+			})
 		}
 	}
 

@@ -1,12 +1,14 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
 
 	"github.com/dray-io/dray/internal/iceberg/catalog"
 	"github.com/dray-io/dray/internal/index"
+	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -221,6 +223,59 @@ func TestDeleteTopicsHandler_WithIceberg(t *testing.T) {
 	}
 	if exists {
 		t.Error("expected Iceberg table to be dropped")
+	}
+}
+
+func TestDeleteTopicsHandler_IcebergDropFailureLogs(t *testing.T) {
+	var buf bytes.Buffer
+	logger := logging.New(logging.Config{
+		Level:  logging.LevelInfo,
+		Format: logging.FormatJSON,
+		Output: &buf,
+	})
+	ctx := logging.WithLoggerCtx(context.Background(), logger)
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	icebergCatalog := newMockIcebergCatalog()
+	icebergCatalog.dropError = catalog.ErrCatalogUnavailable
+
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "iceberg-drop-fail-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	handler := NewDeleteTopicsHandler(
+		DeleteTopicsHandlerConfig{
+			IcebergEnabled: true,
+		},
+		topicStore,
+		streamManager,
+		icebergCatalog,
+	)
+
+	req := kmsg.NewPtrDeleteTopicsRequest()
+	req.TopicNames = []string{"iceberg-drop-fail-topic"}
+
+	resp := handler.Handle(ctx, 3, req)
+
+	if resp.Topics[0].ErrorCode != 0 {
+		t.Fatalf("expected no error despite Iceberg drop failure, got error code %d", resp.Topics[0].ErrorCode)
+	}
+
+	entry := decodeLastLogEntry(t, &buf)
+	if entry.Message != "failed to drop Iceberg table" {
+		t.Fatalf("expected log message to mention Iceberg drop failure, got %q", entry.Message)
+	}
+	if entry.Fields["topic"] != "iceberg-drop-fail-topic" {
+		t.Fatalf("expected log to include topic name, got %v", entry.Fields["topic"])
+	}
+	if entry.Fields["error"] != catalog.ErrCatalogUnavailable.Error() {
+		t.Fatalf("expected log to include error details, got %v", entry.Fields["error"])
 	}
 }
 

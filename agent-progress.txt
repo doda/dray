@@ -1509,3 +1509,16 @@ Start with project-setup, then follow spec phases:
 - Challenges: import cycle after server began importing protocol; init.sh default timeout.
 - Resolution: moved zone context helpers into protocol; reran init.sh with longer timeout.
 - Follow-ups: none.
+[2025-12-30T10:04:25Z] Completed log-iceberg-topic-lifecycle-errors: PASS
+- Outcome: logged Iceberg create/drop failures with structured topic/error fields in topic lifecycle handlers.
+- Added logger capture tests for Iceberg create failure and drop failure paths.
+- Files changed: internal/protocol/create_topics.go
+- Files changed: internal/protocol/delete_topics.go
+- Files changed: internal/protocol/create_topics_test.go
+- Files changed: internal/protocol/delete_topics_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./internal/protocol -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: gofmt not available in PATH.
+- Resolution: kept formatting consistent with existing files.
+- Follow-ups: none
