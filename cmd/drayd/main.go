@@ -73,7 +73,7 @@ func runBroker(args []string) {
 	brokerID := fs.String("broker-id", "", "Override broker ID (default: auto-generated UUID)")
 	nodeID := fs.Int("node-id", -1, "Override Kafka node ID (default: 1)")
 	zoneID := fs.String("zone-id", "", "Override availability zone ID")
-	clusterID := fs.String("cluster-id", "", "Override cluster ID (default: dray)")
+	clusterID := fs.String("cluster-id", "", "Override cluster ID (default: from config)")
 
 	fs.Usage = func() {
 		fmt.Println(`Usage: drayd broker [options]
@@ -111,6 +111,9 @@ Options:`)
 	if *zoneID != "" {
 		cfg.Broker.ZoneID = *zoneID
 	}
+	if *clusterID != "" {
+		cfg.ClusterID = *clusterID
+	}
 
 	// Set up logger
 	logger := logging.New(logging.Config{
@@ -142,11 +145,7 @@ Options:`)
 	}
 
 	// Set cluster ID
-	if *clusterID != "" {
-		brokerOpts.ClusterID = *clusterID
-	} else {
-		brokerOpts.ClusterID = "dray"
-	}
+	brokerOpts.ClusterID = cfg.ClusterID
 
 	// Create and run broker
 	broker, err := NewBroker(brokerOpts)

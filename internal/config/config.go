@@ -16,8 +16,12 @@ import (
 // DefaultConfigPath is the default path for the Dray configuration file.
 const DefaultConfigPath = "/etc/dray/config.yaml"
 
+// DefaultClusterID is the default cluster identifier used for Oxia namespaces.
+const DefaultClusterID = "local"
+
 // Config holds all configuration for a Dray broker.
 type Config struct {
+	ClusterID     string              `yaml:"clusterId" env:"DRAY_CLUSTER_ID"`
 	Broker        BrokerConfig        `yaml:"broker"`
 	SASL          SASLConfig          `yaml:"sasl"`
 	Metadata      MetadataConfig      `yaml:"metadata"`
@@ -58,7 +62,6 @@ type SASLConfig struct {
 
 type MetadataConfig struct {
 	OxiaEndpoint string `yaml:"oxiaEndpoint" env:"DRAY_OXIA_ENDPOINT"`
-	Namespace    string `yaml:"namespace" env:"DRAY_OXIA_NAMESPACE"`
 	NumDomains   int    `yaml:"numDomains" env:"DRAY_METADATA_NUM_DOMAINS"`
 }
 
@@ -102,6 +105,7 @@ type ObservabilityConfig struct {
 // Default returns a Config with sensible defaults.
 func Default() *Config {
 	return &Config{
+		ClusterID: DefaultClusterID,
 		Broker: BrokerConfig{
 			ListenAddr: ":9092",
 		},
@@ -112,7 +116,6 @@ func Default() *Config {
 		},
 		Metadata: MetadataConfig{
 			OxiaEndpoint: "localhost:6648",
-			Namespace:    "dray",
 			NumDomains:   16,
 		},
 		ObjectStore: ObjectStoreConfig{
@@ -230,6 +233,10 @@ func LoadFromPathNoValidate(path string) (*Config, error) {
 func (c *Config) Validate() error {
 	var errs []error
 
+	if strings.TrimSpace(c.ClusterID) == "" {
+		errs = append(errs, errors.New("clusterId is required"))
+	}
+
 	// Broker validation
 	if c.Broker.ListenAddr == "" {
 		errs = append(errs, errors.New("broker.listenAddr is required"))
@@ -263,9 +270,6 @@ func (c *Config) Validate() error {
 	// Metadata validation
 	if c.Metadata.OxiaEndpoint == "" {
 		errs = append(errs, errors.New("metadata.oxiaEndpoint is required"))
-	}
-	if c.Metadata.Namespace == "" {
-		errs = append(errs, errors.New("metadata.namespace is required"))
 	}
 	if c.Metadata.NumDomains <= 0 {
 		errs = append(errs, errors.New("metadata.numDomains must be positive"))
@@ -317,6 +321,20 @@ func (c *Config) Validate() error {
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+// OxiaNamespace returns the Oxia namespace for the given cluster ID.
+func OxiaNamespace(clusterID string) string {
+	return fmt.Sprintf("dray/%s", clusterID)
+}
+
+// OxiaNamespace returns the Oxia namespace for this config.
+func (c *Config) OxiaNamespace() string {
+	clusterID := strings.TrimSpace(c.ClusterID)
+	if clusterID == "" {
+		clusterID = DefaultClusterID
+	}
+	return OxiaNamespace(clusterID)
 }
 
 // applyEnvOverrides applies environment variable overrides to the config.

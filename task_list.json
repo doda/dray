@@ -3463,7 +3463,8 @@
       "internal/config",
       "internal/metadata/oxia"
     ],
-    "completed": false
+    "completed": true,
+    "passes": true
   },
   {
     "id": "broker-registration-ephemeral-cas",

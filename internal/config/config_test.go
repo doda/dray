@@ -9,6 +9,10 @@ import (
 func TestDefaultConfig(t *testing.T) {
 	cfg := Default()
 
+	if cfg.ClusterID != DefaultClusterID {
+		t.Errorf("expected default cluster ID %s, got %s", DefaultClusterID, cfg.ClusterID)
+	}
+
 	if cfg.Broker.ListenAddr != ":9092" {
 		t.Errorf("expected default listen addr :9092, got %s", cfg.Broker.ListenAddr)
 	}
@@ -49,17 +53,37 @@ func TestDefaultConfigValidates(t *testing.T) {
 	}
 }
 
+func TestOxiaNamespaceFormatting(t *testing.T) {
+	tests := []struct {
+		clusterID string
+		want      string
+	}{
+		{"cluster-1", "dray/cluster-1"},
+		{"prod/us-east-1", "dray/prod/us-east-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.clusterID, func(t *testing.T) {
+			cfg := Default()
+			cfg.ClusterID = tt.clusterID
+			if got := cfg.OxiaNamespace(); got != tt.want {
+				t.Errorf("OxiaNamespace() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadFromPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.yaml")
 
 	yamlContent := `
+clusterId: "prod-cluster"
 broker:
   listenAddr: ":9093"
   zoneId: "us-east-1a"
 metadata:
   oxiaEndpoint: "oxia.example.com:6648"
-  namespace: "test-dray"
   numDomains: 32
 objectStore:
   endpoint: "s3.example.com"
@@ -94,6 +118,9 @@ routing:
 		t.Fatalf("failed to load config: %v", err)
 	}
 
+	if cfg.ClusterID != "prod-cluster" {
+		t.Errorf("expected cluster ID prod-cluster, got %s", cfg.ClusterID)
+	}
 	if cfg.Broker.ListenAddr != ":9093" {
 		t.Errorf("expected listen addr :9093, got %s", cfg.Broker.ListenAddr)
 	}
@@ -137,11 +164,11 @@ func TestLoadFromPathMissing(t *testing.T) {
 
 func TestLoadFromBytes(t *testing.T) {
 	yamlContent := `
+clusterId: "test-cluster"
 broker:
   listenAddr: ":8080"
 metadata:
   oxiaEndpoint: "localhost:6648"
-  namespace: "test"
   numDomains: 8
 `
 	cfg, err := LoadFromBytes([]byte(yamlContent))
@@ -149,6 +176,9 @@ metadata:
 		t.Fatalf("failed to load config: %v", err)
 	}
 
+	if cfg.ClusterID != "test-cluster" {
+		t.Errorf("expected cluster ID test-cluster, got %s", cfg.ClusterID)
+	}
 	if cfg.Broker.ListenAddr != ":8080" {
 		t.Errorf("expected listen addr :8080, got %s", cfg.Broker.ListenAddr)
 	}
@@ -162,11 +192,11 @@ func TestEnvironmentVariableOverrides(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "config.yaml")
 
 	yamlContent := `
+clusterId: "file-cluster"
 broker:
   listenAddr: ":9092"
 metadata:
   oxiaEndpoint: "localhost:6648"
-  namespace: "dray"
   numDomains: 16
 `
 	if err := os.WriteFile(configPath, []byte(yamlContent), 0644); err != nil {
@@ -174,6 +204,7 @@ metadata:
 	}
 
 	// Set environment variables
+	os.Setenv("DRAY_CLUSTER_ID", "env-cluster")
 	os.Setenv("DRAY_LISTEN_ADDR", ":9999")
 	os.Setenv("DRAY_ZONE_ID", "test-zone")
 	os.Setenv("DRAY_WAL_FLUSH_SIZE", "33554432")
@@ -181,6 +212,7 @@ metadata:
 	os.Setenv("DRAY_LOG_LEVEL", "warn")
 	os.Setenv("DRAY_ROUTING_ENFORCE_OWNER", "true")
 	defer func() {
+		os.Unsetenv("DRAY_CLUSTER_ID")
 		os.Unsetenv("DRAY_LISTEN_ADDR")
 		os.Unsetenv("DRAY_ZONE_ID")
 		os.Unsetenv("DRAY_WAL_FLUSH_SIZE")
@@ -195,6 +227,9 @@ metadata:
 	}
 
 	// Environment variables should override file values
+	if cfg.ClusterID != "env-cluster" {
+		t.Errorf("expected cluster ID env-cluster, got %s", cfg.ClusterID)
+	}
 	if cfg.Broker.ListenAddr != ":9999" {
 		t.Errorf("expected env override :9999, got %s", cfg.Broker.ListenAddr)
 	}
@@ -292,6 +327,13 @@ func TestValidationErrors(t *testing.T) {
 		errCount int
 	}{
 		{
+			name: "empty cluster id",
+			modifier: func(c *Config) {
+				c.ClusterID = ""
+			},
+			errCount: 1,
+		},
+		{
 			name: "empty listen addr",
 			modifier: func(c *Config) {
 				c.Broker.ListenAddr = ""
@@ -302,13 +344,6 @@ func TestValidationErrors(t *testing.T) {
 			name: "empty oxia endpoint",
 			modifier: func(c *Config) {
 				c.Metadata.OxiaEndpoint = ""
-			},
-			errCount: 1,
-		},
-		{
-			name: "empty namespace",
-			modifier: func(c *Config) {
-				c.Metadata.Namespace = ""
 			},
 			errCount: 1,
 		},
@@ -590,6 +625,7 @@ func TestTLSConfigValidation(t *testing.T) {
 
 func TestTLSConfigFromYAML(t *testing.T) {
 	yamlContent := `
+clusterId: "tls-cluster"
 broker:
   listenAddr: ":9093"
   tls:
@@ -598,7 +634,6 @@ broker:
     keyFile: "/etc/dray/certs/server.key"
 metadata:
   oxiaEndpoint: "localhost:6648"
-  namespace: "dray"
   numDomains: 16
 `
 	cfg, err := LoadFromBytes([]byte(yamlContent))
@@ -746,6 +781,7 @@ func TestSASLConfigValidation(t *testing.T) {
 
 func TestSASLConfigFromYAML(t *testing.T) {
 	yamlContent := `
+clusterId: "sasl-cluster"
 broker:
   listenAddr: ":9093"
 sasl:
@@ -755,7 +791,6 @@ sasl:
   credentialsFile: "/etc/dray/sasl_users.txt"
 metadata:
   oxiaEndpoint: "localhost:6648"
-  namespace: "dray"
   numDomains: 16
 `
 	cfg, err := LoadFromBytes([]byte(yamlContent))
