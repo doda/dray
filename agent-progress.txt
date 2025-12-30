@@ -1546,3 +1546,13 @@ Start with project-setup, then follow spec phases:
 - Challenge: go not in PATH for tests.
 - Resolution: ran tests with PATH override.
 - Follow-ups: none
+[2025-12-30T10:39:53Z] Completed wal-encoder-no-panic-on-layout-mismatch: PASS
+- Replaced WAL encoder layout mismatch panics with returned errors and added layout hook for tests.
+- Added unit test that mutates chunk layout to assert ErrLayoutMismatch handling.
+- Files changed: internal/wal/encoder.go
+- Files changed: internal/wal/encoder_test.go
+- Files changed: task_list.json
+- Tests: PATH="/usr/local/go/bin:$PATH" go test ./internal/wal -count=1 (pass)
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass)
+- Challenges: none
+- Follow-ups: none

@@ -3414,7 +3414,8 @@
     "scope": [
       "internal/wal"
     ],
-    "completed": false
+    "passes": true,
+    "completed": true
   },
   {
     "id": "wal-encoder-handle-short-writes",

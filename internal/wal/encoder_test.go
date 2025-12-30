@@ -3,6 +3,7 @@ package wal
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"testing"
 
@@ -346,6 +347,42 @@ func TestEncoderWriter(t *testing.T) {
 	expected, _ := EncodeToBytes(wal)
 	if !bytes.Equal(buf.Bytes(), expected) {
 		t.Errorf("Encoder output differs from EncodeToBytes")
+	}
+}
+
+func TestEncodeLayoutMismatchReturnsError(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 1, 1700000000000)
+	wal.AddChunk(Chunk{
+		StreamID:       1,
+		Batches:        []BatchEntry{{Data: []byte("first-batch")}},
+		RecordCount:    1,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 1000,
+	})
+	wal.AddChunk(Chunk{
+		StreamID:       2,
+		Batches:        []BatchEntry{{Data: []byte("second-batch")}},
+		RecordCount:    1,
+		MinTimestampMs: 2000,
+		MaxTimestampMs: 2000,
+	})
+
+	encoderLayoutHook = func() {
+		wal.Chunks[0].Batches[0].Data = wal.Chunks[0].Batches[0].Data[:1]
+	}
+	t.Cleanup(func() {
+		encoderLayoutHook = nil
+	})
+
+	var buf bytes.Buffer
+	encoder := NewEncoder(&buf)
+	_, err := encoder.Encode(wal)
+	if err == nil {
+		t.Fatal("expected layout mismatch error")
+	}
+	if !errors.Is(err, ErrLayoutMismatch) {
+		t.Fatalf("expected ErrLayoutMismatch, got %v", err)
 	}
 }
 

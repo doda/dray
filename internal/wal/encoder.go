@@ -2,6 +2,7 @@ package wal
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -10,6 +11,8 @@ import (
 
 // crc32cTable is the Castagnoli polynomial table used for CRC32C.
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
+
+var ErrLayoutMismatch = errors.New("wal: encoder layout mismatch")
 
 // Encoder writes WAL objects to an io.Writer.
 type Encoder struct {
@@ -20,6 +23,8 @@ type Encoder struct {
 func NewEncoder(w io.Writer) *Encoder {
 	return &Encoder{w: w}
 }
+
+var encoderLayoutHook func()
 
 // Encode writes the complete WAL to the underlying writer.
 // Returns the total bytes written and any error encountered.
@@ -55,6 +60,10 @@ func (e *Encoder) Encode(wal *WAL) (int64, error) {
 
 	chunkIndexOffset := currentOffset
 
+	if encoderLayoutHook != nil {
+		encoderLayoutHook()
+	}
+
 	// Build the complete WAL bytes so we can compute CRC32C
 	totalSize := chunkIndexOffset + uint64(ChunkIndexEntrySize*len(sortedChunks)) + FooterSize
 	buf := make([]byte, totalSize)
@@ -66,14 +75,14 @@ func (e *Encoder) Encode(wal *WAL) (int64, error) {
 	// Encode chunk bodies
 	for i, chunk := range sortedChunks {
 		if uint64(offset) != layouts[i].offset {
-			panic("layout mismatch")
+			return 0, fmt.Errorf("%w: chunk %d offset %d expected %d", ErrLayoutMismatch, i, offset, layouts[i].offset)
 		}
 		offset += encodeChunkBody(buf[offset:], chunk)
 	}
 
 	// Encode chunk index
 	if uint64(offset) != chunkIndexOffset {
-		panic("chunk index offset mismatch")
+		return 0, fmt.Errorf("%w: chunk index offset %d expected %d", ErrLayoutMismatch, offset, chunkIndexOffset)
 	}
 	for i, chunk := range sortedChunks {
 		offset += encodeChunkIndexEntry(buf[offset:], chunk, layouts[i].offset, layouts[i].length)
@@ -119,6 +128,10 @@ func EncodeToBytes(wal *WAL) ([]byte, error) {
 	}
 
 	chunkIndexOffset := currentOffset
+
+	if encoderLayoutHook != nil {
+		encoderLayoutHook()
+	}
 	totalSize := chunkIndexOffset + uint64(ChunkIndexEntrySize*len(sortedChunks)) + FooterSize
 	buf := make([]byte, totalSize)
 
@@ -126,10 +139,15 @@ func EncodeToBytes(wal *WAL) ([]byte, error) {
 	offset += encodeHeader(buf[offset:], wal, uint32(len(sortedChunks)), chunkIndexOffset)
 
 	for i, chunk := range sortedChunks {
+		if uint64(offset) != layouts[i].offset {
+			return nil, fmt.Errorf("%w: chunk %d offset %d expected %d", ErrLayoutMismatch, i, offset, layouts[i].offset)
+		}
 		offset += encodeChunkBody(buf[offset:], chunk)
-		_ = layouts[i] // used in chunk index
 	}
 
+	if uint64(offset) != chunkIndexOffset {
+		return nil, fmt.Errorf("%w: chunk index offset %d expected %d", ErrLayoutMismatch, offset, chunkIndexOffset)
+	}
 	for i, chunk := range sortedChunks {
 		offset += encodeChunkIndexEntry(buf[offset:], chunk, layouts[i].offset, layouts[i].length)
 	}
