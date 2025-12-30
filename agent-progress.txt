@@ -1359,3 +1359,13 @@ Start with project-setup, then follow spec phases:
 - Challenge: go not in PATH on first test run.
 - Resolution: invoked go with PATH override.
 - Follow-ups: none.
+[2025-12-30T07:36:43Z] Completed produce-decompression-cap: PASS
+- Added decompression size caps per batch/request during produce record batch validation with bounded streaming decompression.
+- Added oversized compressed batch/request tests to ensure UNSUPPORTED_FOR_MESSAGE_FORMAT rejection.
+- Files changed: internal/protocol/produce.go.
+- Files changed: internal/protocol/produce_test.go.
+- Files changed: task_list.json.
+- Tests: PATH="/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games" go test ./internal/protocol -run Produce -count=1 (pass).
+- Tests: ./init.sh > .looper-init.log 2>&1 (pass).
+- Challenges: none.
+- Follow-ups: none.

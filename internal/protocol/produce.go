@@ -1,9 +1,13 @@
 package protocol
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"errors"
 	"hash/crc32"
+	"io"
 	"time"
 
 	"github.com/dray-io/dray/internal/auth"
@@ -13,6 +17,9 @@ import (
 	"github.com/dray-io/dray/internal/server"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/dray-io/dray/internal/wal"
+	"github.com/klauspost/compress/s2"
+	"github.com/klauspost/compress/zstd"
+	"github.com/pierrec/lz4/v4"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -334,14 +341,20 @@ func (h *ProduceHandler) responseHasError(resp *kmsg.ProduceResponse) bool {
 
 // errInvalidRecordBatch indicates the record batch format is invalid.
 var errInvalidRecordBatch = errors.New("invalid record batch format")
+var errRecordBatchTooLarge = errors.New("record batch decompressed size exceeds limit")
+var errRecordBatchRequestTooLarge = errors.New("produce request decompressed size exceeds limit")
 
 // kafkaBatchMagicV2 is the magic byte for Kafka record batch format v2.
 const kafkaBatchMagicV2 = 2
 const kafkaBatchMinSize = 61
+const (
+	maxDecompressedBatchBytes   int64 = 8 * 1024 * 1024
+	maxDecompressedRequestBytes int64 = 32 * 1024 * 1024
+)
 
 var (
 	recordBatchCRCTable = crc32.MakeTable(crc32.Castagnoli)
-	batchDecompressor   = kgo.DefaultDecompressor()
+	xerialSnappyPrefix  = []byte{130, 83, 78, 65, 80, 80, 89, 0}
 )
 
 // parseRecordBatches extracts batch entries from raw Kafka record batch data.
@@ -356,6 +369,7 @@ func parseRecordBatches(data []byte) ([]wal.BatchEntry, uint32, int64, int64, er
 	var totalRecords uint32
 	var minTs, maxTs int64 = 0, 0
 	firstBatch := true
+	var totalDecompressed int64
 
 	offset := 0
 	for offset < len(data) {
@@ -401,10 +415,17 @@ func parseRecordBatches(data []byte) ([]wal.BatchEntry, uint32, int64, int64, er
 		if compression < kgo.CodecNone || compression > kgo.CodecZstd {
 			return nil, 0, 0, 0, errInvalidRecordBatch
 		}
-		if compression != kgo.CodecNone {
-			if _, err := batchDecompressor.Decompress(recordBatch.Records, compression); err != nil {
-				return nil, 0, 0, 0, errInvalidRecordBatch
+
+		decompressedBytes, err := decompressedRecordsSize(recordBatch.Records, compression, maxDecompressedBatchBytes)
+		if err != nil {
+			if errors.Is(err, errRecordBatchTooLarge) {
+				return nil, 0, 0, 0, err
 			}
+			return nil, 0, 0, 0, errInvalidRecordBatch
+		}
+		totalDecompressed += decompressedBytes
+		if totalDecompressed > maxDecompressedRequestBytes {
+			return nil, 0, 0, 0, errRecordBatchRequestTooLarge
 		}
 
 		if recordBatch.NumRecords < 0 {
@@ -438,6 +459,106 @@ func parseRecordBatches(data []byte) ([]wal.BatchEntry, uint32, int64, int64, er
 	}
 
 	return batches, totalRecords, minTs, maxTs, nil
+}
+
+func decompressedRecordsSize(records []byte, compression kgo.CompressionCodecType, limit int64) (int64, error) {
+	if compression == kgo.CodecNone {
+		size := int64(len(records))
+		if size > limit {
+			return 0, errRecordBatchTooLarge
+		}
+		return size, nil
+	}
+
+	switch compression {
+	case kgo.CodecGzip:
+		reader, err := gzip.NewReader(bytes.NewReader(records))
+		if err != nil {
+			return 0, err
+		}
+		defer reader.Close()
+		return readDecompressedSize(reader, limit)
+	case kgo.CodecLz4:
+		reader := lz4.NewReader(bytes.NewReader(records))
+		return readDecompressedSize(reader, limit)
+	case kgo.CodecZstd:
+		reader, err := zstd.NewReader(bytes.NewReader(records),
+			zstd.WithDecoderLowmem(true),
+			zstd.WithDecoderConcurrency(1),
+		)
+		if err != nil {
+			return 0, err
+		}
+		defer reader.Close()
+		return readDecompressedSize(reader, limit)
+	case kgo.CodecSnappy:
+		return snappyDecompressedSize(records, limit)
+	default:
+		return 0, errInvalidRecordBatch
+	}
+}
+
+func readDecompressedSize(reader io.Reader, limit int64) (int64, error) {
+	if limit <= 0 {
+		return 0, errRecordBatchTooLarge
+	}
+	buf := make([]byte, 32*1024)
+	var total int64
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			total += int64(n)
+			if total > limit {
+				return 0, errRecordBatchTooLarge
+			}
+		}
+		if err == io.EOF {
+			return total, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+}
+
+func snappyDecompressedSize(records []byte, limit int64) (int64, error) {
+	if len(records) > 16 && bytes.HasPrefix(records, xerialSnappyPrefix) {
+		return xerialDecodedLen(records, limit)
+	}
+
+	decodedLen, err := s2.DecodedLen(records)
+	if err != nil {
+		return 0, err
+	}
+	if int64(decodedLen) > limit {
+		return 0, errRecordBatchTooLarge
+	}
+	return int64(decodedLen), nil
+}
+
+func xerialDecodedLen(records []byte, limit int64) (int64, error) {
+	src := records[16:]
+	var total int64
+	for len(src) > 0 {
+		if len(src) < 4 {
+			return 0, errInvalidRecordBatch
+		}
+		size := int(binary.BigEndian.Uint32(src))
+		src = src[4:]
+		if size <= 0 || len(src) < size {
+			return 0, errInvalidRecordBatch
+		}
+		decodedLen, err := s2.DecodedLen(src[:size])
+		if err != nil {
+			return 0, err
+		}
+		total += int64(decodedLen)
+		if total > limit {
+			return 0, errRecordBatchTooLarge
+		}
+		src = src[size:]
+	}
+	return total, nil
 }
 
 // extractProducerId extracts the producer ID from record batch data.
