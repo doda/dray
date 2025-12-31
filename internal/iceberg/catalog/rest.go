@@ -691,13 +691,13 @@ type loadTableResponse struct {
 }
 
 type createTableRequest struct {
-	Name          string             `json:"name"`
-	Location      string             `json:"location,omitempty"`
-	Schema        IcebergSchema      `json:"schema"`
+	Name          string                `json:"name"`
+	Location      string                `json:"location,omitempty"`
+	Schema        IcebergSchema         `json:"schema"`
 	PartitionSpec *IcebergPartitionSpec `json:"partition-spec,omitempty"`
-	WriteOrder    *IcebergSortOrder  `json:"write-order,omitempty"`
-	StageCreate   bool               `json:"stage-create,omitempty"`
-	Properties    map[string]string  `json:"properties,omitempty"`
+	WriteOrder    *IcebergSortOrder     `json:"write-order,omitempty"`
+	StageCreate   bool                  `json:"stage-create,omitempty"`
+	Properties    map[string]string     `json:"properties,omitempty"`
 }
 
 type commitTableRequest struct {

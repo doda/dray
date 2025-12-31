@@ -8,22 +8,22 @@ import (
 // TableMetadata represents the Iceberg table metadata stored in JSON format.
 // This follows the Iceberg Table Metadata spec (v1/v2).
 type TableMetadata struct {
-	FormatVersion      int                `json:"format-version"`
-	TableUUID          string             `json:"table-uuid"`
-	Location           string             `json:"location"`
-	LastUpdatedMs      int64              `json:"last-updated-ms"`
-	LastColumnID       int32              `json:"last-column-id"`
-	Schemas            []IcebergSchema    `json:"schemas"`
-	CurrentSchemaID    int32              `json:"current-schema-id"`
+	FormatVersion      int                    `json:"format-version"`
+	TableUUID          string                 `json:"table-uuid"`
+	Location           string                 `json:"location"`
+	LastUpdatedMs      int64                  `json:"last-updated-ms"`
+	LastColumnID       int32                  `json:"last-column-id"`
+	Schemas            []IcebergSchema        `json:"schemas"`
+	CurrentSchemaID    int32                  `json:"current-schema-id"`
 	PartitionSpecs     []IcebergPartitionSpec `json:"partition-specs"`
-	DefaultSpecID      int32              `json:"default-spec-id"`
-	LastPartitionID    int32              `json:"last-partition-id"`
-	Properties         map[string]string  `json:"properties,omitempty"`
-	CurrentSnapshotID  *int64             `json:"current-snapshot-id,omitempty"`
-	Snapshots          []IcebergSnapshot  `json:"snapshots,omitempty"`
-	SnapshotLog        []SnapshotLogEntry `json:"snapshot-log,omitempty"`
-	SortOrders         []IcebergSortOrder `json:"sort-orders,omitempty"`
-	DefaultSortOrderID int32              `json:"default-sort-order-id"`
+	DefaultSpecID      int32                  `json:"default-spec-id"`
+	LastPartitionID    int32                  `json:"last-partition-id"`
+	Properties         map[string]string      `json:"properties,omitempty"`
+	CurrentSnapshotID  *int64                 `json:"current-snapshot-id,omitempty"`
+	Snapshots          []IcebergSnapshot      `json:"snapshots,omitempty"`
+	SnapshotLog        []SnapshotLogEntry     `json:"snapshot-log,omitempty"`
+	SortOrders         []IcebergSortOrder     `json:"sort-orders,omitempty"`
+	DefaultSortOrderID int32                  `json:"default-sort-order-id"`
 }
 
 type IcebergSchema struct {
@@ -42,7 +42,7 @@ type IcebergField struct {
 }
 
 type IcebergPartitionSpec struct {
-	SpecID int32                  `json:"spec-id"`
+	SpecID int32                   `json:"spec-id"`
 	Fields []IcebergPartitionField `json:"fields"`
 }
 
@@ -69,7 +69,7 @@ type SnapshotLogEntry struct {
 }
 
 type IcebergSortOrder struct {
-	OrderID int32             `json:"order-id"`
+	OrderID int32              `json:"order-id"`
 	Fields  []IcebergSortField `json:"fields"`
 }
 
