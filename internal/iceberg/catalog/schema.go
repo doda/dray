@@ -77,9 +77,9 @@ func DefaultSchema() Schema {
 			{
 				ID:       FieldIDHeaders,
 				Name:     "headers",
-				Type:     "list<struct<key:string,value:binary>>",
+				Type:     TypeString,
 				Required: false,
-				Doc:      "Record headers as ordered list (duplicate keys allowed)",
+				Doc:      "Record headers as JSON string",
 			},
 			{
 				ID:       FieldIDProducerID,

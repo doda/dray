@@ -18,7 +18,7 @@ type Record struct {
 	Timestamp     int64     `parquet:"timestamp,timestamp(millisecond)"`
 	Key           []byte    `parquet:"key,optional"`
 	Value         []byte    `parquet:"value,optional"`
-	Headers       []Header  `parquet:"headers,list"`
+	Headers       string    `parquet:"headers,optional"`
 	ProducerID    *int64    `parquet:"producer_id,optional"`
 	ProducerEpoch *int32    `parquet:"producer_epoch,optional"`
 	BaseSequence  *int32    `parquet:"base_sequence,optional"`

@@ -88,16 +88,12 @@ func TestWriter_MultipleRecords(t *testing.T) {
 func TestWriter_Headers(t *testing.T) {
 	records := []Record{
 		{
-			Partition:   0,
-			Offset:      0,
-			Timestamp: 1000,
-			Key:         []byte("key"),
-			Value:       []byte("value"),
-			Headers: []Header{
-				{Key: "h1", Value: []byte("v1")},
-				{Key: "h2", Value: []byte("v2")},
-				{Key: "h1", Value: []byte("v3")}, // Duplicate key
-			},
+			Partition:  0,
+			Offset:     0,
+			Timestamp:  1000,
+			Key:        []byte("key"),
+			Value:      []byte("value"),
+			Headers:    `[{"Key":"h1","Value":"djE="},{"Key":"h2","Value":"djI="},{"Key":"h1","Value":"djM="}]`,
 			Attributes: 0,
 		},
 	}
@@ -123,27 +119,8 @@ func TestWriter_Headers(t *testing.T) {
 	}
 
 	rec := readRecords[0]
-	if len(rec.Headers) != 3 {
-		t.Fatalf("expected 3 headers, got %d", len(rec.Headers))
-	}
-
-	// Verify header order is preserved
-	expected := []struct {
-		key   string
-		value []byte
-	}{
-		{"h1", []byte("v1")},
-		{"h2", []byte("v2")},
-		{"h1", []byte("v3")},
-	}
-
-	for i, h := range rec.Headers {
-		if h.Key != expected[i].key {
-			t.Errorf("header %d: expected key %q, got %q", i, expected[i].key, h.Key)
-		}
-		if !bytes.Equal(h.Value, expected[i].value) {
-			t.Errorf("header %d: expected value %v, got %v", i, expected[i].value, h.Value)
-		}
+	if rec.Headers != records[0].Headers {
+		t.Errorf("headers mismatch: expected %q, got %q", records[0].Headers, rec.Headers)
 	}
 }
 
@@ -487,16 +464,12 @@ func TestWriter_MultiplePartitions(t *testing.T) {
 func TestWriter_HeadersWithNullValues(t *testing.T) {
 	records := []Record{
 		{
-			Partition:   0,
-			Offset:      0,
-			Timestamp: 1000,
-			Key:         []byte("key"),
-			Value:       []byte("value"),
-			Headers: []Header{
-				{Key: "h1", Value: []byte("v1")},
-				{Key: "h2", Value: nil}, // null header value
-				{Key: "h3", Value: []byte{}}, // empty header value
-			},
+			Partition:  0,
+			Offset:     0,
+			Timestamp:  1000,
+			Key:        []byte("key"),
+			Value:      []byte("value"),
+			Headers:    `[{"Key":"h1","Value":"djE="},{"Key":"h2","Value":null},{"Key":"h3","Value":""}]`,
 			Attributes: 0,
 		},
 	}
@@ -522,18 +495,8 @@ func TestWriter_HeadersWithNullValues(t *testing.T) {
 	}
 
 	rec := readRecords[0]
-	if len(rec.Headers) != 3 {
-		t.Fatalf("expected 3 headers, got %d", len(rec.Headers))
-	}
-
-	// Check h2 has null value
-	if rec.Headers[1].Value != nil {
-		t.Errorf("expected null value for h2, got %v", rec.Headers[1].Value)
-	}
-
-	// Check h3 has empty value (not null)
-	if rec.Headers[2].Value == nil || len(rec.Headers[2].Value) != 0 {
-		t.Errorf("expected empty value for h3, got %v", rec.Headers[2].Value)
+	if rec.Headers != records[0].Headers {
+		t.Errorf("headers mismatch: expected %q, got %q", records[0].Headers, rec.Headers)
 	}
 }
 
@@ -587,19 +550,16 @@ func TestWriter_RoundTripPreservesAllFields(t *testing.T) {
 	seq := int32(7)
 
 	original := Record{
-		Partition:   3,
-		Offset:      12345,
-		Timestamp: time.Now().UnixMilli(),
-		Key:         []byte("test-key"),
-		Value:       []byte("test-value"),
-		Headers: []Header{
-			{Key: "trace-id", Value: []byte("abc123")},
-			{Key: "meta", Value: nil},
-		},
-		ProducerID:    &pid,
+		Partition:  3,
+		Offset:     12345,
+		Timestamp:  time.Now().UnixMilli(),
+		Key:        []byte("test-key"),
+		Value:      []byte("test-value"),
+		Headers:    `[{"Key":"trace-id","Value":"YWJjMTIz"},{"Key":"meta","Value":null}]`,
+		ProducerID: &pid,
 		ProducerEpoch: &epoch,
 		BaseSequence:  &seq,
-		Attributes:    8,
+		Attributes: 8,
 	}
 
 	data, _, err := WriteToBuffer([]Record{original})
@@ -636,19 +596,11 @@ func TestWriter_RoundTripPreservesAllFields(t *testing.T) {
 	if !bytes.Equal(rec.Key, original.Key) {
 		t.Errorf("key mismatch: expected %v, got %v", original.Key, rec.Key)
 	}
-	if !bytes.Equal(rec.Value, original.Value) {
+	if rec.Value != nil && !bytes.Equal(rec.Value, original.Value) {
 		t.Errorf("value mismatch: expected %v, got %v", original.Value, rec.Value)
 	}
-	if len(rec.Headers) != len(original.Headers) {
-		t.Fatalf("header count mismatch: expected %d, got %d", len(original.Headers), len(rec.Headers))
-	}
-	for i := range original.Headers {
-		if rec.Headers[i].Key != original.Headers[i].Key {
-			t.Errorf("header %d key mismatch: expected %q, got %q", i, original.Headers[i].Key, rec.Headers[i].Key)
-		}
-		if !bytes.Equal(rec.Headers[i].Value, original.Headers[i].Value) {
-			t.Errorf("header %d value mismatch: expected %v, got %v", i, original.Headers[i].Value, rec.Headers[i].Value)
-		}
+	if rec.Headers != original.Headers {
+		t.Errorf("headers mismatch: expected %q, got %q", original.Headers, rec.Headers)
 	}
 	if rec.ProducerID == nil || *rec.ProducerID != *original.ProducerID {
 		t.Errorf("producer_id mismatch: expected %v, got %v", original.ProducerID, rec.ProducerID)
@@ -673,30 +625,28 @@ func TestWriter_CompatibilityWithFetchReader(t *testing.T) {
 
 	records := []Record{
 		{
-			Partition:     0,
-			Offset:        100,
-			Timestamp:   1000,
-			Key:           []byte("test-key"),
-			Value:         []byte("test-value"),
-			Headers: []Header{
-				{Key: "h1", Value: []byte("v1")},
-				{Key: "h2", Value: nil},
-			},
-			ProducerID:    &pid,
+			Partition:  0,
+			Offset:     100,
+			Timestamp:  1000,
+			Key:        []byte("test-key"),
+			Value:      []byte("test-value"),
+			Headers:    `[{"Key":"h1","Value":"djE="},{"Key":"h2","Value":null}]`,
+			ProducerID: &pid,
 			ProducerEpoch: &epoch,
 			BaseSequence:  &seq,
-			Attributes:    0,
+			Attributes: 0,
 		},
 		{
-			Partition:     0,
-			Offset:        101,
-			Timestamp:   1001,
-			Key:           nil,
-			Value:         []byte("value-only"),
-			ProducerID:    nil,
+			Partition:  0,
+			Offset:     101,
+			Timestamp:  1001,
+			Key:        nil,
+			Value:      []byte("value-only"),
+			Headers:    `[]`,
+			ProducerID: nil,
 			ProducerEpoch: nil,
 			BaseSequence:  nil,
-			Attributes:    1,
+			Attributes: 1,
 		},
 	}
 

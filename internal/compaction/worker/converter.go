@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -407,6 +408,15 @@ func parseRecord(data []byte, partition int32, offset int64, firstTimestamp int6
 		return Record{}, 0, fmt.Errorf("record length mismatch: expected %d, consumed %d", recordLen, bytesConsumed)
 	}
 
+	// Serialize headers to JSON for simplified schema
+	headersJSON := "[]"
+	if len(headers) > 0 {
+		hData, err := json.Marshal(headers)
+		if err == nil {
+			headersJSON = string(hData)
+		}
+	}
+
 	// Build the Record for Parquet
 	rec := Record{
 		Partition:  partition,
@@ -414,7 +424,7 @@ func parseRecord(data []byte, partition int32, offset int64, firstTimestamp int6
 		Timestamp:  firstTimestamp + timestampDelta,
 		Key:        key,
 		Value:      value,
-		Headers:    headers,
+		Headers:    headersJSON,
 		Attributes: int32(batchAttributes),
 	}
 

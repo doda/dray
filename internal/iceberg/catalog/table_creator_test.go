@@ -384,7 +384,7 @@ func TestTableCreator_SchemaCompliance(t *testing.T) {
 		{"timestamp_ms", "long", true},
 		{"key", "binary", false},
 		{"value", "binary", false},
-		{"headers", "list<struct<key:string,value:binary>>", false},
+		{"headers", "string", false},
 		{"producer_id", "long", false},
 		{"producer_epoch", "int", false},
 		{"base_sequence", "int", false},
