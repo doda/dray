@@ -13,6 +13,7 @@ import (
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
+	metaoxia "github.com/dray-io/dray/internal/metadata/oxia"
 	"github.com/dray-io/dray/internal/objectstore"
 	"github.com/dray-io/dray/internal/objectstore/s3"
 	"github.com/dray-io/dray/internal/server"
@@ -83,8 +84,17 @@ func (c *Compactor) Start(ctx context.Context) error {
 		"version":     c.opts.Version,
 	})
 
-	// Initialize metadata store (mock for now until Oxia is connected)
-	c.metaStore = metadata.NewMockStore()
+	// Initialize metadata store (Oxia)
+	oxiaStore, err := metaoxia.New(ctx, metaoxia.Config{
+		ServiceAddress: cfg.Metadata.OxiaEndpoint,
+		Namespace:      cfg.OxiaNamespace(),
+		RequestTimeout: 30 * time.Second,
+		SessionTimeout: 15 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create Oxia metadata store: %w", err)
+	}
+	c.metaStore = oxiaStore
 
 	if cfg.Compaction.Enabled {
 		if cfg.ObjectStore.Bucket == "" {
