@@ -17,11 +17,8 @@ func TestNewRestCatalog(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "valid config",
-			config: RestCatalogConfig{
-				URI:       "http://localhost:8181",
-				Warehouse: "s3://bucket/warehouse",
-			},
+			name:    "valid config",
+			config:  RestCatalogConfig{URI: "http://localhost:8181", Warehouse: "s3://bucket/warehouse"},
 			wantErr: false,
 		},
 		{
@@ -30,10 +27,8 @@ func TestNewRestCatalog(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "URI without scheme",
-			config: RestCatalogConfig{
-				URI: "localhost:8181",
-			},
+			name:    "URI without scheme",
+			config:  RestCatalogConfig{URI: "localhost:8181"},
 			wantErr: false,
 		},
 	}
@@ -54,32 +49,32 @@ func TestNewRestCatalog(t *testing.T) {
 func TestRestCatalog_LoadTable(t *testing.T) {
 	tableResp := loadTableResponse{
 		MetadataLocation: "s3://bucket/warehouse/test_table/metadata/v1.metadata.json",
-		Metadata: tableMetadata{
+		Metadata: TableMetadata{
 			FormatVersion:   2,
 			TableUUID:       "test-uuid-1234",
 			Location:        "s3://bucket/warehouse/test_table",
 			LastUpdatedMs:   1234567890000,
 			LastColumnID:    10,
 			CurrentSchemaID: 0,
-			Schemas: []apiSchema{
+			Schemas: []IcebergSchema{
 				{
 					Type:     "struct",
 					SchemaID: 0,
-					Fields: []apiField{
+					Fields: []IcebergField{
 						{ID: 1, Name: "id", Required: true, Type: "long"},
 						{ID: 2, Name: "data", Required: false, Type: "string"},
 					},
 				},
 			},
-			PartitionSpecs: []apiPartitionSpec{
-				{SpecID: 0, Fields: []apiPartitionField{}},
+			PartitionSpecs: []IcebergPartitionSpec{
+				{SpecID: 0, Fields: []IcebergPartitionField{}},
 			},
 			Properties: map[string]string{
 				"dray.topic":      "test-topic",
 				"dray.cluster_id": "cluster-1",
 			},
 			CurrentSnapshotID: ptr(int64(1000)),
-			Snapshots: []apiSnapshot{
+			Snapshots: []IcebergSnapshot{
 				{
 					SnapshotID:     1000,
 					SequenceNumber: 1,
@@ -199,13 +194,13 @@ func TestRestCatalog_CreateTable(t *testing.T) {
 
 			resp := loadTableResponse{
 				MetadataLocation: "s3://bucket/new_table/metadata/v1.metadata.json",
-				Metadata: tableMetadata{
+				Metadata: TableMetadata{
 					FormatVersion:   2,
 					TableUUID:       "new-uuid",
 					Location:        "s3://bucket/new_table",
 					CurrentSchemaID: 0,
-					Schemas: []apiSchema{
-						{SchemaID: 0, Type: "struct", Fields: []apiField{}},
+					Schemas: []IcebergSchema{
+						{SchemaID: 0, Type: "struct", Fields: []IcebergField{}},
 					},
 				},
 			}
@@ -244,11 +239,11 @@ func TestRestCatalog_CreateTableIfMissing_ExistingTable(t *testing.T) {
 		if r.Method == "GET" {
 			getCalled++
 			resp := loadTableResponse{
-				Metadata: tableMetadata{
+				Metadata: TableMetadata{
 					FormatVersion: 2,
 					TableUUID:     "existing-uuid",
 					Location:      "s3://bucket/existing",
-					Schemas:       []apiSchema{{SchemaID: 0, Type: "struct", Fields: []apiField{}}},
+					Schemas:       []IcebergSchema{{SchemaID: 0, Type: "struct", Fields: []IcebergField{}}},
 				},
 			}
 			json.NewEncoder(w).Encode(resp)
@@ -351,9 +346,9 @@ func TestRestCatalog_TableExists(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if tt.statusCode == http.StatusOK {
 					resp := loadTableResponse{
-						Metadata: tableMetadata{
+						Metadata: TableMetadata{
 							FormatVersion: 2,
-							Schemas:       []apiSchema{{SchemaID: 0, Type: "struct"}},
+							Schemas:       []IcebergSchema{{SchemaID: 0, Type: "struct"}},
 						},
 					}
 					json.NewEncoder(w).Encode(resp)
@@ -388,9 +383,9 @@ func TestRestCatalog_BasicAuth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader = r.Header.Get("Authorization")
 		resp := loadTableResponse{
-			Metadata: tableMetadata{
+			Metadata: TableMetadata{
 				FormatVersion: 2,
-				Schemas:       []apiSchema{{SchemaID: 0, Type: "struct"}},
+				Schemas:       []IcebergSchema{{SchemaID: 0, Type: "struct"}},
 			},
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -419,9 +414,9 @@ func TestRestCatalog_BearerAuth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader = r.Header.Get("Authorization")
 		resp := loadTableResponse{
-			Metadata: tableMetadata{
+			Metadata: TableMetadata{
 				FormatVersion: 2,
-				Schemas:       []apiSchema{{SchemaID: 0, Type: "struct"}},
+				Schemas:       []IcebergSchema{{SchemaID: 0, Type: "struct"}},
 			},
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -467,9 +462,9 @@ func TestRestCatalog_OAuth(t *testing.T) {
 
 		authHeader = r.Header.Get("Authorization")
 		resp := loadTableResponse{
-			Metadata: tableMetadata{
+			Metadata: TableMetadata{
 				FormatVersion: 2,
-				Schemas:       []apiSchema{{SchemaID: 0, Type: "struct"}},
+				Schemas:       []IcebergSchema{{SchemaID: 0, Type: "struct"}},
 			},
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -499,11 +494,11 @@ func TestRestCatalog_CommitConflict(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			resp := loadTableResponse{
-				Metadata: tableMetadata{
+				Metadata: TableMetadata{
 					FormatVersion:     2,
 					CurrentSnapshotID: ptr(int64(1)),
-					Schemas:           []apiSchema{{SchemaID: 0, Type: "struct"}},
-					Snapshots:         []apiSnapshot{{SnapshotID: 1}},
+					Schemas:           []IcebergSchema{{SchemaID: 0, Type: "struct"}},
+					Snapshots:         []IcebergSnapshot{{SnapshotID: 1}},
 				},
 			}
 			json.NewEncoder(w).Encode(resp)
@@ -512,9 +507,7 @@ func TestRestCatalog_CommitConflict(t *testing.T) {
 		if r.Method == "POST" {
 			w.WriteHeader(http.StatusConflict)
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"error": map[string]interface{}{
-					"message": "Commit conflict: snapshot was updated",
-				},
+				"error": map[string]interface{}{"message": "Commit conflict: snapshot was updated"},
 			})
 		}
 	}))
@@ -541,18 +534,18 @@ func TestRestCatalog_CommitConflict(t *testing.T) {
 
 func TestRestCatalog_AppendFiles(t *testing.T) {
 	commitCalled := false
-	var receivedDataFiles []apiDataFile
+	var receivedDataFiles []IcebergDataFile
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			resp := loadTableResponse{
-				Metadata: tableMetadata{
+				Metadata: TableMetadata{
 					FormatVersion:     2,
 					CurrentSchemaID:   0,
 					DefaultSpecID:     0,
 					CurrentSnapshotID: ptr(int64(1000)),
-					Schemas:           []apiSchema{{SchemaID: 0, Type: "struct"}},
-					Snapshots: []apiSnapshot{
+					Schemas:           []IcebergSchema{{SchemaID: 0, Type: "struct"}},
+					Snapshots: []IcebergSnapshot{
 						{SnapshotID: 1000, SequenceNumber: 1, TimestampMs: 1000},
 					},
 				},
@@ -584,11 +577,11 @@ func TestRestCatalog_AppendFiles(t *testing.T) {
 			}
 
 			resp := loadTableResponse{
-				Metadata: tableMetadata{
+				Metadata: TableMetadata{
 					FormatVersion:     2,
 					CurrentSnapshotID: ptr(int64(2000)),
-					Schemas:           []apiSchema{{SchemaID: 0, Type: "struct"}},
-					Snapshots: []apiSnapshot{
+					Schemas:           []IcebergSchema{{SchemaID: 0, Type: "struct"}},
+					Snapshots: []IcebergSnapshot{
 						{SnapshotID: 1000, SequenceNumber: 1, TimestampMs: 1000},
 						{SnapshotID: 2000, SequenceNumber: 2, TimestampMs: 2000, Summary: map[string]string{"operation": "append"}},
 					},
@@ -657,11 +650,11 @@ func TestRestCatalog_AppendFiles(t *testing.T) {
 func TestRestTable_CurrentSnapshot_NoSnapshot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := loadTableResponse{
-			Metadata: tableMetadata{
+			Metadata: TableMetadata{
 				FormatVersion:     2,
 				CurrentSnapshotID: nil, // No snapshot
-				Schemas:           []apiSchema{{SchemaID: 0, Type: "struct"}},
-				Snapshots:         []apiSnapshot{},
+				Schemas:           []IcebergSchema{{SchemaID: 0, Type: "struct"}},
+				Snapshots:         []IcebergSnapshot{},
 			},
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -690,11 +683,11 @@ func TestRestTable_Refresh(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		resp := loadTableResponse{
-			Metadata: tableMetadata{
+			Metadata: TableMetadata{
 				FormatVersion:     2,
 				CurrentSnapshotID: ptr(int64(callCount * 1000)),
-				Schemas:           []apiSchema{{SchemaID: 0, Type: "struct"}},
-				Snapshots: []apiSnapshot{
+				Schemas:           []IcebergSchema{{SchemaID: 0, Type: "struct"}},
+				Snapshots: []IcebergSnapshot{
 					{SnapshotID: int64(callCount * 1000)},
 				},
 			},
@@ -731,9 +724,9 @@ func TestRestCatalog_Prefix(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestedPath = r.URL.Path
 		resp := loadTableResponse{
-			Metadata: tableMetadata{
+			Metadata: TableMetadata{
 				FormatVersion: 2,
-				Schemas:       []apiSchema{{SchemaID: 0, Type: "struct"}},
+				Schemas:       []IcebergSchema{{SchemaID: 0, Type: "struct"}},
 			},
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -780,7 +773,7 @@ func TestRestCatalog_Timeout(t *testing.T) {
 
 func TestSchemaConversion(t *testing.T) {
 	schema := DefaultSchema()
-	apiSchema := schemaToAPI(schema)
+	apiSchema := schemaToIceberg(schema)
 
 	if apiSchema.Type != "struct" {
 		t.Errorf("Expected type 'struct', got %s", apiSchema.Type)
@@ -789,7 +782,7 @@ func TestSchemaConversion(t *testing.T) {
 		t.Errorf("Expected %d fields, got %d", len(schema.Fields), len(apiSchema.Fields))
 	}
 
-	converted := schemaFromAPI(apiSchema)
+	converted := schemaFromIceberg(apiSchema)
 	if len(converted.Fields) != len(schema.Fields) {
 		t.Errorf("Round-trip failed: expected %d fields, got %d", len(schema.Fields), len(converted.Fields))
 	}
@@ -806,7 +799,7 @@ func TestSchemaConversion(t *testing.T) {
 
 func TestPartitionSpecConversion(t *testing.T) {
 	spec := DefaultPartitionSpec()
-	apiSpec := partitionSpecToAPI(&spec)
+	apiSpec := partitionSpecToIceberg(&spec)
 
 	if apiSpec.SpecID != spec.SpecID {
 		t.Errorf("Expected spec ID %d, got %d", spec.SpecID, apiSpec.SpecID)
@@ -820,7 +813,7 @@ func TestPartitionSpecConversion(t *testing.T) {
 }
 
 func TestSnapshotConversion(t *testing.T) {
-	apiSnap := apiSnapshot{
+	apiSnap := IcebergSnapshot{
 		SnapshotID:       12345,
 		ParentSnapshotID: ptr(int64(12344)),
 		SequenceNumber:   5,
@@ -833,7 +826,7 @@ func TestSnapshotConversion(t *testing.T) {
 		},
 	}
 
-	snap := snapshotFromAPI(apiSnap)
+	snap := snapshotFromIceberg(apiSnap)
 
 	if snap.SnapshotID != 12345 {
 		t.Errorf("Expected snapshot ID 12345, got %d", snap.SnapshotID)
@@ -866,7 +859,7 @@ func TestDataFileConversion(t *testing.T) {
 		SortOrderID:    &sortOrderID,
 	}
 
-	api := dataFileToAPI(dataFile, 0, 10)
+	api := dataFileToIceberg(dataFile, 0, 10)
 
 	// Verify basic fields
 	if api.FilePath != dataFile.Path {
@@ -942,7 +935,7 @@ func TestDataFileConversion_PartitionZero(t *testing.T) {
 		FileSizeBytes:  2048,
 	}
 
-	api := dataFileToAPI(dataFile, 0, 1)
+	api := dataFileToIceberg(dataFile, 0, 1)
 
 	// Verify partition value 0 is explicitly included, not omitted
 	if api.Partition == nil {

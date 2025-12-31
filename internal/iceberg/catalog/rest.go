@@ -4,7 +4,6 @@ package catalog
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -355,11 +354,11 @@ func (c *RestCatalog) CreateTableIfMissing(ctx context.Context, identifier Table
 
 	req := createTableRequest{
 		Name:          identifier.Name,
-		Schema:        schemaToAPI(opts.Schema),
+		Schema:        schemaToIceberg(opts.Schema),
 		Properties:    opts.Properties,
 		Location:      opts.Location,
 		StageCreate:   false,
-		PartitionSpec: partitionSpecToAPI(opts.PartitionSpec),
+		PartitionSpec: partitionSpecToIceberg(opts.PartitionSpec),
 	}
 
 	var resp loadTableResponse
@@ -455,7 +454,7 @@ func (c *RestCatalog) parseTableResponse(resp *loadTableResponse, identifier Tab
 type restTable struct {
 	catalog    *RestCatalog
 	identifier TableIdentifier
-	metadata   tableMetadata
+	metadata   TableMetadata
 	config     map[string]string
 	mu         sync.RWMutex
 }
@@ -474,11 +473,11 @@ func (t *restTable) Schema() Schema {
 
 	for _, s := range t.metadata.Schemas {
 		if s.SchemaID == t.metadata.CurrentSchemaID {
-			return schemaFromAPI(s)
+			return schemaFromIceberg(s)
 		}
 	}
 
-	return schemaFromAPI(t.metadata.Schemas[0])
+	return schemaFromIceberg(t.metadata.Schemas[0])
 }
 
 func (t *restTable) CurrentSnapshot(ctx context.Context) (*Snapshot, error) {
@@ -493,7 +492,7 @@ func (t *restTable) CurrentSnapshot(ctx context.Context) (*Snapshot, error) {
 
 	for _, snap := range snapshots {
 		if snap.SnapshotID == *currentID {
-			return snapshotFromAPI(snap), nil
+			return snapshotFromIceberg(snap), nil
 		}
 	}
 
@@ -506,7 +505,7 @@ func (t *restTable) Snapshots(ctx context.Context) ([]Snapshot, error) {
 
 	result := make([]Snapshot, len(t.metadata.Snapshots))
 	for i, snap := range t.metadata.Snapshots {
-		result[i] = *snapshotFromAPI(snap)
+		result[i] = *snapshotFromIceberg(snap)
 	}
 
 	return result, nil
@@ -578,9 +577,9 @@ func (t *restTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 	}
 
 	// Convert DataFiles to API format
-	apiDataFiles := make([]apiDataFile, len(files))
+	apiDataFiles := make([]IcebergDataFile, len(files))
 	for i, f := range files {
-		apiDataFiles[i] = dataFileToAPI(f, specID, seqNum)
+		apiDataFiles[i] = dataFileToIceberg(f, specID, seqNum)
 	}
 
 	// Build updates using append-files action which includes data files directly
@@ -595,7 +594,7 @@ func (t *restTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 	// For servers that require explicit snapshot management, we also include
 	// the snapshot update. Most REST catalog servers handle this automatically
 	// with append-files, but we include both for compatibility.
-	snapshot := apiSnapshot{
+	snapshot := IcebergSnapshot{
 		SnapshotID:       snapshotID,
 		ParentSnapshotID: parentSnapshotID,
 		SequenceNumber:   seqNum,
@@ -687,89 +686,16 @@ func (t *restTable) Refresh(ctx context.Context) error {
 
 type loadTableResponse struct {
 	MetadataLocation string            `json:"metadata-location"`
-	Metadata         tableMetadata     `json:"metadata"`
+	Metadata         TableMetadata     `json:"metadata"`
 	Config           map[string]string `json:"config,omitempty"`
-}
-
-type tableMetadata struct {
-	FormatVersion     int                `json:"format-version"`
-	TableUUID         string             `json:"table-uuid"`
-	Location          string             `json:"location"`
-	LastUpdatedMs     int64              `json:"last-updated-ms"`
-	LastColumnID      int32              `json:"last-column-id"`
-	Schemas           []apiSchema        `json:"schemas"`
-	CurrentSchemaID   int32              `json:"current-schema-id"`
-	PartitionSpecs    []apiPartitionSpec `json:"partition-specs"`
-	DefaultSpecID     int32              `json:"default-spec-id"`
-	LastPartitionID   int32              `json:"last-partition-id"`
-	Properties        map[string]string  `json:"properties,omitempty"`
-	CurrentSnapshotID *int64             `json:"current-snapshot-id,omitempty"`
-	Snapshots         []apiSnapshot      `json:"snapshots,omitempty"`
-	SnapshotLog       []snapshotLogEntry `json:"snapshot-log,omitempty"`
-	SortOrders        []apiSortOrder     `json:"sort-orders,omitempty"`
-	DefaultSortOrderID int32             `json:"default-sort-order-id"`
-}
-
-type apiSchema struct {
-	Type               string     `json:"type"`
-	SchemaID           int32      `json:"schema-id"`
-	Fields             []apiField `json:"fields"`
-	IdentifierFieldIDs []int32    `json:"identifier-field-ids,omitempty"`
-}
-
-type apiField struct {
-	ID       int32  `json:"id"`
-	Name     string `json:"name"`
-	Required bool   `json:"required"`
-	Type     string `json:"type"`
-	Doc      string `json:"doc,omitempty"`
-}
-
-type apiPartitionSpec struct {
-	SpecID int32               `json:"spec-id"`
-	Fields []apiPartitionField `json:"fields"`
-}
-
-type apiPartitionField struct {
-	SourceID  int32  `json:"source-id"`
-	FieldID   int32  `json:"field-id"`
-	Name      string `json:"name"`
-	Transform string `json:"transform"`
-}
-
-type apiSnapshot struct {
-	SnapshotID       int64             `json:"snapshot-id"`
-	ParentSnapshotID *int64            `json:"parent-snapshot-id,omitempty"`
-	SequenceNumber   int64             `json:"sequence-number"`
-	TimestampMs      int64             `json:"timestamp-ms"`
-	ManifestList     string            `json:"manifest-list,omitempty"`
-	Summary          map[string]string `json:"summary,omitempty"`
-	SchemaID         *int32            `json:"schema-id,omitempty"`
-}
-
-type snapshotLogEntry struct {
-	TimestampMs int64 `json:"timestamp-ms"`
-	SnapshotID  int64 `json:"snapshot-id"`
-}
-
-type apiSortOrder struct {
-	OrderID int32          `json:"order-id"`
-	Fields  []apiSortField `json:"fields"`
-}
-
-type apiSortField struct {
-	Transform    string `json:"transform"`
-	SourceID     int32  `json:"source-id"`
-	Direction    string `json:"direction"`
-	NullOrder    string `json:"null-order"`
 }
 
 type createTableRequest struct {
 	Name          string             `json:"name"`
 	Location      string             `json:"location,omitempty"`
-	Schema        apiSchema          `json:"schema"`
-	PartitionSpec *apiPartitionSpec  `json:"partition-spec,omitempty"`
-	WriteOrder    *apiSortOrder      `json:"write-order,omitempty"`
+	Schema        IcebergSchema      `json:"schema"`
+	PartitionSpec *IcebergPartitionSpec `json:"partition-spec,omitempty"`
+	WriteOrder    *IcebergSortOrder  `json:"write-order,omitempty"`
 	StageCreate   bool               `json:"stage-create,omitempty"`
 	Properties    map[string]string  `json:"properties,omitempty"`
 }
@@ -786,198 +712,10 @@ type tableRequirement struct {
 }
 
 type tableUpdate struct {
-	Action     string        `json:"action"`
-	Snapshot   *apiSnapshot  `json:"snapshot,omitempty"`
-	RefName    string        `json:"ref-name,omitempty"`
-	RefType    string        `json:"type,omitempty"`
-	SnapshotID *int64        `json:"snapshot-id,omitempty"`
-	DataFiles  []apiDataFile `json:"data-files,omitempty"`
-}
-
-// apiDataFile represents a data file in the Iceberg REST API format.
-// This follows the Iceberg spec for DataFile in manifest entries.
-type apiDataFile struct {
-	// Content type: 0=DATA, 1=POSITION_DELETES, 2=EQUALITY_DELETES
-	Content int `json:"content"`
-
-	// FilePath is the full path to the data file
-	FilePath string `json:"file-path"`
-
-	// FileFormat: AVRO, ORC, PARQUET
-	FileFormat string `json:"file-format"`
-
-	// PartitionData for identity partitions
-	Partition map[string]interface{} `json:"partition,omitempty"`
-
-	// RecordCount is the number of records in the file
-	RecordCount int64 `json:"record-count"`
-
-	// FileSizeInBytes is the total file size
-	FileSizeInBytes int64 `json:"file-size-in-bytes"`
-
-	// ColumnSizes maps field ID to column size in bytes
-	ColumnSizes map[string]int64 `json:"column-sizes,omitempty"`
-
-	// ValueCounts maps field ID to value count
-	ValueCounts map[string]int64 `json:"value-counts,omitempty"`
-
-	// NullValueCounts maps field ID to null value count
-	NullValueCounts map[string]int64 `json:"null-value-counts,omitempty"`
-
-	// NanValueCounts maps field ID to NaN value count
-	NanValueCounts map[string]int64 `json:"nan-value-counts,omitempty"`
-
-	// LowerBounds maps field ID to lower bound (base64 encoded)
-	LowerBounds map[string]string `json:"lower-bounds,omitempty"`
-
-	// UpperBounds maps field ID to upper bound (base64 encoded)
-	UpperBounds map[string]string `json:"upper-bounds,omitempty"`
-
-	// SplitOffsets for efficient parallel reads
-	SplitOffsets []int64 `json:"split-offsets,omitempty"`
-
-	// SortOrderID if the file is sorted
-	SortOrderID *int32 `json:"sort-order-id,omitempty"`
-
-	// SpecID is the partition spec ID
-	SpecID int32 `json:"spec-id,omitempty"`
-
-	// SequenceNumber for Iceberg v2
-	SequenceNumber *int64 `json:"sequence-number,omitempty"`
-}
-
-// Conversion functions
-
-func schemaToAPI(s Schema) apiSchema {
-	fields := make([]apiField, len(s.Fields))
-	for i, f := range s.Fields {
-		fields[i] = apiField{
-			ID:       f.ID,
-			Name:     f.Name,
-			Required: f.Required,
-			Type:     f.Type,
-			Doc:      f.Doc,
-		}
-	}
-	return apiSchema{
-		Type:     "struct",
-		SchemaID: s.SchemaID,
-		Fields:   fields,
-	}
-}
-
-func schemaFromAPI(s apiSchema) Schema {
-	fields := make([]Field, len(s.Fields))
-	for i, f := range s.Fields {
-		fields[i] = Field{
-			ID:       f.ID,
-			Name:     f.Name,
-			Required: f.Required,
-			Type:     f.Type,
-			Doc:      f.Doc,
-		}
-	}
-	return Schema{
-		SchemaID: s.SchemaID,
-		Fields:   fields,
-	}
-}
-
-func partitionSpecToAPI(spec *PartitionSpec) *apiPartitionSpec {
-	if spec == nil {
-		return nil
-	}
-	fields := make([]apiPartitionField, len(spec.Fields))
-	for i, f := range spec.Fields {
-		fields[i] = apiPartitionField{
-			SourceID:  f.SourceID,
-			FieldID:   f.FieldID,
-			Name:      f.Name,
-			Transform: f.Transform,
-		}
-	}
-	return &apiPartitionSpec{
-		SpecID: spec.SpecID,
-		Fields: fields,
-	}
-}
-
-func snapshotFromAPI(s apiSnapshot) *Snapshot {
-	op := SnapshotOperation(OpAppend)
-	if s.Summary != nil {
-		if opStr, ok := s.Summary["operation"]; ok {
-			op = SnapshotOperation(opStr)
-		}
-	}
-	return &Snapshot{
-		SnapshotID:       s.SnapshotID,
-		ParentSnapshotID: s.ParentSnapshotID,
-		SequenceNumber:   s.SequenceNumber,
-		TimestampMs:      s.TimestampMs,
-		ManifestListPath: s.ManifestList,
-		Operation:        op,
-		Summary:          s.Summary,
-	}
-}
-
-// dataFileToAPI converts a DataFile to the API representation.
-func dataFileToAPI(f DataFile, specID int32, seqNum int64) apiDataFile {
-	api := apiDataFile{
-		Content:         0, // DATA file type
-		FilePath:        f.Path,
-		FileFormat:      string(f.Format),
-		RecordCount:     f.RecordCount,
-		FileSizeInBytes: f.FileSizeBytes,
-		SpecID:          specID,
-		SequenceNumber:  &seqNum,
-		SplitOffsets:    f.SplitOffsets,
-		SortOrderID:     f.SortOrderID,
-	}
-
-	// Always set the partition value - partition 0 is valid for Kafka
-	api.Partition = map[string]interface{}{
-		"partition": f.PartitionValue,
-	}
-
-	// Convert column sizes (field ID -> size)
-	if len(f.ColumnSizes) > 0 {
-		api.ColumnSizes = make(map[string]int64, len(f.ColumnSizes))
-		for k, v := range f.ColumnSizes {
-			api.ColumnSizes[strconv.FormatInt(int64(k), 10)] = v
-		}
-	}
-
-	// Convert value counts
-	if len(f.ValueCounts) > 0 {
-		api.ValueCounts = make(map[string]int64, len(f.ValueCounts))
-		for k, v := range f.ValueCounts {
-			api.ValueCounts[strconv.FormatInt(int64(k), 10)] = v
-		}
-	}
-
-	// Convert null value counts
-	if len(f.NullValueCounts) > 0 {
-		api.NullValueCounts = make(map[string]int64, len(f.NullValueCounts))
-		for k, v := range f.NullValueCounts {
-			api.NullValueCounts[strconv.FormatInt(int64(k), 10)] = v
-		}
-	}
-
-	// Convert lower bounds (base64 encode)
-	if len(f.LowerBounds) > 0 {
-		api.LowerBounds = make(map[string]string, len(f.LowerBounds))
-		for k, v := range f.LowerBounds {
-			api.LowerBounds[strconv.FormatInt(int64(k), 10)] = base64.StdEncoding.EncodeToString(v)
-		}
-	}
-
-	// Convert upper bounds (base64 encode)
-	if len(f.UpperBounds) > 0 {
-		api.UpperBounds = make(map[string]string, len(f.UpperBounds))
-		for k, v := range f.UpperBounds {
-			api.UpperBounds[strconv.FormatInt(int64(k), 10)] = base64.StdEncoding.EncodeToString(v)
-		}
-	}
-
-	return api
+	Action     string            `json:"action"`
+	Snapshot   *IcebergSnapshot  `json:"snapshot,omitempty"`
+	RefName    string            `json:"ref-name,omitempty"`
+	RefType    string            `json:"type,omitempty"`
+	SnapshotID *int64            `json:"snapshot-id,omitempty"`
+	DataFiles  []IcebergDataFile `json:"data-files,omitempty"`
 }
