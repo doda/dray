@@ -328,7 +328,7 @@ func TestSagaManager_FullLifecycle(t *testing.T) {
 	}
 
 	// -> PARQUET_WRITTEN
-	job, err = sm.MarkParquetWritten(ctx, "stream-1", "job-full", "/bucket/file.parquet", 10000, 500)
+	job, err = sm.MarkParquetWritten(ctx, "stream-1", "job-full", "/bucket/file.parquet", 10000, 500, 1000, 2000)
 	if err != nil {
 		t.Fatalf("MarkParquetWritten failed: %v", err)
 	}
@@ -337,6 +337,12 @@ func TestSagaManager_FullLifecycle(t *testing.T) {
 	}
 	if job.ParquetPath != "/bucket/file.parquet" {
 		t.Errorf("ParquetPath = %s, want /bucket/file.parquet", job.ParquetPath)
+	}
+	if job.ParquetMinTimestampMs != 1000 {
+		t.Errorf("ParquetMinTimestampMs = %d, want 1000", job.ParquetMinTimestampMs)
+	}
+	if job.ParquetMaxTimestampMs != 2000 {
+		t.Errorf("ParquetMaxTimestampMs = %d, want 2000", job.ParquetMaxTimestampMs)
 	}
 
 	// -> ICEBERG_COMMITTED
@@ -386,7 +392,7 @@ func TestSagaManager_MarkDone_ConfirmsIcebergRemoval(t *testing.T) {
 		t.Fatalf("CreateJob failed: %v", err)
 	}
 
-	_, err = sm.MarkParquetWritten(ctx, "stream-iceberg", job.JobID, "/p", 1, 1)
+	_, err = sm.MarkParquetWritten(ctx, "stream-iceberg", job.JobID, "/p", 1, 1, 0, 0)
 	if err != nil {
 		t.Fatalf("MarkParquetWritten failed: %v", err)
 	}
@@ -461,12 +467,12 @@ func TestSagaManager_FailureTransition(t *testing.T) {
 			// Advance to the target state
 			switch state {
 			case JobStateParquetWritten:
-				_, err = sm.MarkParquetWritten(ctx, "stream-1", "job-fail", "/p", 1, 1)
+				_, err = sm.MarkParquetWritten(ctx, "stream-1", "job-fail", "/p", 1, 1, 0, 0)
 			case JobStateIcebergCommitted:
-				_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-fail", "/p", 1, 1)
+				_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-fail", "/p", 1, 1, 0, 0)
 				_, err = sm.MarkIcebergCommitted(ctx, "stream-1", "job-fail", 1)
 			case JobStateIndexSwapped:
-				_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-fail", "/p", 1, 1)
+				_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-fail", "/p", 1, 1, 0, 0)
 				_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", "job-fail", 1)
 				_, err = sm.MarkIndexSwapped(ctx, "stream-1", "job-fail", nil)
 			}
@@ -506,7 +512,7 @@ func TestSagaManager_ListJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateJob failed: %v", err)
 	}
-	_, err = sm.MarkParquetWritten(ctx, "stream-1", "job-2", "/p", 1, 1)
+	_, err = sm.MarkParquetWritten(ctx, "stream-1", "job-2", "/p", 1, 1, 0, 0)
 	if err != nil {
 		t.Fatalf("MarkParquetWritten failed: %v", err)
 	}
@@ -514,7 +520,7 @@ func TestSagaManager_ListJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateJob failed: %v", err)
 	}
-	_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-3", "/p", 1, 1)
+	_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-3", "/p", 1, 1, 0, 0)
 	_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", "job-3", 1)
 	_, _ = sm.MarkIndexSwapped(ctx, "stream-1", "job-3", nil)
 	_, err = sm.MarkDone(ctx, "stream-1", "job-3")
@@ -588,7 +594,7 @@ func TestSagaManager_CleanupCompletedJobs(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		jobID := NewJobID()
 		_, _ = sm.CreateJob(ctx, "stream-1", WithJobID(jobID))
-		_, _ = sm.MarkParquetWritten(ctx, "stream-1", jobID, "/p", 1, 1)
+		_, _ = sm.MarkParquetWritten(ctx, "stream-1", jobID, "/p", 1, 1, 0, 0)
 		_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", jobID, 1)
 		_, _ = sm.MarkIndexSwapped(ctx, "stream-1", jobID, nil)
 		_, _ = sm.MarkDone(ctx, "stream-1", jobID)
@@ -645,7 +651,7 @@ func TestSagaManager_ResumeJob(t *testing.T) {
 		sm := NewSagaManager(store, "compactor-1")
 
 		_, _ = sm.CreateJob(ctx, "stream-1", WithJobID("job-resume"))
-		_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-resume", "/p", 1, 1)
+		_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-resume", "/p", 1, 1, 0, 0)
 
 		job, err := sm.ResumeJob(ctx, "stream-1", "job-resume")
 		if err != nil {
@@ -664,7 +670,7 @@ func TestSagaManager_ResumeJob(t *testing.T) {
 		sm := NewSagaManager(store, "compactor-1")
 
 		_, _ = sm.CreateJob(ctx, "stream-1", WithJobID("job-done"))
-		_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-done", "/p", 1, 1)
+		_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-done", "/p", 1, 1, 0, 0)
 		_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", "job-done", 1)
 		_, _ = sm.MarkIndexSwapped(ctx, "stream-1", "job-done", nil)
 		_, _ = sm.MarkDone(ctx, "stream-1", "job-done")
@@ -764,7 +770,7 @@ func TestSagaManager_RecoveryFromEachState(t *testing.T) {
 			name: "recover from PARQUET_WRITTEN",
 			setupFn: func(sm *SagaManager, ctx context.Context) error {
 				_, _ = sm.CreateJob(ctx, "stream-1", WithJobID("job-recover"))
-				_, err := sm.MarkParquetWritten(ctx, "stream-1", "job-recover", "/p", 1, 1)
+				_, err := sm.MarkParquetWritten(ctx, "stream-1", "job-recover", "/p", 1, 1, 0, 0)
 				return err
 			},
 			expectedState: JobStateParquetWritten,
@@ -773,7 +779,7 @@ func TestSagaManager_RecoveryFromEachState(t *testing.T) {
 			name: "recover from ICEBERG_COMMITTED",
 			setupFn: func(sm *SagaManager, ctx context.Context) error {
 				_, _ = sm.CreateJob(ctx, "stream-1", WithJobID("job-recover"))
-				_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-recover", "/p", 1, 1)
+				_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-recover", "/p", 1, 1, 0, 0)
 				_, err := sm.MarkIcebergCommitted(ctx, "stream-1", "job-recover", 123)
 				return err
 			},
@@ -783,7 +789,7 @@ func TestSagaManager_RecoveryFromEachState(t *testing.T) {
 			name: "recover from INDEX_SWAPPED",
 			setupFn: func(sm *SagaManager, ctx context.Context) error {
 				_, _ = sm.CreateJob(ctx, "stream-1", WithJobID("job-recover"))
-				_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-recover", "/p", 1, 1)
+				_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-recover", "/p", 1, 1, 0, 0)
 				_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", "job-recover", 123)
 				_, err := sm.MarkIndexSwapped(ctx, "stream-1", "job-recover", []string{"wal-1"})
 				return err
@@ -859,7 +865,7 @@ func TestJobStatePreservation(t *testing.T) {
 	}
 
 	// Transition through states and verify fields are preserved
-	_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-fields", "/bucket/data.parquet", 25000, 400)
+	_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-fields", "/bucket/data.parquet", 25000, 400, 0, 0)
 	_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", "job-fields", 999)
 	job, _ := sm.MarkIndexSwapped(ctx, "stream-1", "job-fields", []string{"wal-a", "wal-b", "wal-c"})
 
@@ -908,7 +914,7 @@ func TestSagaManager_SkipIcebergCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateJob failed: %v", err)
 	}
-	job, err = sm.MarkParquetWritten(ctx, "stream-1", job.JobID, "/path/to/file.parquet", 10000, 100)
+	job, err = sm.MarkParquetWritten(ctx, "stream-1", job.JobID, "/path/to/file.parquet", 10000, 100, 0, 0)
 	if err != nil {
 		t.Fatalf("MarkParquetWritten failed: %v", err)
 	}
@@ -981,7 +987,7 @@ func TestSagaManager_SkipIcebergCommit_FullLifecycle(t *testing.T) {
 	}
 
 	// Write parquet
-	job, err = sm.MarkParquetWritten(ctx, "stream-1", job.JobID, "/data/file.parquet", 20000, 100)
+	job, err = sm.MarkParquetWritten(ctx, "stream-1", job.JobID, "/data/file.parquet", 20000, 100, 0, 0)
 	if err != nil {
 		t.Fatalf("MarkParquetWritten failed: %v", err)
 	}

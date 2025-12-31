@@ -126,6 +126,12 @@ type Job struct {
 	// ParquetRecordCount is the number of records in the Parquet file.
 	ParquetRecordCount int64 `json:"parquetRecordCount,omitempty"`
 
+	// ParquetMinTimestampMs is the minimum timestamp in the Parquet file.
+	ParquetMinTimestampMs int64 `json:"parquetMinTimestampMs,omitempty"`
+
+	// ParquetMaxTimestampMs is the maximum timestamp in the Parquet file.
+	ParquetMaxTimestampMs int64 `json:"parquetMaxTimestampMs,omitempty"`
+
 	// ---- Iceberg Commit Phase Fields ----
 
 	// IcebergSnapshotID is the Iceberg snapshot ID after commit.
@@ -419,11 +425,13 @@ func (sm *SagaManager) TransitionState(ctx context.Context, streamID, jobID stri
 }
 
 // MarkParquetWritten transitions a job to PARQUET_WRITTEN state.
-func (sm *SagaManager) MarkParquetWritten(ctx context.Context, streamID, jobID, parquetPath string, sizeBytes, recordCount int64) (*Job, error) {
+func (sm *SagaManager) MarkParquetWritten(ctx context.Context, streamID, jobID, parquetPath string, sizeBytes, recordCount, minTimestamp, maxTimestamp int64) (*Job, error) {
 	return sm.TransitionState(ctx, streamID, jobID, JobStateParquetWritten, func(j *Job) error {
 		j.ParquetPath = parquetPath
 		j.ParquetSizeBytes = sizeBytes
 		j.ParquetRecordCount = recordCount
+		j.ParquetMinTimestampMs = minTimestamp
+		j.ParquetMaxTimestampMs = maxTimestamp
 		return nil
 	})
 }

@@ -9,8 +9,10 @@ import (
 	"github.com/dray-io/dray/internal/compaction"
 	"github.com/dray-io/dray/internal/compaction/planner"
 	"github.com/dray-io/dray/internal/compaction/worker"
-	"github.com/dray-io/dray/internal/config"
-	"github.com/dray-io/dray/internal/index"
+	        "github.com/dray-io/dray/internal/config"
+	        "github.com/dray-io/dray/internal/iceberg/catalog"
+	        "github.com/dray-io/dray/internal/index"
+	
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
 	metaoxia "github.com/dray-io/dray/internal/metadata/oxia"
@@ -32,25 +34,27 @@ type CompactorOptions struct {
 
 // Compactor represents a running Dray compactor instance.
 type Compactor struct {
-	opts          CompactorOptions
-	logger        *logging.Logger
-	metaStore     metadata.MetadataStore
-	objectStore   objectstore.Store
-	topicStore    *topics.Store
-	streamManager *index.StreamManager
-	planner       *planner.Planner
-	lockManager   *compaction.LockManager
-	sagaManager   *compaction.SagaManager
-	indexSwapper  *compaction.IndexSwapper
-	converter     *worker.Converter
-	healthServer  *server.HealthServer
+        opts           CompactorOptions
+        logger         *logging.Logger
+        metaStore      metadata.MetadataStore
+        objectStore    objectstore.Store
+        topicStore     *topics.Store
+        streamManager  *index.StreamManager
+        planner        *planner.Planner
+        lockManager    *compaction.LockManager
+        sagaManager    *compaction.SagaManager
+        indexSwapper   *compaction.IndexSwapper
+        icebergCatalog catalog.Catalog
+        icebergAppender *catalog.Appender
+        icebergChecker *compaction.IcebergChecker
+        converter      *worker.Converter
+        healthServer   *server.HealthServer
 
-	mu        sync.Mutex
-	started   bool
-	stopCh    chan struct{}
-	stoppedCh chan struct{}
+        mu        sync.Mutex
+        started   bool
+        stopCh    chan struct{}
+        stoppedCh chan struct{}
 }
-
 // NewCompactor creates a new Compactor instance but does not start it.
 func NewCompactor(opts CompactorOptions) (*Compactor, error) {
 	if opts.Logger == nil {
@@ -115,11 +119,67 @@ func (c *Compactor) Start(ctx context.Context) error {
 		}
 	}
 
-	// Initialize components
-	c.topicStore = topics.NewStore(c.metaStore)
-	c.streamManager = index.NewStreamManager(c.metaStore)
+	        // Initialize components
 
-	// Create lock manager for one-compactor-per-stream locking
+	        c.topicStore = topics.NewStore(c.metaStore)
+
+	        c.streamManager = index.NewStreamManager(c.metaStore)
+
+	
+
+	        // Initialize Iceberg if enabled
+
+	        if cfg.Iceberg.Enabled {
+
+	                c.logger.Infof("initializing Iceberg catalog", map[string]any{
+
+	                        "uri":  cfg.Iceberg.CatalogURI,
+
+	                        "type": cfg.Iceberg.CatalogType,
+
+	                })
+
+	
+
+	                cat, err := catalog.NewRestCatalog(catalog.RestCatalogConfig{
+
+	                        URI:       cfg.Iceberg.CatalogURI,
+
+	                        Warehouse: cfg.Iceberg.Warehouse,
+
+	                })
+
+	                if err != nil {
+
+	                        return fmt.Errorf("failed to create Iceberg catalog: %w", err)
+
+	                }
+
+	                c.icebergCatalog = cat
+
+	                c.icebergAppender = catalog.NewAppender(catalog.DefaultAppenderConfig(cat))
+
+	        }
+
+	
+
+	        // Create Iceberg checker
+
+	        c.icebergChecker = compaction.NewIcebergChecker(
+
+	                compaction.TopicConfigProviderFunc(c.topicStore.GetTopicConfig),
+
+	                compaction.StreamMetaProviderFunc(c.streamManager.GetStreamMeta),
+
+	                cfg.Iceberg.Enabled,
+
+	        )
+
+	
+
+	        // Create lock manager for one-compactor-per-stream locking
+
+	
 	c.lockManager = compaction.NewLockManager(c.metaStore, c.opts.CompactorID)
 
 	// Create saga manager for durable job state
@@ -344,26 +404,124 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 		}
 	}
 
-	// Mark Parquet as written
-	job, err = c.sagaManager.MarkParquetWritten(ctx, plan.StreamID, job.JobID,
-		parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount)
-	if err != nil {
-		return fmt.Errorf("mark parquet written: %w", err)
-	}
+	                        // Mark Parquet as written
 
-	// Skip Iceberg commit for now (mark as skipped)
-	job, err = c.sagaManager.SkipIcebergCommit(ctx, plan.StreamID, job.JobID, nil)
-	if err != nil {
-		return fmt.Errorf("skip iceberg commit: %w", err)
-	}
+	                        job, err = c.sagaManager.MarkParquetWritten(ctx, plan.StreamID, job.JobID,
 
-	// Mark job as done
-	_, err = c.sagaManager.MarkDone(ctx, plan.StreamID, job.JobID)
-	if err != nil {
-		return fmt.Errorf("mark done: %w", err)
-	}
+	                                parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount,
 
-	c.logger.Infof("compaction job completed", map[string]any{
+	                                convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
+
+	                        if err != nil {
+
+	                                return fmt.Errorf("mark parquet written: %w", err)
+
+	                        }
+
+	                
+
+	                        // Check if Iceberg is enabled for this stream
+
+	                        icebergEnabled, err := c.icebergChecker.IsIcebergEnabled(ctx, plan.StreamID)
+
+	                        if err != nil {
+
+	                                return fmt.Errorf("check iceberg enabled: %w", err)
+
+	                        }
+
+	                
+
+	                        if icebergEnabled && c.icebergAppender != nil {
+
+	                                // Commit to Iceberg
+
+	                                c.logger.Infof("committing to Iceberg", map[string]any{
+
+	                                        "topic": topicName,
+
+	                                        "jobId": job.JobID,
+
+	                                })
+
+	                
+
+	                                stats := catalog.DefaultDataFileStats(partition, plan.StartOffset, plan.EndOffset-1,
+
+	                                        convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp, convertResult.RecordCount)
+
+	                                dataFile := catalog.BuildDataFileFromStats(parquetPath, partition,
+
+	                                        convertResult.RecordCount, int64(len(convertResult.ParquetData)), stats)
+
+	                
+
+	                                appendResult, err := c.icebergAppender.AppendFilesForStream(ctx, topicName, job.JobID, []catalog.DataFile{dataFile})
+
+	                                if err != nil {
+
+	                                        // Per SPEC.md 11.2, Produce/Fetch must remain available even if Iceberg is down.
+
+	                                        // We fail the compaction job but it can be retried.
+
+	                                        c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, fmt.Sprintf("iceberg commit: %v", err))
+
+	                                        return fmt.Errorf("iceberg commit: %w", err)
+
+	                                }
+
+	                
+
+	                                // Mark Iceberg as committed
+
+	                                job, err = c.sagaManager.MarkIcebergCommitted(ctx, plan.StreamID, job.JobID, appendResult.Snapshot.SnapshotID)
+
+	                                if err != nil {
+
+	                                        return fmt.Errorf("mark iceberg committed: %w", err)
+
+	                                }
+
+	                        }
+
+	                
+
+	                        // Perform index swap
+
+	                        c.logger.Infof("swapping index entries", map[string]any{
+
+	                                "streamId": plan.StreamID,
+
+	                                "jobId":    job.JobID,
+
+	                        })
+
+	                
+
+	                        metaDomain := int(metadata.CalculateMetaDomain(plan.StreamID, c.opts.Config.Metadata.NumDomains))
+
+	                        swapResult, err := c.indexSwapper.SwapFromJob(ctx, job, parquetPath,
+
+	                                int64(len(convertResult.ParquetData)), convertResult.RecordCount, metaDomain)
+
+	                
+	        if err != nil {
+	                c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, fmt.Sprintf("index swap: %v", err))
+	                return fmt.Errorf("index swap: %w", err)
+	        }
+	
+	        // Mark index as swapped
+	        job, err = c.sagaManager.MarkIndexSwapped(ctx, plan.StreamID, job.JobID, swapResult.DecrementedWALObjects)
+	        if err != nil {
+	                return fmt.Errorf("mark index swapped: %w", err)
+	        }
+	
+	        // Mark job as done
+	        _, err = c.sagaManager.MarkDone(ctx, plan.StreamID, job.JobID)
+	        if err != nil {
+	                return fmt.Errorf("mark done: %w", err)
+	        }
+		c.logger.Infof("compaction job completed", map[string]any{
 		"streamId":    plan.StreamID,
 		"jobId":       job.JobID,
 		"parquetPath": parquetPath,
@@ -375,33 +533,77 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 
 // recoverJob resumes an incomplete compaction job from its current state.
 func (c *Compactor) recoverJob(ctx context.Context, job *compaction.Job) {
-	switch job.State {
-	case compaction.JobStateCreated:
-		// Need to restart from the beginning - mark as failed and let next scan create new job
-		c.sagaManager.MarkFailed(ctx, job.StreamID, job.JobID, "recovery: restarting from CREATED state")
+        streamMeta, err := c.streamManager.GetStreamMeta(ctx, job.StreamID)
+        if err != nil {
+                c.logger.Warnf("failed to get stream meta for recovery", map[string]any{
+                        "streamId": job.StreamID,
+                        "error":    err.Error(),
+                })
+                return
+        }
 
-	case compaction.JobStateParquetWritten:
-		// Parquet file exists, proceed to Iceberg/index swap
-		_, err := c.sagaManager.SkipIcebergCommit(ctx, job.StreamID, job.JobID, nil)
-		if err != nil {
-			c.logger.Warnf("recovery failed at skip iceberg", map[string]any{
-				"jobId": job.JobID,
-				"error": err.Error(),
-			})
-			return
-		}
-		c.sagaManager.MarkDone(ctx, job.StreamID, job.JobID)
+        switch job.State {
+        case compaction.JobStateCreated:
+                // Need to restart from the beginning - mark as failed and let next scan create new job
+                c.sagaManager.MarkFailed(ctx, job.StreamID, job.JobID, "recovery: restarting from CREATED state")
 
-	case compaction.JobStateIcebergCommitted:
-		// Iceberg committed, just need to mark done
-		c.sagaManager.MarkDone(ctx, job.StreamID, job.JobID)
+        case compaction.JobStateParquetWritten:
+                // Parquet file exists, proceed to Iceberg/index swap
+                icebergEnabled, err := c.icebergChecker.IsIcebergEnabled(ctx, job.StreamID)
+                if err != nil {
+                        c.logger.Warnf("recovery: check iceberg enabled failed", map[string]any{"error": err.Error()})
+                        return
+                }
 
-	case compaction.JobStateIndexSwapped:
-		// Index swapped, just need to mark done
-		c.sagaManager.MarkDone(ctx, job.StreamID, job.JobID)
-	}
+                if icebergEnabled && c.icebergAppender != nil {
+                        stats := catalog.DefaultDataFileStats(streamMeta.Partition, job.SourceStartOffset, job.SourceEndOffset-1,
+                                job.ParquetMinTimestampMs, job.ParquetMaxTimestampMs, job.ParquetRecordCount)
+                        dataFile := catalog.BuildDataFileFromStats(job.ParquetPath, streamMeta.Partition,
+                                job.ParquetRecordCount, job.ParquetSizeBytes, stats)
+
+                        appendResult, err := c.icebergAppender.AppendFilesForStream(ctx, streamMeta.TopicName, job.JobID, []catalog.DataFile{dataFile})
+                        if err != nil {
+                                c.logger.Warnf("recovery: iceberg commit failed", map[string]any{"error": err.Error()})
+                                return
+                        }
+                        job, err = c.sagaManager.MarkIcebergCommitted(ctx, job.StreamID, job.JobID, appendResult.Snapshot.SnapshotID)
+                        if err != nil {
+                                return
+                        }
+                } else {
+                        // Skip Iceberg
+                        job, err = c.sagaManager.SkipIcebergCommit(ctx, job.StreamID, job.JobID, nil)
+                        if err != nil {
+                                return
+                        }
+                }
+                // Fallthrough to next states
+                c.recoverJob(ctx, job)
+
+        case compaction.JobStateIcebergCommitted:
+                // Iceberg committed, perform index swap
+                metaDomain := int(metadata.CalculateMetaDomain(job.StreamID, c.opts.Config.Metadata.NumDomains))
+                swapResult, err := c.indexSwapper.SwapFromJob(ctx, job, job.ParquetPath,
+                        job.ParquetSizeBytes, job.ParquetRecordCount, metaDomain)
+                if err != nil {
+                        c.logger.Warnf("recovery: index swap failed", map[string]any{"error": err.Error()})
+                        return
+                }
+                job, err = c.sagaManager.MarkIndexSwapped(ctx, job.StreamID, job.JobID, swapResult.DecrementedWALObjects)
+                if err != nil {
+                        return
+                }
+                // Fallthrough to next states
+                c.recoverJob(ctx, job)
+
+        case compaction.JobStateIndexSwapped:
+                // Index swapped, just need to mark done
+                c.sagaManager.MarkDone(ctx, job.StreamID, job.JobID)
+
+        case compaction.JobStateDone, compaction.JobStateFailed:
+                // Terminal states
+        }
 }
-
 // Shutdown gracefully stops the compactor.
 func (c *Compactor) Shutdown(ctx context.Context) error {
 	c.mu.Lock()
@@ -456,14 +658,40 @@ func (c *Compactor) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	if c.objectStore != nil {
-		if err := c.objectStore.Close(); err != nil {
-			c.logger.Warnf("error closing object store", map[string]any{
-				"error": err.Error(),
-			})
-		}
-	}
+	        if c.objectStore != nil {
 
-	c.logger.Info("compactor shutdown complete")
+	                if err := c.objectStore.Close(); err != nil {
+
+	                        c.logger.Warnf("error closing object store", map[string]any{
+
+	                                "error": err.Error(),
+
+	                        })
+
+	                }
+
+	        }
+
+	
+
+	        if c.icebergCatalog != nil {
+
+	                if err := c.icebergCatalog.Close(); err != nil {
+
+	                        c.logger.Warnf("error closing Iceberg catalog", map[string]any{
+
+	                                "error": err.Error(),
+
+	                        })
+
+	                }
+
+	        }
+
+	
+
+	        c.logger.Info("compactor shutdown complete")
+
+	
 	return nil
 }
