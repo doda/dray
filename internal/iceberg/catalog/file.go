@@ -18,25 +18,55 @@ import (
 // FileCatalog implements the Catalog interface using a Hadoop-style file structure.
 // Metadata is stored directly in object storage at <warehouse>/<topic>/metadata/.
 type FileCatalog struct {
-	store     objectstore.Store
-	warehouse string
+	store        objectstore.Store
+	warehouse    string // Normalized path for keys
+	warehouseURI string // Raw URI for metadata Location
 }
 
 // NewFileCatalog creates a new FileCatalog.
 func NewFileCatalog(store objectstore.Store, warehouse string) *FileCatalog {
+	warehouseURI := strings.TrimSuffix(warehouse, "/")
+	normalized := warehouseURI
+
+	// If warehouse is a full S3 URI, strip the s3://bucket/ part for 'normalized'
+	if strings.HasPrefix(normalized, "s3://") {
+		parts := strings.SplitN(normalized[5:], "/", 2)
+		if len(parts) > 1 {
+			normalized = parts[1]
+		} else {
+			normalized = ""
+		}
+	}
+
 	return &FileCatalog{
-		store:     store,
-		warehouse: strings.TrimSuffix(warehouse, "/"),
+		store:        store,
+		warehouse:    normalized,
+		warehouseURI: warehouseURI,
 	}
 }
 
 func (c *FileCatalog) tablePath(identifier TableIdentifier) string {
-	// identifier.Namespace is ignored for now or can be used as prefix
-	ns := strings.Join(identifier.Namespace, "/")
-	if ns != "" {
-		return fmt.Sprintf("%s/%s/%s", c.warehouse, ns, identifier.Name)
+	var parts []string
+	if c.warehouse != "" {
+		parts = append(parts, c.warehouse)
 	}
-	return fmt.Sprintf("%s/%s", c.warehouse, identifier.Name)
+	if len(identifier.Namespace) > 0 {
+		parts = append(parts, strings.Join(identifier.Namespace, "/"))
+	}
+	parts = append(parts, identifier.Name)
+	return strings.Join(parts, "/")
+}
+
+func (c *FileCatalog) tableURI(identifier TableIdentifier) string {
+	var parts []string
+	if c.warehouseURI != "" {
+		parts = append(parts, c.warehouseURI)
+	}
+	if len(identifier.Namespace) > 0 {
+		parts = append(parts, strings.Join(identifier.Namespace, "/"))
+	}
+	parts = append(parts, identifier.Name)
+	return strings.Join(parts, "/")
 }
 
 func (c *FileCatalog) metadataPath(identifier TableIdentifier) string {
@@ -87,7 +117,7 @@ func (c *FileCatalog) CreateTableIfMissing(ctx context.Context, identifier Table
 	}
 
 	if metadata.Location == "" {
-		metadata.Location = c.tablePath(identifier)
+		metadata.Location = c.tableURI(identifier)
 	}
 
 	if opts.PartitionSpec != nil {
