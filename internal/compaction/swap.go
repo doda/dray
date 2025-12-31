@@ -331,8 +331,12 @@ func (s *IndexSwapper) getPreviousCumulativeSize(ctx context.Context, streamID s
 
 	// List entries with endOffset <= startOffset
 	// The last such entry is the one just before our range
-	prefix := keys.OffsetIndexPrefix(streamID)
-	kvs, err := s.meta.List(ctx, prefix, "", 0)
+	startKey, err := keys.OffsetIndexStartKey(streamID, 0)
+	if err != nil {
+		return 0, fmt.Errorf("build start key: %w", err)
+	}
+	endKey := keys.OffsetIndexEndKey(streamID)
+	kvs, err := s.meta.List(ctx, startKey, endKey, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -412,8 +416,12 @@ func (s *IndexSwapper) SwapFromJob(ctx context.Context, job *Job, parquetPath st
 
 	// Build the list of WAL index entries to swap
 	// The job should have the source offset range
-	prefix := keys.OffsetIndexPrefix(job.StreamID)
-	kvs, err := s.meta.List(ctx, prefix, "", 0)
+	startKey, err := keys.OffsetIndexStartKey(job.StreamID, 0)
+	if err != nil {
+		return nil, fmt.Errorf("build start key: %w", err)
+	}
+	endKey := keys.OffsetIndexEndKey(job.StreamID)
+	kvs, err := s.meta.List(ctx, startKey, endKey, 0)
 	if err != nil {
 		return nil, fmt.Errorf("list index entries: %w", err)
 	}
