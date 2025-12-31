@@ -243,8 +243,13 @@ func (sm *StreamManager) GetIndexEntry(ctx context.Context, indexKey string) (*I
 
 // ListIndexEntries lists all index entries for a stream.
 func (sm *StreamManager) ListIndexEntries(ctx context.Context, streamID string, limit int) ([]IndexEntry, error) {
-	prefix := keys.OffsetIndexPrefix(streamID)
-	kvs, err := sm.store.List(ctx, prefix, "", limit)
+	// Use full-depth keys for Oxia hierarchical key compatibility
+	startKey, err := keys.OffsetIndexStartKey(streamID, 0)
+	if err != nil {
+		return nil, err
+	}
+	endKey := keys.OffsetIndexEndKey(streamID)
+	kvs, err := sm.store.List(ctx, startKey, endKey, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -315,16 +320,18 @@ func (sm *StreamManager) LookupOffset(ctx context.Context, streamID string, fetc
 	// We need to find entries where endOffset > fetchOffset.
 	// Since keys are sorted by offsetEnd (zero-padded), we start the query at fetchOffset+1.
 	// This will give us entries with endOffset >= fetchOffset+1, which means endOffset > fetchOffset.
+	//
+	// IMPORTANT: Oxia uses hierarchical key sorting that groups keys by path depth.
+	// Both startKey and endKey must have the same number of '/' segments for the
+	// range query to work correctly. The OffsetIndex keys have format:
+	// .../offset-index/<offsetEndZ>/<cumulativeSizeZ>
 	startKey, err := keys.OffsetIndexStartKey(streamID, fetchOffset+1)
 	if err != nil {
 		return nil, err
 	}
 
-	// The end key ensures we only match offset-index keys for this stream.
-	// Since offset-index keys have format prefix/<offsetEndZ>/<cumulativeSizeZ>, and
-	// digits come before letters in ASCII, we can use prefix + "~" as the endKey.
-	prefix := keys.OffsetIndexPrefix(streamID)
-	endKey := prefix + "~"
+	// Use OffsetIndexEndKey which has the same segment count as startKey
+	endKey := keys.OffsetIndexEndKey(streamID)
 
 	// Query for just one entry - the first one found will be the smallest
 	// endOffset > fetchOffset by the key ordering.
@@ -377,8 +384,13 @@ func (sm *StreamManager) LookupOffsetWithBounds(ctx context.Context, streamID st
 	}
 
 	// Get the earliest available offset by listing the first entry
-	prefix := keys.OffsetIndexPrefix(streamID)
-	kvs, err := sm.store.List(ctx, prefix, "", 1)
+	// Use full-depth keys for Oxia hierarchical key compatibility
+	startKey, err := keys.OffsetIndexStartKey(streamID, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+	endKey := keys.OffsetIndexEndKey(streamID)
+	kvs, err := sm.store.List(ctx, startKey, endKey, 1)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -447,8 +459,13 @@ func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID s
 	}
 
 	// List all index entries for the stream
-	prefix := keys.OffsetIndexPrefix(streamID)
-	kvs, err := sm.store.List(ctx, prefix, "", 0)
+	// Use full-depth keys for Oxia hierarchical key compatibility
+	startKey, err := keys.OffsetIndexStartKey(streamID, 0)
+	if err != nil {
+		return nil, err
+	}
+	endKey := keys.OffsetIndexEndKey(streamID)
+	kvs, err := sm.store.List(ctx, startKey, endKey, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -624,8 +641,13 @@ func (sm *StreamManager) GetEarliestOffset(ctx context.Context, streamID string)
 	}
 
 	// Get the first index entry
-	prefix := keys.OffsetIndexPrefix(streamID)
-	kvs, err := sm.store.List(ctx, prefix, "", 1)
+	// Use full-depth keys for Oxia hierarchical key compatibility
+	startKey, err := keys.OffsetIndexStartKey(streamID, 0)
+	if err != nil {
+		return 0, err
+	}
+	endKey := keys.OffsetIndexEndKey(streamID)
+	kvs, err := sm.store.List(ctx, startKey, endKey, 1)
 	if err != nil {
 		return 0, err
 	}

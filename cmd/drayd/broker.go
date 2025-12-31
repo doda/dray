@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/dray-io/dray/internal/auth"
 	"github.com/dray-io/dray/internal/config"
@@ -14,8 +15,10 @@ import (
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
+	metaoxia "github.com/dray-io/dray/internal/metadata/oxia"
 	"github.com/dray-io/dray/internal/metrics"
 	"github.com/dray-io/dray/internal/objectstore"
+	"github.com/dray-io/dray/internal/objectstore/s3"
 	"github.com/dray-io/dray/internal/produce"
 	"github.com/dray-io/dray/internal/protocol"
 	"github.com/dray-io/dray/internal/routing"
@@ -92,8 +95,31 @@ func (b *Broker) Start(ctx context.Context) error {
 		"version":    b.opts.Version,
 	})
 
-	// Initialize metadata store (mock for now until Oxia is connected)
-	b.metaStore = metadata.NewMockStore()
+	// Initialize metadata store (Oxia)
+	oxiaStore, err := metaoxia.New(ctx, metaoxia.Config{
+		ServiceAddress: cfg.Metadata.OxiaEndpoint,
+		Namespace:      cfg.OxiaNamespace(),
+		RequestTimeout: 30 * time.Second,
+		SessionTimeout: 15 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create Oxia metadata store: %w", err)
+	}
+	b.metaStore = oxiaStore
+
+	// Initialize object store (S3/Tigris)
+	s3Store, err := s3.New(ctx, s3.Config{
+		Bucket:          cfg.ObjectStore.Bucket,
+		Region:          cfg.ObjectStore.Region,
+		Endpoint:        cfg.ObjectStore.Endpoint,
+		AccessKeyID:     cfg.ObjectStore.AccessKey,
+		SecretAccessKey: cfg.ObjectStore.SecretKey,
+		UsePathStyle:    true, // Required for Tigris and most S3-compatible stores
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create S3 object store: %w", err)
+	}
+	b.objectStore = s3Store
 
 	// Initialize components
 	b.topicStore = topics.NewStore(b.metaStore)
@@ -101,7 +127,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	b.groupStore = groups.NewStore(b.metaStore)
 	b.leaseManager = groups.NewLeaseManager(b.metaStore, b.opts.BrokerID)
 
-	// Create committer with object store (nil until object store integration).
+	// Create committer with object store
 	b.committer = produce.NewCommitter(b.objectStore, b.metaStore, produce.CommitterConfig{
 		NumDomains: cfg.Metadata.NumDomains,
 		ZoneID:     cfg.Broker.ZoneID,
@@ -110,6 +136,7 @@ func (b *Broker) Start(ctx context.Context) error {
 	b.buffer = produce.NewBuffer(produce.BufferConfig{
 		MaxBufferBytes: 100 * 1024 * 1024, // 100MB
 		FlushSizeBytes: cfg.WAL.FlushSizeBytes,
+		LingerMs:       cfg.WAL.FlushIntervalMs,
 		NumDomains:     cfg.Metadata.NumDomains,
 		OnFlush:        b.committer.CreateFlushHandler(),
 	})
