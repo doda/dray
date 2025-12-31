@@ -86,12 +86,13 @@ func New(cfg Config, streams StreamQuerier) *Planner {
 //
 // The selection algorithm:
 // 1. Query all index entries for the stream
-// 2. Select contiguous WAL entries starting from the oldest
-// 3. Stop at any Parquet entry (already compacted) or gap in offsets
-// 4. Apply max age policy: include entries older than MaxAgeMs
-// 5. Apply file count policy: limit to MaxFilesToMerge entries
-// 6. Apply size policy: stop if MaxSizeBytes is exceeded
-// 7. Return nil if fewer than MinEntries are selected
+// 2. Skip any PARQUET entries at the beginning (already compacted)
+// 3. Select contiguous WAL entries starting from the first WAL entry
+// 4. Stop at any subsequent PARQUET entry or gap in offsets
+// 5. Apply max age policy: include entries older than MaxAgeMs
+// 6. Apply file count policy: limit to MaxFilesToMerge entries
+// 7. Apply size policy: stop if MaxSizeBytes is exceeded
+// 8. Return nil if fewer than MinEntries are selected
 func (p *Planner) Plan(ctx context.Context, streamID string) (*Result, error) {
 	now := time.Now().UnixMilli()
 
@@ -110,12 +111,21 @@ func (p *Planner) Plan(ctx context.Context, streamID string) (*Result, error) {
 	var totalSize int64
 	var totalRecords uint32
 	var expectedStartOffset int64 = -1
+	var foundFirstWAL bool
 
 	for _, entry := range entries {
-		// Stop at Parquet entries - they're already compacted and break contiguity
+		// Skip PARQUET entries at the beginning (already compacted)
+		// Once we start collecting WAL entries, hitting a PARQUET breaks contiguity
 		if entry.FileType != index.FileTypeWAL {
-			break
+			if foundFirstWAL {
+				// Hit a PARQUET entry after we started collecting WAL entries
+				// This breaks contiguity, so stop here
+				break
+			}
+			// Haven't found first WAL yet, skip this PARQUET entry
+			continue
 		}
+		foundFirstWAL = true
 
 		// Verify contiguity: each entry's StartOffset must match the previous EndOffset
 		if expectedStartOffset >= 0 && entry.StartOffset != expectedStartOffset {
@@ -190,12 +200,21 @@ func (p *Planner) PlanWithTime(ctx context.Context, streamID string, now time.Ti
 	var totalSize int64
 	var totalRecords uint32
 	var expectedStartOffset int64 = -1
+	var foundFirstWAL bool
 
 	for _, entry := range entries {
-		// Stop at Parquet entries - they're already compacted and break contiguity
+		// Skip PARQUET entries at the beginning (already compacted)
+		// Once we start collecting WAL entries, hitting a PARQUET breaks contiguity
 		if entry.FileType != index.FileTypeWAL {
-			break
+			if foundFirstWAL {
+				// Hit a PARQUET entry after we started collecting WAL entries
+				// This breaks contiguity, so stop here
+				break
+			}
+			// Haven't found first WAL yet, skip this PARQUET entry
+			continue
 		}
+		foundFirstWAL = true
 
 		// Verify contiguity: each entry's StartOffset must match the previous EndOffset
 		if expectedStartOffset >= 0 && entry.StartOffset != expectedStartOffset {
