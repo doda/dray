@@ -102,6 +102,10 @@ func (c *FileCatalog) CreateTableIfMissing(ctx context.Context, identifier Table
 
 	err = c.writeMetadata(ctx, identifier, 0, metadata)
 	if err != nil {
+		// Handle race condition: table was created by another process
+		if errors.Is(err, ErrCommitConflict) {
+			return c.LoadTable(ctx, identifier)
+		}
 		return nil, err
 	}
 
