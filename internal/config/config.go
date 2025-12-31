@@ -302,9 +302,9 @@ func (c *Config) Validate() error {
 		if c.Iceberg.CatalogType == "" {
 			errs = append(errs, errors.New("iceberg.catalogType is required when iceberg is enabled"))
 		}
-		validTypes := map[string]bool{"rest": true, "hive": true, "glue": true}
+		validTypes := map[string]bool{"rest": true, "hive": true, "glue": true, "hadoop": true}
 		if !validTypes[c.Iceberg.CatalogType] {
-			errs = append(errs, fmt.Errorf("iceberg.catalogType must be one of: rest, hive, glue; got %q", c.Iceberg.CatalogType))
+			errs = append(errs, fmt.Errorf("iceberg.catalogType must be one of: rest, hive, glue, hadoop; got %q", c.Iceberg.CatalogType))
 		}
 	}
 

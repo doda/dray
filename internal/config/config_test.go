@@ -459,7 +459,7 @@ func TestValidationErrors(t *testing.T) {
 }
 
 func TestValidIcebergCatalogTypes(t *testing.T) {
-	validTypes := []string{"rest", "hive", "glue"}
+	validTypes := []string{"rest", "hive", "glue", "hadoop"}
 
 	for _, catalogType := range validTypes {
 		t.Run(catalogType, func(t *testing.T) {
