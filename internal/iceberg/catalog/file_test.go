@@ -109,4 +109,22 @@ func TestFileCatalog(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, exists)
 	})
+
+	t.Run("S3WarehouseURI", func(t *testing.T) {
+		s3Catalog := NewFileCatalog(store, "s3://getajobdemo/iceberg")
+		id := TableIdentifier{Name: "uri_test"}
+
+		table, err := s3Catalog.CreateTableIfMissing(ctx, id, CreateTableOptions{
+			Schema: DefaultSchema(),
+		})
+		require.NoError(t, err)
+
+		// Key should NOT include s3://
+		metaPath := "iceberg/uri_test/metadata/v0.metadata.json"
+		_, err = store.Head(ctx, metaPath)
+		assert.NoError(t, err)
+
+		// Location SHOULD include s3://
+		assert.Equal(t, "s3://getajobdemo/iceberg/uri_test", table.Location())
+	})
 }
