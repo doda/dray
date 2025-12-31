@@ -44,9 +44,10 @@ type Compactor struct {
 	lockManager     *compaction.LockManager
 	sagaManager     *compaction.SagaManager
 	indexSwapper    *compaction.IndexSwapper
-	icebergCatalog  catalog.Catalog
-	icebergAppender *catalog.Appender
-	icebergChecker  *compaction.IcebergChecker
+	icebergCatalog      catalog.Catalog
+	icebergAppender     *catalog.Appender
+	icebergTableCreator *catalog.TableCreator
+	icebergChecker      *compaction.IcebergChecker
 	converter       *worker.Converter
 	healthServer    *server.HealthServer
 
@@ -158,6 +159,10 @@ func (c *Compactor) Start(ctx context.Context) error {
 		}
 		c.icebergCatalog = cat
 		c.icebergAppender = catalog.NewAppender(catalog.DefaultAppenderConfig(cat))
+		c.icebergTableCreator = catalog.NewTableCreator(catalog.TableCreatorConfig{
+			Catalog:   cat,
+			ClusterID: c.opts.Config.ClusterID,
+		})
 	}
 
 	// Create Iceberg checker
@@ -407,6 +412,12 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 	}
 
 	if icebergEnabled && c.icebergAppender != nil {
+		// Ensure table exists (lazy creation)
+		if _, err := c.icebergTableCreator.CreateTableForTopic(ctx, topicName); err != nil {
+			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, fmt.Sprintf("ensure iceberg table exists: %v", err))
+			return fmt.Errorf("ensure iceberg table exists: %w", err)
+		}
+
 		// Commit to Iceberg
 		c.logger.Infof("committing to Iceberg", map[string]any{
 			"topic": topicName,
@@ -494,6 +505,12 @@ func (c *Compactor) recoverJob(ctx context.Context, job *compaction.Job) {
 		}
 
 		if icebergEnabled && c.icebergAppender != nil {
+			// Ensure table exists (lazy creation)
+			if _, err := c.icebergTableCreator.CreateTableForTopic(ctx, streamMeta.TopicName); err != nil {
+				c.logger.Warnf("recovery: ensure iceberg table exists failed", map[string]any{"error": err.Error()})
+				return
+			}
+
 			stats := catalog.DefaultDataFileStats(streamMeta.Partition, job.SourceStartOffset, job.SourceEndOffset-1,
 				job.ParquetMinTimestampMs, job.ParquetMaxTimestampMs, job.ParquetRecordCount)
 			dataFile := catalog.BuildDataFileFromStats(job.ParquetPath, streamMeta.Partition,
