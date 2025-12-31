@@ -164,12 +164,33 @@ func OffsetIndexPrefix(streamID string) string {
 
 // OffsetIndexStartKey returns a key for listing offset index entries
 // starting at or after the given offset.
+//
+// IMPORTANT: Oxia uses hierarchical key sorting that groups keys by their
+// path depth (number of '/' segments). To make range queries work correctly,
+// the startKey must have the same number of segments as the actual keys.
+// Offset index keys have format: .../offset-index/<offsetEndZ>/<cumulativeSizeZ>
+// So we include a minimum cumulativeSize (0) to match the segment count.
 func OffsetIndexStartKey(streamID string, offsetEnd int64) (string, error) {
 	offsetEndZ, err := EncodeOffsetEnd(offsetEnd)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s/%s/offset-index/%s/", StreamsPrefix, streamID, offsetEndZ), nil
+	// Use minimum cumulativeSize (0) to get keys >= this offset
+	minCumulativeSize := EncodeUint64(0, SizeWidth)
+	return fmt.Sprintf("%s/%s/offset-index/%s/%s", StreamsPrefix, streamID, offsetEndZ, minCumulativeSize), nil
+}
+
+// OffsetIndexEndKey returns the end key for listing offset index entries.
+// This is used as the exclusive upper bound for range queries.
+//
+// IMPORTANT: Oxia uses hierarchical key sorting that groups keys by their
+// path depth. The endKey must have the same number of segments as startKey.
+func OffsetIndexEndKey(streamID string) string {
+	// Use maximum possible values for offsetEnd and cumulativeSize
+	// to capture all keys in the offset-index namespace.
+	maxOffset := EncodeUint64(^uint64(0), OffsetWidth)      // All 9s
+	maxSize := EncodeUint64(^uint64(0), SizeWidth)          // All 9s
+	return fmt.Sprintf("%s/%s/offset-index/%s/%s", StreamsPrefix, streamID, maxOffset, maxSize)
 }
 
 // ParseOffsetIndexKey parses an offset index key into its components.

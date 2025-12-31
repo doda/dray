@@ -180,6 +180,12 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 	partResp := kmsg.NewFetchResponseTopicPartition()
 	partResp.Partition = partReq.Partition
 
+	logging.FromCtx(ctx).Infof("processPartition: topic=%s partition=%d fetchOffset=%d", map[string]any{
+		"topic":       topicName,
+		"partition":   partReq.Partition,
+		"fetchOffset": partReq.FetchOffset,
+	})
+
 	// Get partition metadata to get streamId
 	partMeta, err := h.topicStore.GetPartition(ctx, topicName, partReq.Partition)
 	if err != nil {
@@ -274,6 +280,11 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 		MaxBytes:    maxBytes,
 	})
 	if err != nil {
+		logging.FromCtx(ctx).Warnf("fetch error", map[string]any{
+			"streamID":    streamID,
+			"fetchOffset": fetchOffset,
+			"error":       err.Error(),
+		})
 		if errors.Is(err, index.ErrStreamNotFound) {
 			return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, hwm, earliestOffset)
 		}
@@ -282,6 +293,16 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 		}
 		return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, hwm, earliestOffset)
 	}
+
+	logging.FromCtx(ctx).Infof("fetch result", map[string]any{
+		"streamID":        streamID,
+		"fetchOffset":     fetchOffset,
+		"hwm":             fetchResp.HighWatermark,
+		"offsetBeyondHWM": fetchResp.OffsetBeyondHWM,
+		"numBatches":      len(fetchResp.Batches),
+		"totalBytes":      fetchResp.TotalBytes,
+		"source":          fetchResp.Source,
+	})
 
 	// Record source-specific latency
 	h.recordSourceLatency(fetchStart, fetchResp.Source)
@@ -310,7 +331,16 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 			buf.Write(batch)
 		}
 		partResp.RecordBatches = buf.Bytes()
+	} else {
+		// Ensure RecordBatches is empty slice (encodes as 0) not nil (encodes as -1)
+		partResp.RecordBatches = []byte{}
 	}
+
+	logging.FromCtx(ctx).Infof("response built", map[string]any{
+		"recordBatchesLen": len(partResp.RecordBatches),
+		"hwm":              partResp.HighWatermark,
+		"errorCode":        partResp.ErrorCode,
+	})
 
 	return partResp
 }
@@ -339,10 +369,22 @@ func (h *FetchHandler) buildEmptyPartitionResponse(version int16, partition int3
 	partResp.HighWatermark = hwm
 	partResp.LastStableOffset = hwm
 	partResp.LogStartOffset = logStartOffset
+	// Use empty slice, not nil, to encode as length=0 instead of length=-1 (null).
+	// Some Kafka clients (e.g., librdkafka) don't accept null records with error_code=0.
+	partResp.RecordBatches = []byte{}
+	// Also set AbortedTransactions to empty slice instead of nil
+	partResp.AbortedTransactions = []kmsg.FetchResponseTopicPartitionAbortedTransaction{}
 
 	if version >= 11 {
 		partResp.PreferredReadReplica = -1
 	}
+
+	logging.FromCtx(context.Background()).Debugf("buildEmptyPartitionResponse: partition=%d hwm=%d logStartOffset=%d recordBatchesLen=%d", map[string]any{
+		"partition":      partition,
+		"hwm":            hwm,
+		"logStartOffset": logStartOffset,
+		"recordBatches":  len(partResp.RecordBatches),
+	})
 
 	return partResp
 }
@@ -355,6 +397,8 @@ func (h *FetchHandler) buildPartitionError(version int16, partition int32, error
 	partResp.HighWatermark = hwm
 	partResp.LastStableOffset = hwm
 	partResp.LogStartOffset = logStartOffset
+	// Use empty slice, not nil, to encode as length=0 instead of length=-1 (null).
+	partResp.RecordBatches = []byte{}
 
 	if version >= 11 {
 		partResp.PreferredReadReplica = -1

@@ -61,8 +61,9 @@ type SASLConfig struct {
 }
 
 type MetadataConfig struct {
-	OxiaEndpoint string `yaml:"oxiaEndpoint" env:"DRAY_OXIA_ENDPOINT"`
-	NumDomains   int    `yaml:"numDomains" env:"DRAY_METADATA_NUM_DOMAINS"`
+	OxiaEndpoint  string `yaml:"oxiaEndpoint" env:"DRAY_OXIA_ENDPOINT"`
+	OxiaNamespace string `yaml:"oxiaNamespace" env:"DRAY_OXIA_NAMESPACE"`
+	NumDomains    int    `yaml:"numDomains" env:"DRAY_METADATA_NUM_DOMAINS"`
 }
 
 type ObjectStoreConfig struct {
@@ -329,7 +330,12 @@ func OxiaNamespace(clusterID string) string {
 }
 
 // OxiaNamespace returns the Oxia namespace for this config.
+// If metadata.oxiaNamespace is set, it is used directly.
+// Otherwise, returns "dray/<clusterId>".
 func (c *Config) OxiaNamespace() string {
+	if ns := strings.TrimSpace(c.Metadata.OxiaNamespace); ns != "" {
+		return ns
+	}
 	clusterID := strings.TrimSpace(c.ClusterID)
 	if clusterID == "" {
 		clusterID = DefaultClusterID
