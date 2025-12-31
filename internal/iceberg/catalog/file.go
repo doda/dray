@@ -362,10 +362,10 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 	//
 	// However, for Dray's duality tracking, we can store the file list in the snapshot summary
 	// or just maintain the metadata JSON.
-	
+
 	newSnapshotID := time.Now().UnixNano()
 	now := time.Now().UnixMilli()
-	
+
 	var parentID *int64
 	seqNum := int64(1)
 	if t.metadata.CurrentSnapshotID != nil {
@@ -379,15 +379,15 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 	}
 
 	summary := map[string]string{
-		"operation":                "append",
-		"added-data-files":         strconv.Itoa(len(files)),
-		"added-records":            "0", // Sum from files
-		"added-files-size":         "0", // Sum from files
-		"total-data-files":         strconv.Itoa(len(files)),
-		"total-records":            "0",
-		"total-files-size":         "0",
+		"operation":        "append",
+		"added-data-files": strconv.Itoa(len(files)),
+		"added-records":    "0", // Sum from files
+		"added-files-size": "0", // Sum from files
+		"total-data-files": strconv.Itoa(len(files)),
+		"total-records":    "0",
+		"total-files-size": "0",
 	}
-	
+
 	var totalRecords int64
 	var totalBytes int64
 	for _, f := range files {
@@ -396,7 +396,7 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 	}
 	summary["added-records"] = strconv.FormatInt(totalRecords, 10)
 	summary["added-files-size"] = strconv.FormatInt(totalBytes, 10)
-	
+
 	if opts != nil && opts.SnapshotProperties != nil {
 		for k, v := range opts.SnapshotProperties {
 			summary[k] = v
@@ -410,9 +410,9 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 				tr, _ := strconv.ParseInt(snap.Summary["total-records"], 10, 64)
 				tf, _ := strconv.ParseInt(snap.Summary["total-data-files"], 10, 64)
 				ts, _ := strconv.ParseInt(snap.Summary["total-files-size"], 10, 64)
-				
+
 				summary["total-records"] = strconv.FormatInt(tr+totalRecords, 10)
-				summary["total-data-files"] = strconv.Itoa(int(tf)+len(files))
+				summary["total-data-files"] = strconv.Itoa(int(tf) + len(files))
 				summary["total-files-size"] = strconv.FormatInt(ts+totalBytes, 10)
 				break
 			}
@@ -432,7 +432,7 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 		SchemaID:         &t.metadata.CurrentSchemaID,
 		// ManifestList is required for v2, but we don't have Avro to write it.
 		// We'll use a placeholder or leave it empty if we just want to track snapshots.
-		ManifestList:     fmt.Sprintf("%s/metadata/snap-%d.avro", t.metadata.Location, newSnapshotID),
+		ManifestList: fmt.Sprintf("%s/metadata/snap-%d.avro", t.metadata.Location, newSnapshotID),
 	}
 
 	// Update metadata

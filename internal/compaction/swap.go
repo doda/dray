@@ -259,11 +259,11 @@ func (s *IndexSwapper) Swap(ctx context.Context, req SwapRequest) (*SwapResult, 
 	}
 
 	result := &SwapResult{
-		NewIndexKey:           newIndexKey,
-		DecrementedWALObjects: decrementedWALObjects,
-		WALObjectsReadyForGC:  walObjectsReadyForGC,
+		NewIndexKey:                newIndexKey,
+		DecrementedWALObjects:      decrementedWALObjects,
+		WALObjectsReadyForGC:       walObjectsReadyForGC,
 		ParquetFilesScheduledForGC: make([]string, 0, len(parquetEntries)),
-		ParquetGCCandidates:         make([]ParquetGCCandidate, 0, len(parquetEntries)),
+		ParquetGCCandidates:        make([]ParquetGCCandidate, 0, len(parquetEntries)),
 	}
 
 	if len(parquetEntries) > 0 {

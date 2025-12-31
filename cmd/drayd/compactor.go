@@ -34,22 +34,22 @@ type CompactorOptions struct {
 
 // Compactor represents a running Dray compactor instance.
 type Compactor struct {
-	opts            CompactorOptions
-	logger          *logging.Logger
-	metaStore       metadata.MetadataStore
-	objectStore     objectstore.Store
-	topicStore      *topics.Store
-	streamManager   *index.StreamManager
-	planner         *planner.Planner
-	lockManager     *compaction.LockManager
-	sagaManager     *compaction.SagaManager
-	indexSwapper    *compaction.IndexSwapper
+	opts                CompactorOptions
+	logger              *logging.Logger
+	metaStore           metadata.MetadataStore
+	objectStore         objectstore.Store
+	topicStore          *topics.Store
+	streamManager       *index.StreamManager
+	planner             *planner.Planner
+	lockManager         *compaction.LockManager
+	sagaManager         *compaction.SagaManager
+	indexSwapper        *compaction.IndexSwapper
 	icebergCatalog      catalog.Catalog
 	icebergAppender     *catalog.Appender
 	icebergTableCreator *catalog.TableCreator
 	icebergChecker      *compaction.IcebergChecker
-	converter       *worker.Converter
-	healthServer    *server.HealthServer
+	converter           *worker.Converter
+	healthServer        *server.HealthServer
 
 	mu        sync.Mutex
 	started   bool
