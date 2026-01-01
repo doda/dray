@@ -386,12 +386,13 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 		return fmt.Errorf("convert to parquet: %w", err)
 	}
 
-	// Generate Parquet path
-	parquetPath := fmt.Sprintf("parquet/%s/%s.parquet", plan.StreamID, job.JobID)
+	// Generate Parquet paths - relative for object store, full S3 URI for Iceberg manifests
+	parquetRelPath := fmt.Sprintf("parquet/%s/%s.parquet", plan.StreamID, job.JobID)
+	parquetPath := fmt.Sprintf("s3://%s/%s", c.opts.Config.ObjectStore.Bucket, parquetRelPath)
 
-	// Write Parquet to object storage
+	// Write Parquet to object storage using relative path
 	if c.objectStore != nil {
-		if err := c.converter.WriteParquetToStorage(ctx, parquetPath, convertResult.ParquetData); err != nil {
+		if err := c.converter.WriteParquetToStorage(ctx, parquetRelPath, convertResult.ParquetData); err != nil {
 			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
 			return fmt.Errorf("write parquet: %w", err)
 		}
