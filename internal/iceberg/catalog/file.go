@@ -402,6 +402,8 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 		AddedSnapshotID:     newSnapshotID,
 		AddedDataFilesCount: int32(len(files)),
 		AddedRowsCount:      0,
+		Content:             0, // DATA
+		SequenceNumber:      seqNum,
 	}
 	for _, f := range files {
 		manifestListEntry.AddedRowsCount += f.RecordCount
