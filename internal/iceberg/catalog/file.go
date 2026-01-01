@@ -1,7 +1,8 @@
 package catalog
 
 import (
-	"context"
+	"bytes"
+        "context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -355,14 +356,6 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 		}
 	}
 
-	// In a real Iceberg implementation, we would write Manifest Files (Avro) and a Manifest List (Avro).
-	// Since we are implementing a "simpler" version without Avro support, we will
-	// create a virtual snapshot. Note that this won't be readable by standard Iceberg
-	// tools unless they support JSON manifests (which they don't).
-	//
-	// However, for Dray's duality tracking, we can store the file list in the snapshot summary
-	// or just maintain the metadata JSON.
-
 	newSnapshotID := time.Now().UnixNano()
 	now := time.Now().UnixMilli()
 
@@ -378,23 +371,75 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 		}
 	}
 
+	// 1. Write Manifest File (Avro)
+	manifestData, err := writeManifestFile(files, newSnapshotID, seqNum)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create manifest file: %w", err)
+	}
+
+	manifestName := fmt.Sprintf("manifest-%d.avro", newSnapshotID)
+	manifestPath := fmt.Sprintf("%s/metadata/%s", t.metadata.Location, manifestName)
+	// Strip s3://bucket/ for store.Put
+	manifestKey := manifestPath
+	if strings.HasPrefix(manifestKey, "s3://") {
+		parts := strings.SplitN(manifestKey[5:], "/", 2)
+		if len(parts) > 1 {
+			manifestKey = parts[1]
+		}
+	}
+
+	if err := t.catalog.store.Put(ctx, manifestKey, bytes.NewReader(manifestData), int64(len(manifestData)), "application/avro"); err != nil {
+		return nil, fmt.Errorf("failed to upload manifest file: %w", err)
+	}
+
+	// 2. Write Manifest List (Avro)
+	// For simplicity, we create a manifest list with just the new manifest
+	// In a full implementation, we'd include inherited manifests
+	manifestListEntry := AvroManifestListEntry{
+		ManifestPath:        manifestPath,
+		ManifestLength:      int64(len(manifestData)),
+		PartitionSpecID:     t.metadata.DefaultSpecID,
+		AddedSnapshotID:     newSnapshotID,
+		AddedDataFilesCount: int32(len(files)),
+		AddedRowsCount:      0,
+	}
+	for _, f := range files {
+		manifestListEntry.AddedRowsCount += f.RecordCount
+	}
+
+	manifestListData, err := writeManifestList([]AvroManifestListEntry{manifestListEntry})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create manifest list: %w", err)
+	}
+
+	manifestListName := fmt.Sprintf("snap-%d.avro", newSnapshotID)
+	manifestListPath := fmt.Sprintf("%s/metadata/%s", t.metadata.Location, manifestListName)
+	manifestListKey := manifestListPath
+	if strings.HasPrefix(manifestListKey, "s3://") {
+		parts := strings.SplitN(manifestListKey[5:], "/", 2)
+		if len(parts) > 1 {
+			manifestListKey = parts[1]
+		}
+	}
+
+	if err := t.catalog.store.Put(ctx, manifestListKey, bytes.NewReader(manifestListData), int64(len(manifestListData)), "application/avro"); err != nil {
+		return nil, fmt.Errorf("failed to upload manifest list: %w", err)
+	}
+
 	summary := map[string]string{
 		"operation":        "append",
 		"added-data-files": strconv.Itoa(len(files)),
-		"added-records":    "0", // Sum from files
+		"added-records":    strconv.FormatInt(manifestListEntry.AddedRowsCount, 10),
 		"added-files-size": "0", // Sum from files
 		"total-data-files": strconv.Itoa(len(files)),
 		"total-records":    "0",
 		"total-files-size": "0",
 	}
 
-	var totalRecords int64
 	var totalBytes int64
 	for _, f := range files {
-		totalRecords += f.RecordCount
 		totalBytes += f.FileSizeBytes
 	}
-	summary["added-records"] = strconv.FormatInt(totalRecords, 10)
 	summary["added-files-size"] = strconv.FormatInt(totalBytes, 10)
 
 	if opts != nil && opts.SnapshotProperties != nil {
@@ -411,7 +456,7 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 				tf, _ := strconv.ParseInt(snap.Summary["total-data-files"], 10, 64)
 				ts, _ := strconv.ParseInt(snap.Summary["total-files-size"], 10, 64)
 
-				summary["total-records"] = strconv.FormatInt(tr+totalRecords, 10)
+				summary["total-records"] = strconv.FormatInt(tr+manifestListEntry.AddedRowsCount, 10)
 				summary["total-data-files"] = strconv.Itoa(int(tf) + len(files))
 				summary["total-files-size"] = strconv.FormatInt(ts+totalBytes, 10)
 				break
@@ -430,9 +475,7 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 		TimestampMs:      now,
 		Summary:          summary,
 		SchemaID:         &t.metadata.CurrentSchemaID,
-		// ManifestList is required for v2, but we don't have Avro to write it.
-		// We'll use a placeholder or leave it empty if we just want to track snapshots.
-		ManifestList: fmt.Sprintf("%s/metadata/snap-%d.avro", t.metadata.Location, newSnapshotID),
+		ManifestList:     manifestListPath,
 	}
 
 	// Update metadata
@@ -445,7 +488,7 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 		SnapshotID:  newSnapshotID,
 	})
 
-	err := t.catalog.writeMetadata(ctx, t.identifier, t.version+1, newMetadata)
+	err = t.catalog.writeMetadata(ctx, t.identifier, t.version+1, newMetadata)
 	if err != nil {
 		return nil, err
 	}
