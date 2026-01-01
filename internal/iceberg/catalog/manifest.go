@@ -13,7 +13,7 @@ import (
 
 const manifestListSchema = `{
   "type": "record",
-  "name": "manifest_list",
+  "name": "manifest_file",
   "fields": [
     {"name": "manifest_path", "type": "string", "field-id": 500},
     {"name": "manifest_length", "type": "long", "field-id": 501},
@@ -54,7 +54,7 @@ const manifestFileSchema = `{
     {"name": "file_sequence_number", "type": ["null", "long"], "field-id": 4, "default": null},
     {"name": "data_file", "type": {
       "type": "record",
-      "name": "data_file",
+      "name": "r2",
       "fields": [
         {"name": "content", "type": "int", "field-id": 134, "default": 0},
         {"name": "file_path", "type": "string", "field-id": 100},
@@ -178,15 +178,24 @@ type AvroFieldSummary struct {
 	UpperBound   *[]byte `avro:"upper_bound"`
 }
 
+// rawSchemaMarshaler returns a marshaler that preserves the raw schema string
+// including Iceberg-specific field-id annotations that avro.Schema.String() strips
+func rawSchemaMarshaler(rawSchema string) func(avro.Schema) ([]byte, error) {
+	return func(_ avro.Schema) ([]byte, error) {
+		return []byte(rawSchema), nil
+	}
+}
+
 // writeManifestFile encodes data files into an Iceberg manifest file (Avro OCF).
 func writeManifestFile(files []DataFile, snapshotID int64, seqNum int64) ([]byte, error) {
-	schema, err := avro.Parse(manifestFileSchema)
-	if err != nil {
+	// Validate schema parses correctly
+	if _, err := avro.Parse(manifestFileSchema); err != nil {
 		return nil, fmt.Errorf("parsing manifest file schema: %w", err)
 	}
 
 	buf := &bytes.Buffer{}
-	enc, err := ocf.NewEncoder(schema.String(), buf)
+	// Use WithSchemaMarshaler to preserve field-id annotations required by Iceberg
+	enc, err := ocf.NewEncoder(manifestFileSchema, buf, ocf.WithSchemaMarshaler(rawSchemaMarshaler(manifestFileSchema)))
 	if err != nil {
 		return nil, fmt.Errorf("creating ocf encoder: %w", err)
 	}
@@ -213,13 +222,14 @@ func writeManifestFile(files []DataFile, snapshotID int64, seqNum int64) ([]byte
 
 // writeManifestList encodes manifest list entries into an Iceberg manifest list file (Avro OCF).
 func writeManifestList(entries []AvroManifestListEntry) ([]byte, error) {
-	schema, err := avro.Parse(manifestListSchema)
-	if err != nil {
+	// Validate schema parses correctly
+	if _, err := avro.Parse(manifestListSchema); err != nil {
 		return nil, fmt.Errorf("parsing manifest list schema: %w", err)
 	}
 
 	buf := &bytes.Buffer{}
-	enc, err := ocf.NewEncoder(schema.String(), buf)
+	// Use WithSchemaMarshaler to preserve field-id annotations required by Iceberg
+	enc, err := ocf.NewEncoder(manifestListSchema, buf, ocf.WithSchemaMarshaler(rawSchemaMarshaler(manifestListSchema)))
 	if err != nil {
 		return nil, fmt.Errorf("creating ocf encoder: %w", err)
 	}
