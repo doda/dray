@@ -19,12 +19,12 @@ const manifestListSchema = `{
     {"name": "manifest_length", "type": "long", "field-id": 501},
     {"name": "partition_spec_id", "type": "int", "field-id": 502},
     {"name": "added_snapshot_id", "type": "long", "field-id": 503},
-    {"name": "added_data_files_count", "type": "int", "field-id": 504},
-    {"name": "existing_data_files_count", "type": "int", "field-id": 505},
-    {"name": "deleted_data_files_count", "type": "int", "field-id": 506},
-    {"name": "added_rows_count", "type": "long", "field-id": 507},
-    {"name": "existing_rows_count", "type": "long", "field-id": 508},
-    {"name": "deleted_rows_count", "type": "long", "field-id": 509},
+    {"name": "added_data_files_count", "type": "int", "field-id": 504, "default": 0},
+    {"name": "existing_data_files_count", "type": "int", "field-id": 505, "default": 0},
+    {"name": "deleted_data_files_count", "type": "int", "field-id": 506, "default": 0},
+    {"name": "added_rows_count", "type": "long", "field-id": 507, "default": 0},
+    {"name": "existing_rows_count", "type": "long", "field-id": 508, "default": 0},
+    {"name": "deleted_rows_count", "type": "long", "field-id": 509, "default": 0},
     {"name": "partitions", "type": ["null", {
       "type": "array",
       "items": {
@@ -32,13 +32,15 @@ const manifestListSchema = `{
         "name": "field_summary",
         "fields": [
           {"name": "contains_null", "type": "boolean", "field-id": 510},
-          {"name": "contains_nan", "type": ["null", "boolean"], "field-id": 511},
-          {"name": "lower_bound", "type": ["null", "bytes"], "field-id": 512},
-          {"name": "upper_bound", "type": ["null", "bytes"], "field-id": 513}
+          {"name": "contains_nan", "type": ["null", "boolean"], "field-id": 511, "default": null},
+          {"name": "lower_bound", "type": ["null", "bytes"], "field-id": 512, "default": null},
+          {"name": "upper_bound", "type": ["null", "bytes"], "field-id": 513, "default": null}
         ]
       }
     }], "field-id": 510, "default": null},
-    {"name": "key_metadata", "type": ["null", "bytes"], "field-id": 519, "default": null}
+    {"name": "key_metadata", "type": ["null", "bytes"], "field-id": 519, "default": null},
+    {"name": "content", "type": "int", "field-id": 517, "default": 0},
+    {"name": "sequence_number", "type": "long", "field-id": 518, "default": 0}
   ]
 }`
 
@@ -165,6 +167,8 @@ type AvroManifestListEntry struct {
 	DeletedRowsCount       int64                `avro:"deleted_rows_count"`
 	Partitions             *[]AvroFieldSummary  `avro:"partitions"`
 	KeyMetadata            *[]byte              `avro:"key_metadata"`
+	Content                int32                `avro:"content"`
+	SequenceNumber         int64                `avro:"sequence_number"`
 }
 
 type AvroFieldSummary struct {
