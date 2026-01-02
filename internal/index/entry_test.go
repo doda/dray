@@ -440,8 +440,9 @@ func TestAppendIndexEntry_UsesLastEntryLookup(t *testing.T) {
 	if store.lastListLimit != 1 {
 		t.Errorf("lastListLimit = %d, want 1", store.lastListLimit)
 	}
-	if store.lastListEndKey != "" {
-		t.Errorf("lastListEndKey = %s, want empty", store.lastListEndKey)
+	expectedEndKey := keys.OffsetIndexEndKey(streamID)
+	if store.lastListEndKey != expectedEndKey {
+		t.Errorf("lastListEndKey = %s, want %s", store.lastListEndKey, expectedEndKey)
 	}
 }
 
@@ -1007,10 +1008,10 @@ func TestLookupOffset_MultipleEntries(t *testing.T) {
 	}
 
 	tests := []struct {
-		offset        int64
-		wantStart     int64
-		wantEnd       int64
-		wantFound     bool
+		offset    int64
+		wantStart int64
+		wantEnd   int64
+		wantFound bool
 	}{
 		{0, 0, 100, true},
 		{50, 0, 100, true},

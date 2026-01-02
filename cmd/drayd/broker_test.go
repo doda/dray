@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dray-io/dray/internal/config"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/kmsg"
@@ -16,7 +15,7 @@ import (
 
 func TestBrokerStartAndShutdown(t *testing.T) {
 	// Create minimal config
-	cfg := config.Default()
+	cfg := testConfigWithOxia(t)
 	cfg.Broker.ListenAddr = "127.0.0.1:0" // Random port
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 
@@ -46,14 +45,7 @@ func TestBrokerStartAndShutdown(t *testing.T) {
 		errCh <- broker.Start(ctx)
 	}()
 
-	// Wait for broker to start
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify broker is listening
-	if broker.tcpServer == nil || broker.tcpServer.Addr() == nil {
-		t.Fatal("broker TCP server not running")
-	}
-	addr := broker.tcpServer.Addr().String()
+	addr := waitForBrokerStart(t, broker, errCh)
 	t.Logf("Broker listening on %s", addr)
 
 	// Try to connect
@@ -78,7 +70,7 @@ func TestBrokerStartAndShutdown(t *testing.T) {
 }
 
 func TestBrokerRegistry(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfigWithOxia(t)
 	cfg.Broker.ListenAddr = "127.0.0.1:0"
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 
@@ -102,8 +94,11 @@ func TestBrokerRegistry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go broker.Start(ctx)
-	time.Sleep(200 * time.Millisecond)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- broker.Start(ctx)
+	}()
+	waitForBrokerStart(t, broker, errCh)
 
 	// Verify broker is registered
 	if broker.registry == nil {
@@ -133,7 +128,7 @@ func TestBrokerRegistry(t *testing.T) {
 }
 
 func TestBrokerApiVersions(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfigWithOxia(t)
 	cfg.Broker.ListenAddr = "127.0.0.1:0"
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 
@@ -156,10 +151,11 @@ func TestBrokerApiVersions(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go broker.Start(ctx)
-	time.Sleep(200 * time.Millisecond)
-
-	addr := broker.tcpServer.Addr().String()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- broker.Start(ctx)
+	}()
+	addr := waitForBrokerStart(t, broker, errCh)
 
 	// Connect with franz-go client and verify ApiVersions
 	client, err := kgo.NewClient(
@@ -187,7 +183,7 @@ func TestBrokerApiVersions(t *testing.T) {
 }
 
 func TestBrokerTransactionAPIRejection(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfigWithOxia(t)
 	cfg.Broker.ListenAddr = "127.0.0.1:0"
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 
@@ -210,10 +206,11 @@ func TestBrokerTransactionAPIRejection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go broker.Start(ctx)
-	time.Sleep(200 * time.Millisecond)
-
-	addr := broker.tcpServer.Addr().String()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- broker.Start(ctx)
+	}()
+	addr := waitForBrokerStart(t, broker, errCh)
 
 	// Helper to send a raw Kafka request and read response
 	sendRequest := func(conn net.Conn, apiKey, version int16, correlationID int32, reqBody []byte) ([]byte, error) {
@@ -431,7 +428,7 @@ func TestBrokerTransactionAPIRejection(t *testing.T) {
 }
 
 func TestBrokerInterBrokerAPIRejection(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfigWithOxia(t)
 	cfg.Broker.ListenAddr = "127.0.0.1:0"
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 
@@ -454,10 +451,11 @@ func TestBrokerInterBrokerAPIRejection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go broker.Start(ctx)
-	time.Sleep(200 * time.Millisecond)
-
-	addr := broker.tcpServer.Addr().String()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- broker.Start(ctx)
+	}()
+	addr := waitForBrokerStart(t, broker, errCh)
 
 	// Helper to send a raw Kafka request and read response
 	sendRequest := func(conn net.Conn, apiKey, version int16, correlationID int32, reqBody []byte) ([]byte, error) {
@@ -604,7 +602,7 @@ func TestBrokerInterBrokerAPIRejection(t *testing.T) {
 }
 
 func TestBrokerGracefulShutdown(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfigWithOxia(t)
 	cfg.Broker.ListenAddr = "127.0.0.1:0"
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 
@@ -626,10 +624,11 @@ func TestBrokerGracefulShutdown(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	go broker.Start(ctx)
-	time.Sleep(200 * time.Millisecond)
-
-	addr := broker.tcpServer.Addr().String()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- broker.Start(ctx)
+	}()
+	addr := waitForBrokerStart(t, broker, errCh)
 
 	// Create a client connection
 	client, err := kgo.NewClient(

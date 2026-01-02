@@ -1,151 +1,147 @@
 package catalog
 
-// Iceberg type constants for Dray schema fields.
-const (
-	TypeInt         = "int"
-	TypeLong        = "long"
-	TypeBinary      = "binary"
-	TypeString      = "string"
-	TypeTimestampTz = "timestamptz" // Timestamp with timezone (stores UTC milliseconds)
+import (
+	"encoding/json"
+
+	"github.com/apache/iceberg-go"
 )
 
 // Dray schema field IDs. These are stable and should not change.
 const (
-	FieldIDPartition     int32 = 1
-	FieldIDOffset        int32 = 2
-	FieldIDTimestampMs   int32 = 3
-	FieldIDKey           int32 = 4
-	FieldIDValue         int32 = 5
-	FieldIDHeaders       int32 = 6
-	FieldIDProducerID    int32 = 7
-	FieldIDProducerEpoch int32 = 8
-	FieldIDBaseSequence  int32 = 9
-	FieldIDAttributes    int32 = 10
+	FieldIDPartition     = 1
+	FieldIDOffset        = 2
+	FieldIDTimestampMs   = 3
+	FieldIDKey           = 4
+	FieldIDValue         = 5
+	FieldIDHeaders       = 6
+	FieldIDProducerID    = 7
+	FieldIDProducerEpoch = 8
+	FieldIDBaseSequence  = 9
+	FieldIDAttributes    = 10
+
+	FieldIDHeadersElement = 11
+	FieldIDHeaderKey      = 12
+	FieldIDHeaderValue    = 13
 )
 
 // DefaultSchema returns the default Dray table schema as defined in SPEC.md section 5.3.
-//
-// The schema contains:
-//   - partition (int32): Kafka partition ID
-//   - offset (int64): Kafka offset
-//   - timestamp_ms (int64): Record timestamp
-//   - key (binary): Record key (nullable)
-//   - value (binary): Record value (nullable)
-//   - headers (list<struct<key:string,value:binary>>): Record headers
-//   - producer_id (int64, nullable): For future idempotent producer support
-//   - producer_epoch (int16, nullable): For future idempotent producer support
-//   - base_sequence (int32, nullable): For future idempotent producer support
-//   - attributes (int): Record batch attributes
-func DefaultSchema() Schema {
-	return Schema{
-		SchemaID: 0,
-		Fields: []Field{
-			{
-				ID:       FieldIDPartition,
-				Name:     "partition",
-				Type:     TypeInt,
-				Required: true,
-				Doc:      "Kafka partition ID",
-			},
-			{
-				ID:       FieldIDOffset,
-				Name:     "offset",
-				Type:     TypeLong,
-				Required: true,
-				Doc:      "Kafka offset",
-			},
-			{
-				ID:       FieldIDTimestampMs,
-				Name:     "timestamp_ms",
-				Type:     TypeTimestampTz,
-				Required: true,
-				Doc:      "Record timestamp in milliseconds (UTC)",
-			},
-			{
-				ID:       FieldIDKey,
-				Name:     "key",
-				Type:     TypeBinary,
-				Required: false,
-				Doc:      "Record key",
-			},
-			{
-				ID:       FieldIDValue,
-				Name:     "value",
-				Type:     TypeBinary,
-				Required: false,
-				Doc:      "Record value",
-			},
-			{
-				ID:       FieldIDHeaders,
-				Name:     "headers",
-				Type:     TypeString,
-				Required: false,
-				Doc:      "Record headers as JSON string",
-			},
-			{
-				ID:       FieldIDProducerID,
-				Name:     "producer_id",
-				Type:     TypeLong,
-				Required: false,
-				Doc:      "Producer ID for idempotent producers (future use)",
-			},
-			{
-				ID:       FieldIDProducerEpoch,
-				Name:     "producer_epoch",
-				Type:     TypeInt,
-				Required: false,
-				Doc:      "Producer epoch for idempotent producers (future use)",
-			},
-			{
-				ID:       FieldIDBaseSequence,
-				Name:     "base_sequence",
-				Type:     TypeInt,
-				Required: false,
-				Doc:      "Base sequence for idempotent producers (future use)",
-			},
-			{
-				ID:       FieldIDAttributes,
-				Name:     "attributes",
-				Type:     TypeInt,
-				Required: true,
-				Doc:      "Record batch attributes",
+func DefaultSchema() *iceberg.Schema {
+	headersType := &iceberg.ListType{
+		ElementID: FieldIDHeadersElement,
+		Element: &iceberg.StructType{
+			FieldList: []iceberg.NestedField{
+				{
+					ID:       FieldIDHeaderKey,
+					Name:     "key",
+					Type:     iceberg.PrimitiveTypes.String,
+					Required: true,
+				},
+				{
+					ID:       FieldIDHeaderValue,
+					Name:     "value",
+					Type:     iceberg.PrimitiveTypes.Binary,
+					Required: false,
+				},
 			},
 		},
+		ElementRequired: false,
 	}
+
+	return iceberg.NewSchema(0,
+		iceberg.NestedField{
+			ID:       FieldIDPartition,
+			Name:     "partition",
+			Type:     iceberg.PrimitiveTypes.Int32,
+			Required: true,
+			Doc:      "Kafka partition ID",
+		},
+		iceberg.NestedField{
+			ID:       FieldIDOffset,
+			Name:     "offset",
+			Type:     iceberg.PrimitiveTypes.Int64,
+			Required: true,
+			Doc:      "Kafka offset",
+		},
+		iceberg.NestedField{
+			ID:       FieldIDTimestampMs,
+			Name:     "timestamp_ms",
+			Type:     iceberg.PrimitiveTypes.TimestampTz,
+			Required: true,
+			Doc:      "Record timestamp in milliseconds (UTC)",
+		},
+		iceberg.NestedField{
+			ID:       FieldIDKey,
+			Name:     "key",
+			Type:     iceberg.PrimitiveTypes.Binary,
+			Required: false,
+			Doc:      "Record key",
+		},
+		iceberg.NestedField{
+			ID:       FieldIDValue,
+			Name:     "value",
+			Type:     iceberg.PrimitiveTypes.Binary,
+			Required: false,
+			Doc:      "Record value",
+		},
+		iceberg.NestedField{
+			ID:       FieldIDHeaders,
+			Name:     "headers",
+			Type:     headersType,
+			Required: false,
+			Doc:      "Record headers",
+		},
+		iceberg.NestedField{
+			ID:       FieldIDProducerID,
+			Name:     "producer_id",
+			Type:     iceberg.PrimitiveTypes.Int64,
+			Required: false,
+			Doc:      "Producer ID for idempotent producers (future use)",
+		},
+		iceberg.NestedField{
+			ID:       FieldIDProducerEpoch,
+			Name:     "producer_epoch",
+			Type:     iceberg.PrimitiveTypes.Int32,
+			Required: false,
+			Doc:      "Producer epoch for idempotent producers (future use)",
+		},
+		iceberg.NestedField{
+			ID:       FieldIDBaseSequence,
+			Name:     "base_sequence",
+			Type:     iceberg.PrimitiveTypes.Int32,
+			Required: false,
+			Doc:      "Base sequence for idempotent producers (future use)",
+		},
+		iceberg.NestedField{
+			ID:       FieldIDAttributes,
+			Name:     "attributes",
+			Type:     iceberg.PrimitiveTypes.Int32,
+			Required: true,
+			Doc:      "Record batch attributes",
+		},
+	)
 }
 
 // DefaultPartitionSpec returns the default partition spec for Dray tables.
 // Per SPEC.md section 5.3, the default is to partition by the "partition" field (identity).
-func DefaultPartitionSpec() PartitionSpec {
-	return PartitionSpec{
-		SpecID: 0,
-		Fields: []PartitionField{
-			{
-				SourceID:  FieldIDPartition,
-				FieldID:   1000, // Partition field IDs start at 1000 per Iceberg spec
-				Name:      "partition",
-				Transform: "identity",
-			},
-		},
-	}
+func DefaultPartitionSpec() iceberg.PartitionSpec {
+	return iceberg.NewPartitionSpecID(0, iceberg.PartitionField{
+		SourceID:  FieldIDPartition,
+		FieldID:   1000, // Partition field IDs start at 1000 per Iceberg spec
+		Name:      "partition",
+		Transform: iceberg.IdentityTransform{},
+	})
 }
 
 // DefaultNameMapping returns the JSON name mapping for Iceberg tables.
 // This is required because parquet-go doesn't write Iceberg field IDs to parquet files.
 // The name mapping tells Iceberg how to map column names to field IDs.
 func DefaultNameMapping() string {
-	return `[
-		{"field-id": 1, "names": ["partition"]},
-		{"field-id": 2, "names": ["offset"]},
-		{"field-id": 3, "names": ["timestamp_ms"]},
-		{"field-id": 4, "names": ["key"]},
-		{"field-id": 5, "names": ["value"]},
-		{"field-id": 6, "names": ["headers"]},
-		{"field-id": 7, "names": ["producer_id"]},
-		{"field-id": 8, "names": ["producer_epoch"]},
-		{"field-id": 9, "names": ["base_sequence"]},
-		{"field-id": 10, "names": ["attributes"]}
-	]`
+	mapping := DefaultSchema().NameMapping()
+	payload, err := json.Marshal(mapping)
+	if err != nil {
+		return ""
+	}
+	return string(payload)
 }
 
 // DefaultTableProperties returns the default table properties for a Dray table.

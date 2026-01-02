@@ -292,7 +292,7 @@ func TestOffsetIndexPrefix(t *testing.T) {
 func TestOffsetIndexStartKey(t *testing.T) {
 	streamID := "stream-abc"
 	offsetEnd := int64(100)
-	expected := "/dray/v1/streams/stream-abc/offset-index/00000000000000000100/"
+	expected := "/dray/v1/streams/stream-abc/offset-index/00000000000000000100/00000000000000000000"
 	result, err := OffsetIndexStartKey(streamID, offsetEnd)
 	if err != nil {
 		t.Errorf("OffsetIndexStartKey() unexpected error: %v", err)

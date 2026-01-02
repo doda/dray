@@ -55,10 +55,7 @@ func (c *TableCreator) CreateTableForTopic(ctx context.Context, topicName string
 		return nil, ErrCatalogUnavailable
 	}
 
-	identifier := TableIdentifier{
-		Namespace: c.namespace,
-		Name:      topicName,
-	}
+	identifier := NewTableIdentifier(c.namespace, topicName)
 
 	spec := DefaultPartitionSpec()
 	opts := CreateTableOptions{
@@ -77,10 +74,7 @@ func (c *TableCreator) DropTableForTopic(ctx context.Context, topicName string) 
 		return ErrCatalogUnavailable
 	}
 
-	identifier := TableIdentifier{
-		Namespace: c.namespace,
-		Name:      topicName,
-	}
+	identifier := NewTableIdentifier(c.namespace, topicName)
 
 	err := c.catalog.DropTable(ctx, identifier)
 	if err == ErrTableNotFound {
@@ -95,10 +89,7 @@ func (c *TableCreator) TableExistsForTopic(ctx context.Context, topicName string
 		return false, ErrCatalogUnavailable
 	}
 
-	identifier := TableIdentifier{
-		Namespace: c.namespace,
-		Name:      topicName,
-	}
+	identifier := NewTableIdentifier(c.namespace, topicName)
 
 	return c.catalog.TableExists(ctx, identifier)
 }
@@ -109,10 +100,7 @@ func (c *TableCreator) LoadTableForTopic(ctx context.Context, topicName string) 
 		return nil, ErrCatalogUnavailable
 	}
 
-	identifier := TableIdentifier{
-		Namespace: c.namespace,
-		Name:      topicName,
-	}
+	identifier := NewTableIdentifier(c.namespace, topicName)
 
 	return c.catalog.LoadTable(ctx, identifier)
 }

@@ -189,10 +189,7 @@ func TestDeleteTopicsHandler_WithIceberg(t *testing.T) {
 	}
 
 	// Create Iceberg table
-	tableID := catalog.TableIdentifier{
-		Namespace: []string{"dray"},
-		Name:      "iceberg-topic",
-	}
+	tableID := catalog.NewTableIdentifier([]string{"dray"}, "iceberg-topic")
 	_, err = icebergCatalog.CreateTableIfMissing(ctx, tableID, catalog.CreateTableOptions{})
 	if err != nil {
 		t.Fatalf("failed to create Iceberg table: %v", err)
@@ -296,10 +293,7 @@ func TestDeleteTopicsHandler_WithIcebergCustomNamespace(t *testing.T) {
 	}
 
 	customNamespace := []string{"prod", "dray"}
-	tableID := catalog.TableIdentifier{
-		Namespace: customNamespace,
-		Name:      "iceberg-ns-topic",
-	}
+	tableID := catalog.NewTableIdentifier(customNamespace, "iceberg-ns-topic")
 	_, err = icebergCatalog.CreateTableIfMissing(ctx, tableID, catalog.CreateTableOptions{})
 	if err != nil {
 		t.Fatalf("failed to create Iceberg table: %v", err)

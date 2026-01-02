@@ -107,7 +107,7 @@ func TestCrashRecovery_AfterParquetWritten(t *testing.T) {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount)
+	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestCrashRecovery_AfterIcebergCommitted(t *testing.T) {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount)
+	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestCrashRecovery_AfterIndexSwapped(t *testing.T) {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount)
+	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestCrashRecovery_NoDataLossOrDuplication(t *testing.T) {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	job, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount)
+	job, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
@@ -745,13 +745,13 @@ func TestCrashRecovery_IdempotentStateTransitions(t *testing.T) {
 	}
 
 	// Transition to PARQUET_WRITTEN
-	job, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, "/path/to/file.parquet", 5000, 100)
+	job, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, "/path/to/file.parquet", 5000, 100, 0, 0)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
 
 	// Try to transition to PARQUET_WRITTEN again (invalid)
-	_, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, "/path/to/file.parquet", 5000, 100)
+	_, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, "/path/to/file.parquet", 5000, 100, 0, 0)
 	if err == nil {
 		t.Fatal("expected error on duplicate transition to PARQUET_WRITTEN")
 	}
@@ -764,7 +764,7 @@ func TestCrashRecovery_IdempotentStateTransitions(t *testing.T) {
 	}
 
 	// Try to go back to PARQUET_WRITTEN (invalid)
-	_, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, "/path/to/file.parquet", 5000, 100)
+	_, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, "/path/to/file.parquet", 5000, 100, 0, 0)
 	if err == nil {
 		t.Fatal("expected error on backward transition")
 	}
@@ -815,16 +815,16 @@ func TestCrashRecovery_MultipleJobsRecovery(t *testing.T) {
 	// job-created stays in CREATED state
 
 	job2, _ := sagaManager1.CreateJob(ctx, streamID, compaction.WithJobID("job-parquet"))
-	job2, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job2.JobID, "/p", 1000, 50)
+	job2, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job2.JobID, "/p", 1000, 50, 0, 0)
 	// job2 is in PARQUET_WRITTEN
 
 	job3, _ := sagaManager1.CreateJob(ctx, streamID, compaction.WithJobID("job-iceberg"))
-	job3, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job3.JobID, "/p", 1000, 50)
+	job3, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job3.JobID, "/p", 1000, 50, 0, 0)
 	job3, _ = sagaManager1.MarkIcebergCommitted(ctx, streamID, job3.JobID, 111)
 	// job3 is in ICEBERG_COMMITTED
 
 	job4, _ := sagaManager1.CreateJob(ctx, streamID, compaction.WithJobID("job-done"))
-	job4, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job4.JobID, "/p", 1000, 50)
+	job4, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job4.JobID, "/p", 1000, 50, 0, 0)
 	job4, _ = sagaManager1.MarkIcebergCommitted(ctx, streamID, job4.JobID, 222)
 	job4, _ = sagaManager1.MarkIndexSwapped(ctx, streamID, job4.JobID, nil)
 	job4, _ = sagaManager1.MarkDone(ctx, streamID, job4.JobID)
@@ -951,7 +951,7 @@ func (m *crashRecoveryObjectStore) GetRange(ctx context.Context, key string, sta
 	if end < 0 || end >= int64(len(data)) {
 		end = int64(len(data)) - 1
 	}
-	return io.NopCloser(bytes.NewReader(data[start:end+1])), nil
+	return io.NopCloser(bytes.NewReader(data[start : end+1])), nil
 }
 
 func (m *crashRecoveryObjectStore) Head(ctx context.Context, key string) (objectstore.ObjectMeta, error) {
@@ -988,284 +988,3 @@ func (m *crashRecoveryObjectStore) Close() error {
 }
 
 var _ objectstore.Store = (*crashRecoveryObjectStore)(nil)
-
-// TestCompaction_SkipIcebergWhenDisabled tests that when table.iceberg.enabled
-// is set to false for a topic, the compaction workflow correctly skips the
-// Iceberg commit phase using SkipIcebergCommit instead of MarkIcebergCommitted.
-// This demonstrates proper integration of the IcebergChecker with the saga manager.
-func TestCompaction_SkipIcebergWhenDisabled(t *testing.T) {
-	metaStore := metadata.NewMockStore()
-	topicStore := topics.NewStore(metaStore)
-	streamManager := index.NewStreamManager(metaStore)
-	objStore := newCrashRecoveryObjectStore()
-	ctx := context.Background()
-
-	// Create a topic with table.iceberg.enabled=false
-	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
-		Name:           "no-iceberg-topic",
-		PartitionCount: 1,
-		Config: map[string]string{
-			topics.ConfigIcebergEnabled: "false",
-		},
-		NowMs: time.Now().UnixMilli(),
-	})
-	if err != nil {
-		t.Fatalf("failed to create topic: %v", err)
-	}
-
-	streamID := result.Partitions[0].StreamID
-	if err := streamManager.CreateStreamWithID(ctx, streamID, "no-iceberg-topic", 0); err != nil {
-		t.Fatalf("failed to create stream: %v", err)
-	}
-
-	// Create some test data for compaction
-	committer := produce.NewCommitter(objStore, metaStore, produce.CommitterConfig{
-		NumDomains: 4,
-	})
-
-	buffer := produce.NewBuffer(produce.BufferConfig{
-		MaxBufferBytes: 1024 * 1024,
-		FlushSizeBytes: 1,
-		NumDomains:     4,
-		OnFlush:        committer.CreateFlushHandler(),
-	})
-	defer buffer.Close()
-
-	produceHandler := protocol.NewProduceHandler(
-		protocol.ProduceHandlerConfig{},
-		topicStore,
-		buffer,
-	)
-
-	totalRecords := 5
-	produceReq := buildCompactionTestProduceRequest("no-iceberg-topic", 0, totalRecords, 0)
-	produceResp := produceHandler.Handle(ctx, 9, produceReq)
-	if produceResp.Topics[0].Partitions[0].ErrorCode != 0 {
-		t.Fatalf("produce failed with error code %d", produceResp.Topics[0].Partitions[0].ErrorCode)
-	}
-
-	// Create saga manager for compaction
-	sagaManager := compaction.NewSagaManager(metaStore, "compactor-1")
-	job, err := sagaManager.CreateJob(ctx, streamID,
-		compaction.WithSourceRange(0, int64(totalRecords)),
-		compaction.WithSourceWALCount(1),
-		compaction.WithSourceSizeBytes(1000))
-	if err != nil {
-		t.Fatalf("failed to create compaction job: %v", err)
-	}
-	t.Logf("Created job %s in state %s", job.JobID, job.State)
-
-	// Get WAL entries for conversion
-	prefix := keys.OffsetIndexPrefix(streamID)
-	kvs, err := metaStore.List(ctx, prefix, "", 0)
-	if err != nil {
-		t.Fatalf("failed to list index entries: %v", err)
-	}
-
-	var walEntries []*index.IndexEntry
-	for _, kv := range kvs {
-		var entry index.IndexEntry
-		if err := json.Unmarshal(kv.Value, &entry); err != nil {
-			t.Fatalf("failed to parse index entry: %v", err)
-		}
-		if entry.FileType == index.FileTypeWAL {
-			walEntries = append(walEntries, &entry)
-		}
-	}
-
-	// Convert WAL to Parquet
-	converter := worker.NewConverter(objStore)
-	convertResult, err := converter.Convert(ctx, walEntries, 0)
-	if err != nil {
-		t.Fatalf("failed to convert WAL to Parquet: %v", err)
-	}
-
-	// Write Parquet file
-	parquetPath := "/bucket/data/no-iceberg-topic/0/parquet-1.parquet"
-	err = objStore.Put(ctx, parquetPath, bytes.NewReader(convertResult.ParquetData), int64(len(convertResult.ParquetData)), "application/octet-stream")
-	if err != nil {
-		t.Fatalf("failed to write Parquet file: %v", err)
-	}
-
-	// Mark Parquet written
-	job, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount)
-	if err != nil {
-		t.Fatalf("failed to mark parquet written: %v", err)
-	}
-	t.Logf("Job transitioned to %s", job.State)
-
-	// Create IcebergChecker to determine whether to skip Iceberg commit
-	// Use TopicStore's GetTopicConfig method wrapped in the provider interface
-	topicConfigProvider := compaction.TopicConfigProviderFunc(func(ctx context.Context, topicName string) (map[string]string, error) {
-		return topicStore.GetTopicConfig(ctx, topicName)
-	})
-	streamMetaProvider := compaction.StreamMetaProviderFunc(func(ctx context.Context, streamID string) (*index.StreamMeta, error) {
-		return streamManager.GetStreamMeta(ctx, streamID)
-	})
-
-	// Global default is true (duality mode enabled by default)
-	globalIcebergDefault := true
-	icebergChecker := compaction.NewIcebergChecker(topicConfigProvider, streamMetaProvider, globalIcebergDefault)
-
-	// Check if Iceberg should be skipped for this stream
-	shouldSkip, err := icebergChecker.ShouldSkipIcebergCommit(ctx, streamID)
-	if err != nil {
-		t.Fatalf("failed to check iceberg status: %v", err)
-	}
-
-	if !shouldSkip {
-		t.Errorf("expected ShouldSkipIcebergCommit=true for topic with table.iceberg.enabled=false")
-	}
-
-	// Use SkipIcebergCommit since Iceberg is disabled for this topic
-	var walObjectsToDecrement []string
-	for _, entry := range walEntries {
-		walObjectsToDecrement = append(walObjectsToDecrement, entry.WalPath)
-	}
-
-	job, err = sagaManager.SkipIcebergCommit(ctx, streamID, job.JobID, walObjectsToDecrement)
-	if err != nil {
-		t.Fatalf("failed to skip iceberg commit: %v", err)
-	}
-	t.Logf("Job transitioned to %s with IcebergSkipped=%v", job.State, job.IcebergSkipped)
-
-	// Verify the job is in INDEX_SWAPPED state with IcebergSkipped=true
-	if job.State != compaction.JobStateIndexSwapped {
-		t.Errorf("expected state INDEX_SWAPPED, got %s", job.State)
-	}
-	if !job.IcebergSkipped {
-		t.Error("expected IcebergSkipped=true")
-	}
-	if job.IcebergSnapshotID != 0 {
-		t.Errorf("expected IcebergSnapshotID=0 when skipped, got %d", job.IcebergSnapshotID)
-	}
-
-	// Complete the job
-	job, err = sagaManager.MarkDone(ctx, streamID, job.JobID)
-	if err != nil {
-		t.Fatalf("failed to mark done: %v", err)
-	}
-	t.Logf("Job completed with state %s", job.State)
-
-	// Verify final state
-	finalJob, _, err := sagaManager.GetJob(ctx, streamID, job.JobID)
-	if err != nil {
-		t.Fatalf("failed to get final job: %v", err)
-	}
-	if finalJob.State != compaction.JobStateDone {
-		t.Errorf("expected final state DONE, got %s", finalJob.State)
-	}
-	if !finalJob.IcebergSkipped {
-		t.Error("expected IcebergSkipped=true in final state")
-	}
-	if len(finalJob.WALObjectsToDecrement) != len(walObjectsToDecrement) {
-		t.Errorf("expected %d WAL objects to decrement, got %d", len(walObjectsToDecrement), len(finalJob.WALObjectsToDecrement))
-	}
-
-	t.Log("Successfully completed compaction with Iceberg commit skipped")
-}
-
-// TestCompaction_IcebergEnabledByDefault tests that when table.iceberg.enabled
-// is not explicitly set, the global default (true) is used and Iceberg commits proceed.
-func TestCompaction_IcebergEnabledByDefault(t *testing.T) {
-	metaStore := metadata.NewMockStore()
-	topicStore := topics.NewStore(metaStore)
-	streamManager := index.NewStreamManager(metaStore)
-	ctx := context.Background()
-
-	// Create a topic WITHOUT explicit table.iceberg.enabled config
-	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
-		Name:           "default-iceberg-topic",
-		PartitionCount: 1,
-		// No ConfigIcebergEnabled set - should use global default
-		NowMs: time.Now().UnixMilli(),
-	})
-	if err != nil {
-		t.Fatalf("failed to create topic: %v", err)
-	}
-
-	streamID := result.Partitions[0].StreamID
-	if err := streamManager.CreateStreamWithID(ctx, streamID, "default-iceberg-topic", 0); err != nil {
-		t.Fatalf("failed to create stream: %v", err)
-	}
-
-	// Create IcebergChecker with global default = true
-	topicConfigProvider := compaction.TopicConfigProviderFunc(func(ctx context.Context, topicName string) (map[string]string, error) {
-		return topicStore.GetTopicConfig(ctx, topicName)
-	})
-	streamMetaProvider := compaction.StreamMetaProviderFunc(func(ctx context.Context, streamID string) (*index.StreamMeta, error) {
-		return streamManager.GetStreamMeta(ctx, streamID)
-	})
-
-	icebergChecker := compaction.NewIcebergChecker(topicConfigProvider, streamMetaProvider, true)
-
-	// Check if Iceberg is enabled for this stream
-	enabled, err := icebergChecker.IsIcebergEnabled(ctx, streamID)
-	if err != nil {
-		t.Fatalf("failed to check iceberg status: %v", err)
-	}
-
-	if !enabled {
-		t.Error("expected IsIcebergEnabled=true for topic with no explicit config and global default=true")
-	}
-
-	shouldSkip, err := icebergChecker.ShouldSkipIcebergCommit(ctx, streamID)
-	if err != nil {
-		t.Fatalf("failed to check skip status: %v", err)
-	}
-
-	if shouldSkip {
-		t.Error("expected ShouldSkipIcebergCommit=false for topic with default Iceberg enabled")
-	}
-
-	t.Log("Verified Iceberg is enabled by default when not explicitly configured")
-}
-
-// TestCompaction_IcebergExplicitlyEnabled tests that when table.iceberg.enabled
-// is explicitly set to true, the IcebergChecker correctly returns enabled=true.
-func TestCompaction_IcebergExplicitlyEnabled(t *testing.T) {
-	metaStore := metadata.NewMockStore()
-	topicStore := topics.NewStore(metaStore)
-	streamManager := index.NewStreamManager(metaStore)
-	ctx := context.Background()
-
-	// Create a topic with explicit table.iceberg.enabled=true
-	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
-		Name:           "explicit-iceberg-topic",
-		PartitionCount: 1,
-		Config: map[string]string{
-			topics.ConfigIcebergEnabled: "true",
-		},
-		NowMs: time.Now().UnixMilli(),
-	})
-	if err != nil {
-		t.Fatalf("failed to create topic: %v", err)
-	}
-
-	streamID := result.Partitions[0].StreamID
-	if err := streamManager.CreateStreamWithID(ctx, streamID, "explicit-iceberg-topic", 0); err != nil {
-		t.Fatalf("failed to create stream: %v", err)
-	}
-
-	// Create IcebergChecker with global default = false (to verify per-topic override works)
-	topicConfigProvider := compaction.TopicConfigProviderFunc(func(ctx context.Context, topicName string) (map[string]string, error) {
-		return topicStore.GetTopicConfig(ctx, topicName)
-	})
-	streamMetaProvider := compaction.StreamMetaProviderFunc(func(ctx context.Context, streamID string) (*index.StreamMeta, error) {
-		return streamManager.GetStreamMeta(ctx, streamID)
-	})
-
-	// Global default is false, but per-topic should override
-	icebergChecker := compaction.NewIcebergChecker(topicConfigProvider, streamMetaProvider, false)
-
-	enabled, err := icebergChecker.IsIcebergEnabled(ctx, streamID)
-	if err != nil {
-		t.Fatalf("failed to check iceberg status: %v", err)
-	}
-
-	if !enabled {
-		t.Error("expected IsIcebergEnabled=true when per-topic config explicitly enables Iceberg, even with global default=false")
-	}
-
-	t.Log("Verified per-topic Iceberg enabled=true overrides global default=false")
-}

@@ -47,7 +47,7 @@ type TLSConfig struct {
 
 // SASLConfig holds SASL authentication configuration.
 type SASLConfig struct {
-	Enabled bool   `yaml:"enabled" env:"DRAY_SASL_ENABLED"`
+	Enabled bool `yaml:"enabled" env:"DRAY_SASL_ENABLED"`
 	// Mechanism is the SASL mechanism to use ("PLAIN" only for now).
 	Mechanism string `yaml:"mechanism" env:"DRAY_SASL_MECHANISM"`
 	// CredentialsSource specifies where to load credentials from ("file" or "env").
@@ -81,9 +81,15 @@ type WALConfig struct {
 }
 
 type CompactionConfig struct {
-	Enabled         bool  `yaml:"enabled" env:"DRAY_COMPACTION_ENABLED"`
-	MaxFilesToMerge int   `yaml:"maxFilesToMerge" env:"DRAY_COMPACTION_MAX_FILES"`
-	MinAgeMs        int64 `yaml:"minAgeMs" env:"DRAY_COMPACTION_MIN_AGE_MS"`
+	Enabled                        bool  `yaml:"enabled" env:"DRAY_COMPACTION_ENABLED"`
+	MaxFilesToMerge                int   `yaml:"maxFilesToMerge" env:"DRAY_COMPACTION_MAX_FILES"`
+	MinAgeMs                       int64 `yaml:"minAgeMs" env:"DRAY_COMPACTION_MIN_AGE_MS"`
+	ParquetSmallFileThresholdBytes int64 `yaml:"parquetSmallFileThresholdBytes" env:"DRAY_COMPACTION_PARQUET_SMALL_FILE_THRESHOLD_BYTES"`
+	ParquetTargetFileSizeBytes     int64 `yaml:"parquetTargetFileSizeBytes" env:"DRAY_COMPACTION_PARQUET_TARGET_FILE_SIZE_BYTES"`
+	ParquetMaxMergeBytes           int64 `yaml:"parquetMaxMergeBytes" env:"DRAY_COMPACTION_PARQUET_MAX_MERGE_BYTES"`
+	ParquetMinFiles                int   `yaml:"parquetMinFiles" env:"DRAY_COMPACTION_PARQUET_MIN_FILES"`
+	ParquetMaxFiles                int   `yaml:"parquetMaxFiles" env:"DRAY_COMPACTION_PARQUET_MAX_FILES"`
+	ParquetMinAgeMs                int64 `yaml:"parquetMinAgeMs" env:"DRAY_COMPACTION_PARQUET_MIN_AGE_MS"`
 }
 
 type IcebergConfig struct {
@@ -128,9 +134,15 @@ func Default() *Config {
 			OrphanTTLMs:     60000, // 1 minute
 		},
 		Compaction: CompactionConfig{
-			Enabled:         true,
-			MaxFilesToMerge: 10,
-			MinAgeMs:        300000, // 5 minutes
+			Enabled:                        true,
+			MaxFilesToMerge:                10,
+			MinAgeMs:                       300000, // 5 minutes
+			ParquetSmallFileThresholdBytes: 64 * 1024 * 1024,
+			ParquetTargetFileSizeBytes:     256 * 1024 * 1024,
+			ParquetMaxMergeBytes:           512 * 1024 * 1024,
+			ParquetMinFiles:                4,
+			ParquetMaxFiles:                50,
+			ParquetMinAgeMs:                10 * 60 * 1000,
 		},
 		Iceberg: IcebergConfig{
 			Enabled:     true,
@@ -295,6 +307,24 @@ func (c *Config) Validate() error {
 		if c.Compaction.MinAgeMs < 0 {
 			errs = append(errs, errors.New("compaction.minAgeMs cannot be negative"))
 		}
+		if c.Compaction.ParquetSmallFileThresholdBytes < 0 {
+			errs = append(errs, errors.New("compaction.parquetSmallFileThresholdBytes cannot be negative"))
+		}
+		if c.Compaction.ParquetTargetFileSizeBytes < 0 {
+			errs = append(errs, errors.New("compaction.parquetTargetFileSizeBytes cannot be negative"))
+		}
+		if c.Compaction.ParquetMaxMergeBytes < 0 {
+			errs = append(errs, errors.New("compaction.parquetMaxMergeBytes cannot be negative"))
+		}
+		if c.Compaction.ParquetMinFiles < 0 {
+			errs = append(errs, errors.New("compaction.parquetMinFiles cannot be negative"))
+		}
+		if c.Compaction.ParquetMaxFiles < 0 {
+			errs = append(errs, errors.New("compaction.parquetMaxFiles cannot be negative"))
+		}
+		if c.Compaction.ParquetMinAgeMs < 0 {
+			errs = append(errs, errors.New("compaction.parquetMinAgeMs cannot be negative"))
+		}
 	}
 
 	// Iceberg validation
@@ -302,9 +332,9 @@ func (c *Config) Validate() error {
 		if c.Iceberg.CatalogType == "" {
 			errs = append(errs, errors.New("iceberg.catalogType is required when iceberg is enabled"))
 		}
-		validTypes := map[string]bool{"rest": true, "hive": true, "glue": true, "hadoop": true}
+		validTypes := map[string]bool{"rest": true, "glue": true, "sql": true}
 		if !validTypes[c.Iceberg.CatalogType] {
-			errs = append(errs, fmt.Errorf("iceberg.catalogType must be one of: rest, hive, glue, hadoop; got %q", c.Iceberg.CatalogType))
+			errs = append(errs, fmt.Errorf("iceberg.catalogType must be one of: rest, glue, sql; got %q", c.Iceberg.CatalogType))
 		}
 	}
 
