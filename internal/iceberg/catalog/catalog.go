@@ -220,6 +220,10 @@ const (
 
 	// PropertyDraySchemaVersion tracks the Dray schema version.
 	PropertyDraySchemaVersion = "dray.schema_version"
+
+	// PropertySchemaNameMappingDef is the Iceberg name mapping for files without field IDs.
+	// This is required because parquet-go doesn't write Iceberg field IDs to parquet files.
+	PropertySchemaNameMappingDef = "schema.name-mapping.default"
 )
 
 // CreateTableOptions contains options for table creation.

@@ -44,11 +44,11 @@ func NewParquetReader(store objectstore.Store) *ParquetReader {
 type ParquetRecord struct {
 	Partition int32  `parquet:"partition"`
 	Offset    int64  `parquet:"offset"`
-	Timestamp int64  `parquet:"timestamp,timestamp(millisecond)"`
+	Timestamp int64  `parquet:"timestamp_ms,timestamp(millisecond)"`
 	Key       []byte `parquet:"key,optional"`
 	Value     []byte `parquet:"value,optional"`
 	// Headers is a list of key-value pairs - handled separately
-	// Attributes, ProducerId, ProducerEpoch, BaseSequence, RecordCRC are optional
+	// Attributes, ProducerId, ProducerEpoch, BaseSequence are optional
 }
 
 // ParquetHeader represents a record header from Parquet.
@@ -61,7 +61,7 @@ type ParquetHeader struct {
 type ParquetRecordWithHeaders struct {
 	Partition     int32           `parquet:"partition"`
 	Offset        int64           `parquet:"offset"`
-	Timestamp     int64           `parquet:"timestamp,timestamp(millisecond)"`
+	Timestamp     int64           `parquet:"timestamp_ms,timestamp(millisecond)"`
 	Key           []byte          `parquet:"key,optional"`
 	Value         []byte          `parquet:"value,optional"`
 	Headers       []ParquetHeader `parquet:"headers,list"`
@@ -69,7 +69,6 @@ type ParquetRecordWithHeaders struct {
 	ProducerEpoch *int32          `parquet:"producer_epoch,optional"`
 	BaseSequence  *int32          `parquet:"base_sequence,optional"`
 	Attributes    int32           `parquet:"attributes"`
-	RecordCRC     *int32          `parquet:"record_crc,optional"`
 }
 
 // ReadBatches reads records from a Parquet file and reconstructs Kafka batches.

@@ -393,8 +393,47 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 	}
 
 	// 2. Write Manifest List (Avro)
-	// For simplicity, we create a manifest list with just the new manifest
-	// In a full implementation, we'd include inherited manifests
+	// Include all manifests from the parent snapshot plus the new manifest
+	var allManifestEntries []AvroManifestListEntry
+
+	// If there's a parent snapshot, read its manifest list and include those manifests
+	if parentID != nil {
+		for _, snap := range t.metadata.Snapshots {
+			if snap.SnapshotID == *parentID && snap.ManifestList != "" {
+				// Read parent's manifest list from S3
+				parentManifestListKey := snap.ManifestList
+				if strings.HasPrefix(parentManifestListKey, "s3://") {
+					parts := strings.SplitN(parentManifestListKey[5:], "/", 2)
+					if len(parts) > 1 {
+						parentManifestListKey = parts[1]
+					}
+				}
+
+				rc, err := t.catalog.store.Get(ctx, parentManifestListKey)
+				if err == nil {
+					parentData, readErr := io.ReadAll(rc)
+					rc.Close()
+					if readErr == nil {
+						parentEntries, parseErr := readManifestList(parentData)
+						if parseErr == nil {
+							// Convert parent entries: move "added" counts to "existing"
+							for _, entry := range parentEntries {
+								existingEntry := entry
+								existingEntry.ExistingDataFilesCount = entry.AddedDataFilesCount + entry.ExistingDataFilesCount
+								existingEntry.ExistingRowsCount = entry.AddedRowsCount + entry.ExistingRowsCount
+								existingEntry.AddedDataFilesCount = 0
+								existingEntry.AddedRowsCount = 0
+								allManifestEntries = append(allManifestEntries, existingEntry)
+							}
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
+	// Add the new manifest entry
 	manifestListEntry := AvroManifestListEntry{
 		ManifestPath:        manifestPath,
 		ManifestLength:      int64(len(manifestData)),
@@ -408,8 +447,9 @@ func (t *fileTable) AppendFiles(ctx context.Context, files []DataFile, opts *App
 	for _, f := range files {
 		manifestListEntry.AddedRowsCount += f.RecordCount
 	}
+	allManifestEntries = append(allManifestEntries, manifestListEntry)
 
-	manifestListData, err := writeManifestList([]AvroManifestListEntry{manifestListEntry})
+	manifestListData, err := writeManifestList(allManifestEntries)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create manifest list: %w", err)
 	}
