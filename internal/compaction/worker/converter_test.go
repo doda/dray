@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/binary"
-	"encoding/json"
 	"hash/crc32"
 	"testing"
 
@@ -477,27 +476,18 @@ func TestConvertWALToParquet_WithHeaders(t *testing.T) {
 		t.Fatalf("ReadAll failed: %v", err)
 	}
 
-	if readRecords[0].Headers == "" {
-		t.Fatal("expected non-empty headers JSON")
-	}
-
-	var readHeaders []Header
-	if err := json.Unmarshal([]byte(readRecords[0].Headers), &readHeaders); err != nil {
-		t.Fatalf("failed to unmarshal headers: %v", err)
-	}
-
-	if len(readHeaders) != 3 {
-		t.Fatalf("expected 3 headers, got %d", len(readHeaders))
+	if len(readRecords[0].Headers) != 3 {
+		t.Fatalf("expected 3 headers, got %d", len(readRecords[0].Headers))
 	}
 
 	// Verify header order is preserved
-	if readHeaders[0].Key != "h1" || !bytes.Equal(readHeaders[0].Value, []byte("v1")) {
+	if readRecords[0].Headers[0].Key != "h1" || !bytes.Equal(readRecords[0].Headers[0].Value, []byte("v1")) {
 		t.Errorf("header 0 mismatch")
 	}
-	if readHeaders[1].Key != "h2" || !bytes.Equal(readHeaders[1].Value, []byte("v2")) {
+	if readRecords[0].Headers[1].Key != "h2" || !bytes.Equal(readRecords[0].Headers[1].Value, []byte("v2")) {
 		t.Errorf("header 1 mismatch")
 	}
-	if readHeaders[2].Key != "h1" || !bytes.Equal(readHeaders[2].Value, []byte("v3")) {
+	if readRecords[0].Headers[2].Key != "h1" || !bytes.Equal(readRecords[0].Headers[2].Value, []byte("v3")) {
 		t.Errorf("header 2 mismatch")
 	}
 }
@@ -865,17 +855,12 @@ func TestConvertWALToParquet_HeaderWithNullValue(t *testing.T) {
 		t.Fatalf("ReadAll failed: %v", err)
 	}
 
-	var readHeaders []Header
-	if err := json.Unmarshal([]byte(readRecords[0].Headers), &readHeaders); err != nil {
-		t.Fatalf("failed to unmarshal headers: %v", err)
+	if len(readRecords[0].Headers) != 1 {
+		t.Fatalf("expected 1 header, got %d", len(readRecords[0].Headers))
 	}
 
-	if len(readHeaders) != 1 {
-		t.Fatalf("expected 1 header, got %d", len(readHeaders))
-	}
-
-	if readHeaders[0].Value != nil {
-		t.Errorf("expected null header value, got %v", readHeaders[0].Value)
+	if readRecords[0].Headers[0].Value != nil {
+		t.Errorf("expected null header value, got %v", readRecords[0].Headers[0].Value)
 	}
 }
 

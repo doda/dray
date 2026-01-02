@@ -382,7 +382,7 @@ func TestSagaManager_FullLifecycle(t *testing.T) {
 	}
 }
 
-func TestSagaManager_MarkDone_ConfirmsIcebergRemoval(t *testing.T) {
+func TestSagaManager_MarkDone_SchedulesParquetGC(t *testing.T) {
 	ctx := context.Background()
 	store := metadata.NewMockStore()
 	sm := NewSagaManager(store, "compactor-1")
@@ -405,11 +405,9 @@ func TestSagaManager_MarkDone_ConfirmsIcebergRemoval(t *testing.T) {
 	candidatePath := "streams/stream-iceberg/parquet/old-file.parquet"
 	candidates := []ParquetGCCandidate{
 		{
-			Path:                    candidatePath,
-			CreatedAtMs:             time.Now().Add(-time.Hour).UnixMilli(),
-			SizeBytes:               128,
-			IcebergEnabled:          true,
-			IcebergRemovalConfirmed: true,
+			Path:        candidatePath,
+			CreatedAtMs: time.Now().Add(-time.Hour).UnixMilli(),
+			SizeBytes:   128,
 		},
 	}
 
@@ -435,12 +433,6 @@ func TestSagaManager_MarkDone_ConfirmsIcebergRemoval(t *testing.T) {
 	var record gc.ParquetGCRecord
 	if err := json.Unmarshal(result.Value, &record); err != nil {
 		t.Fatalf("unmarshal Parquet GC record failed: %v", err)
-	}
-	if !record.IcebergEnabled {
-		t.Error("expected IcebergEnabled=true")
-	}
-	if !record.IcebergRemovalConfirmed {
-		t.Error("expected IcebergRemovalConfirmed=true")
 	}
 }
 
@@ -902,135 +894,12 @@ func TestJobStatePreservation(t *testing.T) {
 	}
 }
 
-// Tests for SkipIcebergCommit (table.iceberg.enabled=false)
-
-func TestSagaManager_SkipIcebergCommit(t *testing.T) {
-	metaStore := metadata.NewMockStore()
-	sm := NewSagaManager(metaStore, "compactor-1")
-	ctx := context.Background()
-
-	// Create and progress job to PARQUET_WRITTEN
-	job, err := sm.CreateJob(ctx, "stream-1", WithJobID("job-skip-iceberg"))
-	if err != nil {
-		t.Fatalf("CreateJob failed: %v", err)
-	}
-	job, err = sm.MarkParquetWritten(ctx, "stream-1", job.JobID, "/path/to/file.parquet", 10000, 100, 0, 0)
-	if err != nil {
-		t.Fatalf("MarkParquetWritten failed: %v", err)
-	}
-
-	// Skip iceberg commit (as if table.iceberg.enabled=false)
-	job, err = sm.SkipIcebergCommit(ctx, "stream-1", job.JobID, []string{"wal-1", "wal-2"})
-	if err != nil {
-		t.Fatalf("SkipIcebergCommit failed: %v", err)
-	}
-
-	// Verify job state
-	if job.State != JobStateIndexSwapped {
-		t.Errorf("expected state INDEX_SWAPPED, got %s", job.State)
-	}
-	if !job.IcebergSkipped {
-		t.Error("expected IcebergSkipped to be true")
-	}
-	if job.IcebergSnapshotID != 0 {
-		t.Errorf("expected IcebergSnapshotID to be 0 when skipped, got %d", job.IcebergSnapshotID)
-	}
-	if len(job.WALObjectsToDecrement) != 2 {
-		t.Errorf("expected 2 WAL objects to decrement, got %d", len(job.WALObjectsToDecrement))
-	}
-
-	// Verify we can complete the job normally
-	job, err = sm.MarkDone(ctx, "stream-1", job.JobID)
-	if err != nil {
-		t.Fatalf("MarkDone failed: %v", err)
-	}
-	if job.State != JobStateDone {
-		t.Errorf("expected state DONE, got %s", job.State)
-	}
-}
-
-func TestSagaManager_SkipIcebergCommit_FromWrongState(t *testing.T) {
-	metaStore := metadata.NewMockStore()
-	sm := NewSagaManager(metaStore, "compactor-1")
-	ctx := context.Background()
-
-	// Create job (in CREATED state)
-	job, err := sm.CreateJob(ctx, "stream-1", WithJobID("job-skip-wrong-state"))
-	if err != nil {
-		t.Fatalf("CreateJob failed: %v", err)
-	}
-
-	// Try to skip iceberg commit from CREATED state (should fail)
-	_, err = sm.SkipIcebergCommit(ctx, "stream-1", job.JobID, nil)
-	if !errors.Is(err, ErrInvalidTransition) {
-		t.Errorf("expected ErrInvalidTransition, got %v", err)
-	}
-}
-
-func TestSagaManager_SkipIcebergCommit_FullLifecycle(t *testing.T) {
-	metaStore := metadata.NewMockStore()
-	sm := NewSagaManager(metaStore, "compactor-1")
-	ctx := context.Background()
-
-	// Simulate full compaction lifecycle with Iceberg disabled
-	job, err := sm.CreateJob(ctx, "stream-1",
-		WithJobID("job-no-iceberg"),
-		WithSourceRange(0, 99),
-		WithSourceWALCount(5),
-		WithSourceSizeBytes(50000),
-	)
-	if err != nil {
-		t.Fatalf("CreateJob failed: %v", err)
-	}
-	if job.State != JobStateCreated {
-		t.Errorf("expected CREATED, got %s", job.State)
-	}
-
-	// Write parquet
-	job, err = sm.MarkParquetWritten(ctx, "stream-1", job.JobID, "/data/file.parquet", 20000, 100, 0, 0)
-	if err != nil {
-		t.Fatalf("MarkParquetWritten failed: %v", err)
-	}
-	if job.State != JobStateParquetWritten {
-		t.Errorf("expected PARQUET_WRITTEN, got %s", job.State)
-	}
-
-	// Skip iceberg (table.iceberg.enabled=false)
-	job, err = sm.SkipIcebergCommit(ctx, "stream-1", job.JobID, []string{"wal-a", "wal-b"})
-	if err != nil {
-		t.Fatalf("SkipIcebergCommit failed: %v", err)
-	}
-	if job.State != JobStateIndexSwapped {
-		t.Errorf("expected INDEX_SWAPPED, got %s", job.State)
-	}
-	if !job.IcebergSkipped {
-		t.Error("expected IcebergSkipped=true")
-	}
-
-	// Complete
-	job, err = sm.MarkDone(ctx, "stream-1", job.JobID)
-	if err != nil {
-		t.Fatalf("MarkDone failed: %v", err)
-	}
-	if job.State != JobStateDone {
-		t.Errorf("expected DONE, got %s", job.State)
-	}
-
-	// Verify IcebergSkipped is still set
-	if !job.IcebergSkipped {
-		t.Error("expected IcebergSkipped to remain true after DONE")
-	}
-}
-
-func TestJobState_CanTransitionTo_SkipIceberg(t *testing.T) {
-	// Verify PARQUET_WRITTEN can transition to INDEX_SWAPPED (skip Iceberg path)
+func TestJobState_CanTransitionTo_IcebergCommit(t *testing.T) {
 	job := &Job{State: JobStateParquetWritten}
-	if !job.CanTransitionTo(JobStateIndexSwapped) {
-		t.Error("PARQUET_WRITTEN should be able to transition to INDEX_SWAPPED (skip Iceberg)")
-	}
-
-	// Verify PARQUET_WRITTEN can still transition to ICEBERG_COMMITTED (normal path)
 	if !job.CanTransitionTo(JobStateIcebergCommitted) {
-		t.Error("PARQUET_WRITTEN should be able to transition to ICEBERG_COMMITTED (normal path)")
+		t.Error("PARQUET_WRITTEN should be able to transition to ICEBERG_COMMITTED")
+	}
+	if job.CanTransitionTo(JobStateIndexSwapped) {
+		t.Error("PARQUET_WRITTEN should not transition to INDEX_SWAPPED directly")
 	}
 }

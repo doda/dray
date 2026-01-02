@@ -59,8 +59,6 @@
 //
 // The GC worker periodically scans these markers and deletes the objects
 // once their grace period has passed, allowing in-flight reads to complete.
-// When Iceberg is enabled, GC waits until the marker indicates the file has
-// been removed from Iceberg metadata before deleting the object.
 //
 // Usage:
 //

@@ -97,6 +97,12 @@ compaction:
   enabled: true
   maxFilesToMerge: 20
   minAgeMs: 600000
+  parquetSmallFileThresholdBytes: 33554432
+  parquetTargetFileSizeBytes: 268435456
+  parquetMaxMergeBytes: 536870912
+  parquetMinFiles: 3
+  parquetMaxFiles: 25
+  parquetMinAgeMs: 900000
 iceberg:
   enabled: true
   catalogType: "rest"
@@ -138,6 +144,24 @@ routing:
 	}
 	if cfg.Compaction.MaxFilesToMerge != 20 {
 		t.Errorf("expected max files 20, got %d", cfg.Compaction.MaxFilesToMerge)
+	}
+	if cfg.Compaction.ParquetSmallFileThresholdBytes != 33554432 {
+		t.Errorf("expected parquet small file threshold 33554432, got %d", cfg.Compaction.ParquetSmallFileThresholdBytes)
+	}
+	if cfg.Compaction.ParquetTargetFileSizeBytes != 268435456 {
+		t.Errorf("expected parquet target size 268435456, got %d", cfg.Compaction.ParquetTargetFileSizeBytes)
+	}
+	if cfg.Compaction.ParquetMaxMergeBytes != 536870912 {
+		t.Errorf("expected parquet max merge 536870912, got %d", cfg.Compaction.ParquetMaxMergeBytes)
+	}
+	if cfg.Compaction.ParquetMinFiles != 3 {
+		t.Errorf("expected parquet min files 3, got %d", cfg.Compaction.ParquetMinFiles)
+	}
+	if cfg.Compaction.ParquetMaxFiles != 25 {
+		t.Errorf("expected parquet max files 25, got %d", cfg.Compaction.ParquetMaxFiles)
+	}
+	if cfg.Compaction.ParquetMinAgeMs != 900000 {
+		t.Errorf("expected parquet min age 900000, got %d", cfg.Compaction.ParquetMinAgeMs)
 	}
 	if cfg.Observability.LogLevel != "debug" {
 		t.Errorf("expected log level debug, got %s", cfg.Observability.LogLevel)
@@ -437,6 +461,18 @@ func TestValidationErrors(t *testing.T) {
 			},
 			errCount: 3,
 		},
+		{
+			name: "negative parquet rewrite config",
+			modifier: func(c *Config) {
+				c.Compaction.ParquetSmallFileThresholdBytes = -1
+				c.Compaction.ParquetTargetFileSizeBytes = -1
+				c.Compaction.ParquetMaxMergeBytes = -1
+				c.Compaction.ParquetMinFiles = -1
+				c.Compaction.ParquetMaxFiles = -1
+				c.Compaction.ParquetMinAgeMs = -1
+			},
+			errCount: 6,
+		},
 	}
 
 	for _, tt := range tests {
@@ -459,7 +495,7 @@ func TestValidationErrors(t *testing.T) {
 }
 
 func TestValidIcebergCatalogTypes(t *testing.T) {
-	validTypes := []string{"rest", "hive", "glue", "hadoop"}
+	validTypes := []string{"rest", "glue", "sql"}
 
 	for _, catalogType := range validTypes {
 		t.Run(catalogType, func(t *testing.T) {

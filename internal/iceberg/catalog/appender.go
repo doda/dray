@@ -9,6 +9,9 @@ import (
 	"log/slog"
 	"math/rand"
 	"time"
+
+	"github.com/apache/iceberg-go"
+	"github.com/apache/iceberg-go/table"
 )
 
 // SnapshotPropertyJobID is the snapshot summary property key for tracking the
@@ -125,7 +128,7 @@ func NewAppender(cfg AppenderConfig) *Appender {
 type AppendResult struct {
 	// Snapshot is the new snapshot created by the append.
 	// For idempotent skips, this is the existing snapshot that contained the commit.
-	Snapshot *Snapshot
+	Snapshot *table.Snapshot
 
 	// Table is the table that was appended to.
 	Table Table
@@ -152,7 +155,7 @@ type AppendResult struct {
 //
 // The files parameter must contain valid DataFile entries with:
 //   - Path: Full object storage path to the Parquet file
-//   - Format: File format (use FormatParquet for Dray)
+//   - Format: Parquet file stored at Path (file metadata is read by iceberg-go)
 //   - PartitionValue: Kafka partition ID
 //   - RecordCount: Number of records in the file
 //   - FileSizeBytes: File size in bytes
@@ -195,12 +198,9 @@ func (a *Appender) AppendFiles(ctx context.Context, topicName string, files []Da
 		}()
 	}
 
-	identifier := TableIdentifier{
-		Namespace: a.cfg.Namespace,
-		Name:      topicName,
-	}
+	identifier := NewTableIdentifier(a.cfg.Namespace, topicName)
 
-	table, err := a.cfg.Catalog.LoadTable(ctx, identifier)
+	tbl, err := a.cfg.Catalog.LoadTable(ctx, identifier)
 	if err != nil {
 		return nil, err
 	}
@@ -209,11 +209,11 @@ func (a *Appender) AppendFiles(ctx context.Context, topicName string, files []Da
 	var lastErr error
 
 	for attempt := 1; attempt <= a.cfg.MaxRetries; attempt++ {
-		snapshot, err := table.AppendFiles(ctx, files, opts)
+		snapshot, err := tbl.AppendFiles(ctx, files, opts)
 		if err == nil {
 			return &AppendResult{
 				Snapshot: snapshot,
-				Table:    table,
+				Table:    tbl,
 				Attempts: attempt,
 			}, nil
 		}
@@ -241,11 +241,94 @@ func (a *Appender) AppendFiles(ctx context.Context, topicName string, files []Da
 		}
 
 		// Refresh the table to get latest metadata before retry
-		if err := table.Refresh(ctx); err != nil {
+		if err := tbl.Refresh(ctx); err != nil {
 			return nil, fmt.Errorf("failed to refresh table before retry: %w", err)
 		}
 
 		// Increase backoff for next iteration
+		backoff = time.Duration(float64(backoff) * a.cfg.BackoffMultiplier)
+		if backoff > a.cfg.MaxBackoff {
+			backoff = a.cfg.MaxBackoff
+		}
+	}
+
+	return nil, fmt.Errorf("commit failed after %d attempts: %w", a.cfg.MaxRetries, lastErr)
+}
+
+// ReplaceFiles replaces data files in an Iceberg table with retry on conflict.
+func (a *Appender) ReplaceFiles(ctx context.Context, topicName string, added []DataFile, removed []DataFile, opts *ReplaceFilesOptions) (*AppendResult, error) {
+	if a.cfg.Catalog == nil {
+		return nil, ErrCatalogUnavailable
+	}
+
+	if len(added) == 0 && len(removed) == 0 {
+		return nil, errors.New("no files to replace")
+	}
+
+	if a.cfg.LockManager != nil {
+		result, err := a.cfg.LockManager.AcquireWithRetry(
+			ctx, topicName,
+			a.cfg.LockRetries,
+			a.cfg.LockInitialBackoff,
+			a.cfg.LockMaxBackoff,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrLockNotAcquired, err)
+		}
+		if !result.Acquired {
+			return nil, fmt.Errorf("%w: held by writer %s", ErrLockNotAcquired, result.Lock.WriterID)
+		}
+		defer func() {
+			if releaseErr := a.cfg.LockManager.ReleaseLock(ctx, topicName); releaseErr != nil {
+				slog.Warn("failed to release iceberg lock",
+					"topic", topicName,
+					"error", releaseErr,
+				)
+			}
+		}()
+	}
+
+	identifier := NewTableIdentifier(a.cfg.Namespace, topicName)
+
+	tbl, err := a.cfg.Catalog.LoadTable(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+
+	backoff := a.cfg.InitialBackoff
+	var lastErr error
+
+	for attempt := 1; attempt <= a.cfg.MaxRetries; attempt++ {
+		snapshot, err := tbl.ReplaceFiles(ctx, added, removed, opts)
+		if err == nil {
+			return &AppendResult{
+				Snapshot: snapshot,
+				Table:    tbl,
+				Attempts: attempt,
+			}, nil
+		}
+
+		if !errors.Is(err, ErrCommitConflict) {
+			return nil, err
+		}
+
+		lastErr = err
+
+		if attempt == a.cfg.MaxRetries {
+			break
+		}
+
+		sleepDuration := a.calculateBackoff(backoff)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(sleepDuration):
+		}
+
+		if err := tbl.Refresh(ctx); err != nil {
+			return nil, fmt.Errorf("failed to refresh table before retry: %w", err)
+		}
+
 		backoff = time.Duration(float64(backoff) * a.cfg.BackoffMultiplier)
 		if backoff > a.cfg.MaxBackoff {
 			backoff = a.cfg.MaxBackoff
@@ -287,18 +370,15 @@ func (a *Appender) AppendFilesForStream(ctx context.Context, topicName, jobID st
 		return nil, ErrCatalogUnavailable
 	}
 
-	identifier := TableIdentifier{
-		Namespace: a.cfg.Namespace,
-		Name:      topicName,
-	}
+	identifier := NewTableIdentifier(a.cfg.Namespace, topicName)
 
-	table, err := a.cfg.Catalog.LoadTable(ctx, identifier)
+	tbl, err := a.cfg.Catalog.LoadTable(ctx, identifier)
 	if err != nil {
 		return nil, err
 	}
 
 	// Check if this job ID was already committed (idempotent retry detection)
-	existingSnapshot, err := a.findCommitByJobID(ctx, table, jobID)
+	existingSnapshot, err := a.findCommitByJobID(ctx, tbl, jobID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check for prior commit: %w", err)
 	}
@@ -309,35 +389,76 @@ func (a *Appender) AppendFilesForStream(ctx context.Context, topicName, jobID st
 			"jobId", jobID,
 			"snapshotId", existingSnapshot.SnapshotID,
 		)
-		return &AppendResult{
-			Snapshot:          existingSnapshot,
-			Table:             table,
-			Attempts:          0,
-			IdempotentSkipped: true,
-		}, nil
-	}
+			return &AppendResult{
+				Snapshot:          existingSnapshot,
+				Table:             tbl,
+				Attempts:          0,
+				IdempotentSkipped: true,
+			}, nil
+		}
 
 	// Proceed with normal append
 	opts := &AppendFilesOptions{
-		SnapshotProperties: map[string]string{
+		SnapshotProperties: iceberg.Properties{
 			SnapshotPropertyJobID: jobID,
 		},
 	}
 	return a.AppendFiles(ctx, topicName, files, opts)
 }
 
+// ReplaceFilesForStream replaces files for a compaction job with idempotent retries.
+func (a *Appender) ReplaceFilesForStream(ctx context.Context, topicName, jobID string, added []DataFile, removed []DataFile) (*AppendResult, error) {
+	if a.cfg.Catalog == nil {
+		return nil, ErrCatalogUnavailable
+	}
+
+	identifier := NewTableIdentifier(a.cfg.Namespace, topicName)
+
+	tbl, err := a.cfg.Catalog.LoadTable(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+
+	existingSnapshot, err := a.findCommitByJobID(ctx, tbl, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check for prior commit: %w", err)
+	}
+
+	if existingSnapshot != nil {
+		slog.Info("iceberg commit already applied, skipping",
+			"topic", topicName,
+			"jobId", jobID,
+			"snapshotId", existingSnapshot.SnapshotID,
+		)
+			return &AppendResult{
+				Snapshot:          existingSnapshot,
+				Table:             tbl,
+				Attempts:          0,
+				IdempotentSkipped: true,
+			}, nil
+		}
+
+	opts := &ReplaceFilesOptions{
+		SnapshotProperties: iceberg.Properties{
+			SnapshotPropertyJobID: jobID,
+		},
+	}
+
+	return a.ReplaceFiles(ctx, topicName, added, removed, opts)
+}
+
 // findCommitByJobID searches the table's snapshots for one with a matching job ID.
 // Returns the snapshot if found, nil if not found.
-func (a *Appender) findCommitByJobID(ctx context.Context, table Table, jobID string) (*Snapshot, error) {
-	snapshots, err := table.Snapshots(ctx)
+func (a *Appender) findCommitByJobID(ctx context.Context, tbl Table, jobID string) (*table.Snapshot, error) {
+	snapshots, err := tbl.Snapshots(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	for i := range snapshots {
 		snap := &snapshots[i]
-		if snap.Summary != nil {
-			if snap.Summary[SnapshotPropertyJobID] == jobID {
+		if snap.Summary != nil && snap.Summary.Properties != nil {
+			if snap.Summary.Properties[SnapshotPropertyJobID] == jobID {
 				return snap, nil
 			}
 		}
@@ -349,17 +470,14 @@ func (a *Appender) findCommitByJobID(ctx context.Context, table Table, jobID str
 // IsCommitApplied checks whether a compaction job with the given ID has already
 // been committed to the Iceberg table. This enables idempotent retry detection
 // per SPEC.md section 11.7.
-func (a *Appender) IsCommitApplied(ctx context.Context, topicName, jobID string) (bool, *Snapshot, error) {
+func (a *Appender) IsCommitApplied(ctx context.Context, topicName, jobID string) (bool, *table.Snapshot, error) {
 	if a.cfg.Catalog == nil {
 		return false, nil, ErrCatalogUnavailable
 	}
 
-	identifier := TableIdentifier{
-		Namespace: a.cfg.Namespace,
-		Name:      topicName,
-	}
+	identifier := NewTableIdentifier(a.cfg.Namespace, topicName)
 
-	table, err := a.cfg.Catalog.LoadTable(ctx, identifier)
+	tbl, err := a.cfg.Catalog.LoadTable(ctx, identifier)
 	if err != nil {
 		if errors.Is(err, ErrTableNotFound) {
 			return false, nil, nil
@@ -367,7 +485,7 @@ func (a *Appender) IsCommitApplied(ctx context.Context, topicName, jobID string)
 		return false, nil, err
 	}
 
-	snapshot, err := a.findCommitByJobID(ctx, table, jobID)
+	snapshot, err := a.findCommitByJobID(ctx, tbl, jobID)
 	if err != nil {
 		return false, nil, err
 	}
@@ -379,21 +497,7 @@ func (a *Appender) IsCommitApplied(ctx context.Context, topicName, jobID string)
 // This is a helper to build the DataFile struct from compaction worker output.
 func BuildDataFileFromStats(path string, partition int32, recordCount, fileSizeBytes int64, stats *DataFileStats) DataFile {
 	df := DataFile{
-		Path:           path,
-		Format:         FormatParquet,
-		PartitionValue: partition,
-		RecordCount:    recordCount,
-		FileSizeBytes:  fileSizeBytes,
-	}
-
-	if stats != nil {
-		df.ColumnSizes = stats.ColumnSizes
-		df.ValueCounts = stats.ValueCounts
-		df.NullValueCounts = stats.NullValueCounts
-		df.LowerBounds = stats.LowerBounds
-		df.UpperBounds = stats.UpperBounds
-		df.SplitOffsets = stats.SplitOffsets
-		df.SortOrderID = stats.SortOrderID
+		Path: path,
 	}
 
 	return df

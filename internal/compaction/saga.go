@@ -138,11 +138,6 @@ type Job struct {
 	// Set when state transitions to ICEBERG_COMMITTED.
 	IcebergSnapshotID int64 `json:"icebergSnapshotId,omitempty"`
 
-	// IcebergSkipped indicates the Iceberg commit was skipped because
-	// table.iceberg.enabled was set to false for this topic.
-	// When true, the job transitions directly from PARQUET_WRITTEN to INDEX_SWAPPED.
-	IcebergSkipped bool `json:"icebergSkipped,omitempty"`
-
 	// ---- Index Swap Phase Fields ----
 
 	// WALObjectsToDecrement contains WAL object IDs whose refcounts need decrementing.
@@ -169,8 +164,8 @@ type ParquetGCCandidate struct {
 	Path                    string `json:"path"`
 	CreatedAtMs             int64  `json:"createdAtMs"`
 	SizeBytes               int64  `json:"sizeBytes"`
-	IcebergEnabled          bool   `json:"icebergEnabled"`
-	IcebergRemovalConfirmed bool   `json:"icebergRemovalConfirmed"`
+	IcebergEnabled          bool   `json:"icebergEnabled,omitempty"`
+	IcebergRemovalConfirmed bool   `json:"icebergRemovalConfirmed,omitempty"`
 }
 
 // NewJobID generates a new unique job ID.
@@ -194,11 +189,9 @@ func (j *Job) IsRecoverable() bool {
 }
 
 // validTransitions defines allowed state transitions.
-// Note: PARQUET_WRITTEN can transition to either ICEBERG_COMMITTED (normal path)
-// or INDEX_SWAPPED (when Iceberg is disabled via table.iceberg.enabled=false).
 var validTransitions = map[JobState][]JobState{
 	JobStateCreated:          {JobStateParquetWritten, JobStateFailed},
-	JobStateParquetWritten:   {JobStateIcebergCommitted, JobStateIndexSwapped, JobStateFailed},
+	JobStateParquetWritten:   {JobStateIcebergCommitted, JobStateFailed},
 	JobStateIcebergCommitted: {JobStateIndexSwapped, JobStateFailed},
 	JobStateIndexSwapped:     {JobStateDone, JobStateFailed},
 	JobStateDone:             {}, // Terminal state
@@ -444,17 +437,6 @@ func (sm *SagaManager) MarkIcebergCommitted(ctx context.Context, streamID, jobID
 	})
 }
 
-// SkipIcebergCommit transitions a job directly from PARQUET_WRITTEN to INDEX_SWAPPED,
-// skipping the Iceberg commit phase. This is used when table.iceberg.enabled is false
-// for the topic, per SPEC.md section 11.2.
-func (sm *SagaManager) SkipIcebergCommit(ctx context.Context, streamID, jobID string, walObjectsToDecrement []string) (*Job, error) {
-	return sm.TransitionState(ctx, streamID, jobID, JobStateIndexSwapped, func(j *Job) error {
-		j.IcebergSkipped = true
-		j.WALObjectsToDecrement = walObjectsToDecrement
-		return nil
-	})
-}
-
 // MarkIndexSwapped transitions a job to INDEX_SWAPPED state.
 func (sm *SagaManager) MarkIndexSwapped(ctx context.Context, streamID, jobID string, walObjectsToDecrement []string) (*Job, error) {
 	return sm.MarkIndexSwappedWithGC(ctx, streamID, jobID, walObjectsToDecrement, nil, 0)
@@ -492,7 +474,6 @@ func (sm *SagaManager) MarkDone(ctx context.Context, streamID, jobID string) (*J
 	deleteAfterMs := time.Now().UnixMilli() + gracePeriodMs
 
 	for _, candidate := range job.ParquetGCCandidates {
-		icebergRemovalConfirmed := !candidate.IcebergEnabled
 		gcRecord := gc.ParquetGCRecord{
 			Path:                    candidate.Path,
 			DeleteAfterMs:           deleteAfterMs,
@@ -500,16 +481,10 @@ func (sm *SagaManager) MarkDone(ctx context.Context, streamID, jobID string) (*J
 			SizeBytes:               candidate.SizeBytes,
 			StreamID:                job.StreamID,
 			IcebergEnabled:          candidate.IcebergEnabled,
-			IcebergRemovalConfirmed: icebergRemovalConfirmed,
+			IcebergRemovalConfirmed: candidate.IcebergRemovalConfirmed,
 		}
 		if err := gc.ScheduleParquetGC(ctx, sm.meta, gcRecord); err != nil {
 			continue
-		}
-
-		if candidate.IcebergEnabled && candidate.IcebergRemovalConfirmed {
-			if err := gc.ConfirmParquetIcebergRemoval(ctx, sm.meta, job.StreamID, candidate.Path); err != nil {
-				continue
-			}
 		}
 	}
 

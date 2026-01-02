@@ -880,21 +880,13 @@ Dray compaction:
 * swaps index entries to point to Parquet (atomically)
 * appends Parquet files into Iceberg tables
 
-### 11.2 Stream–table duality modes (clarified)
+### 11.2 Stream–table duality mode
 
-To resolve "Iceberg always" vs "Iceberg optional" ambiguity, Dray defines **two explicit modes per cluster**:
+Dray operates in **duality mode** when Iceberg is enabled for the cluster:
 
-1. **Stream-only mode (Iceberg disabled):**
-   * Dray still compacts to Parquet
-   * No Iceberg commits are performed
-   * Topic is *not* queryable as an Iceberg table until Iceberg is enabled and a bootstrap run is executed
-
-2. **Duality mode (Iceberg enabled):**
-   * Each topic has an associated Iceberg table (created eagerly at topic creation or lazily at first compaction)
-   * Compaction commits Parquet data files to Iceberg
-
-Dray MUST expose config:
-* `table.iceberg.enabled = true|false`
+* Each topic has an associated Iceberg table (created eagerly at topic creation or lazily at first compaction)
+* Compaction commits Parquet data files to Iceberg
+* There is no per-topic override; Iceberg enablement is cluster-wide
 
 **Failure behavior (explicit):**
 

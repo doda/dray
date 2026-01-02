@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dray-io/dray/internal/config"
+	"github.com/dray-io/dray/internal/compaction/planner"
 	"github.com/dray-io/dray/internal/logging"
 )
 
 func TestCompactorStartAndShutdown(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfigWithOxia(t)
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 	cfg.Compaction.Enabled = true
 
@@ -38,17 +38,7 @@ func TestCompactorStartAndShutdown(t *testing.T) {
 		errCh <- compactor.Start(ctx)
 	}()
 
-	// Wait for compactor to start
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify health server is running
-	if compactor.healthServer == nil {
-		t.Fatal("health server not running")
-	}
-	healthAddr := compactor.healthServer.Addr()
-	if healthAddr == "" {
-		t.Fatal("health server has no address")
-	}
+	healthAddr := waitForHealthServer(t, compactor, errCh)
 	t.Logf("Compactor health server on %s", healthAddr)
 
 	// Shutdown
@@ -61,7 +51,7 @@ func TestCompactorStartAndShutdown(t *testing.T) {
 }
 
 func TestCompactorHealthEndpoint(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfigWithOxia(t)
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 	cfg.Compaction.Enabled = true
 
@@ -83,10 +73,11 @@ func TestCompactorHealthEndpoint(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go compactor.Start(ctx)
-	time.Sleep(200 * time.Millisecond)
-
-	healthAddr := compactor.healthServer.Addr()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- compactor.Start(ctx)
+	}()
+	healthAddr := waitForHealthServer(t, compactor, errCh)
 
 	// Test health endpoint
 	resp, err := http.Get("http://" + healthAddr + "/healthz")
@@ -105,7 +96,7 @@ func TestCompactorHealthEndpoint(t *testing.T) {
 }
 
 func TestCompactorGracefulShutdown(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfigWithOxia(t)
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 	cfg.Compaction.Enabled = true
 
@@ -126,8 +117,11 @@ func TestCompactorGracefulShutdown(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	go compactor.Start(ctx)
-	time.Sleep(200 * time.Millisecond)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- compactor.Start(ctx)
+	}()
+	waitForHealthServer(t, compactor, errCh)
 
 	// Trigger shutdown via context cancellation
 	cancel()
@@ -147,7 +141,7 @@ func TestCompactorGracefulShutdown(t *testing.T) {
 }
 
 func TestCompactorLockManager(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfigWithOxia(t)
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 	cfg.Compaction.Enabled = true
 
@@ -169,8 +163,11 @@ func TestCompactorLockManager(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go compactor.Start(ctx)
-	time.Sleep(200 * time.Millisecond)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- compactor.Start(ctx)
+	}()
+	waitForHealthServer(t, compactor, errCh)
 
 	// Verify lock manager is initialized
 	if compactor.lockManager == nil {
@@ -187,7 +184,7 @@ func TestCompactorLockManager(t *testing.T) {
 }
 
 func TestCompactorSagaManager(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfigWithOxia(t)
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 	cfg.Compaction.Enabled = true
 
@@ -209,8 +206,11 @@ func TestCompactorSagaManager(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go compactor.Start(ctx)
-	time.Sleep(200 * time.Millisecond)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- compactor.Start(ctx)
+	}()
+	waitForHealthServer(t, compactor, errCh)
 
 	// Verify saga manager is initialized
 	if compactor.sagaManager == nil {
@@ -224,4 +224,86 @@ func TestCompactorSagaManager(t *testing.T) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	compactor.Shutdown(shutdownCtx)
+}
+
+func TestCompactorPlanCompaction_PrefersRewrite(t *testing.T) {
+	wal := &fakeWalPlanner{
+		plan: &planner.Result{
+			StreamID: "stream-1",
+		},
+	}
+	rewrite := &fakeRewritePlanner{
+		plan: &planner.ParquetRewriteResult{
+			StreamID: "stream-1",
+		},
+	}
+
+	compactor := &Compactor{
+		planner:        wal,
+		parquetPlanner: rewrite,
+	}
+
+	plan, err := compactor.planCompaction(context.Background(), "stream-1")
+	if err != nil {
+		t.Fatalf("planCompaction error: %v", err)
+	}
+	if plan == nil || plan.Kind != planKindParquetRewrite {
+		t.Fatalf("expected parquet rewrite plan, got %#v", plan)
+	}
+	if rewrite.calls != 1 {
+		t.Fatalf("expected rewrite planner to be called, got %d", rewrite.calls)
+	}
+	if wal.calls != 0 {
+		t.Fatalf("expected WAL planner not to be called, got %d", wal.calls)
+	}
+}
+
+func TestCompactorPlanCompaction_FallsBackToWal(t *testing.T) {
+	wal := &fakeWalPlanner{
+		plan: &planner.Result{
+			StreamID: "stream-1",
+		},
+	}
+	rewrite := &fakeRewritePlanner{}
+
+	compactor := &Compactor{
+		planner:        wal,
+		parquetPlanner: rewrite,
+	}
+
+	plan, err := compactor.planCompaction(context.Background(), "stream-1")
+	if err != nil {
+		t.Fatalf("planCompaction error: %v", err)
+	}
+	if plan == nil || plan.Kind != planKindWAL {
+		t.Fatalf("expected WAL plan, got %#v", plan)
+	}
+	if rewrite.calls != 1 {
+		t.Fatalf("expected rewrite planner to be called, got %d", rewrite.calls)
+	}
+	if wal.calls != 1 {
+		t.Fatalf("expected WAL planner to be called, got %d", wal.calls)
+	}
+}
+
+type fakeWalPlanner struct {
+	plan  *planner.Result
+	err   error
+	calls int
+}
+
+func (f *fakeWalPlanner) Plan(_ context.Context, _ string) (*planner.Result, error) {
+	f.calls++
+	return f.plan, f.err
+}
+
+type fakeRewritePlanner struct {
+	plan  *planner.ParquetRewriteResult
+	err   error
+	calls int
+}
+
+func (f *fakeRewritePlanner) Plan(_ context.Context, _ string) (*planner.ParquetRewriteResult, error) {
+	f.calls++
+	return f.plan, f.err
 }

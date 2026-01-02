@@ -57,10 +57,10 @@ type IndexEntry struct {
 	BatchIndex  []BatchIndexEntry `json:"batchIndex,omitempty"`
 
 	// Parquet-specific fields
-	ParquetID          string `json:"parquetId,omitempty"`
-	ParquetPath        string `json:"parquetPath,omitempty"`
-	ParquetSizeBytes   uint64 `json:"parquetSizeBytes,omitempty"`
-	IcebergDataFileID  string `json:"icebergDataFileId,omitempty"`
+	ParquetID         string `json:"parquetId,omitempty"`
+	ParquetPath       string `json:"parquetPath,omitempty"`
+	ParquetSizeBytes  uint64 `json:"parquetSizeBytes,omitempty"`
+	IcebergDataFileID string `json:"icebergDataFileId,omitempty"`
 }
 
 // Common errors for index entry operations.
@@ -155,7 +155,8 @@ func (sm *StreamManager) AppendIndexEntry(ctx context.Context, req AppendRequest
 		if err != nil {
 			return err
 		}
-		entries, err := sm.store.List(ctx, startKey, "", 1)
+		endKey := keys.OffsetIndexEndKey(req.StreamID)
+		entries, err := sm.store.List(ctx, startKey, endKey, 1)
 		if err != nil {
 			return err
 		}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/apache/iceberg-go"
+	"github.com/apache/iceberg-go/table"
 	"github.com/dray-io/dray/internal/iceberg/catalog"
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/logging"
@@ -29,7 +31,7 @@ func newMockIcebergCatalog() *mockIcebergCatalog {
 }
 
 func (m *mockIcebergCatalog) LoadTable(ctx context.Context, identifier catalog.TableIdentifier) (catalog.Table, error) {
-	if table, ok := m.tables[identifier.String()]; ok {
+	if table, ok := m.tables[catalog.TableIdentifierString(identifier)]; ok {
 		return table, nil
 	}
 	return nil, catalog.ErrTableNotFound
@@ -44,15 +46,15 @@ func (m *mockIcebergCatalog) CreateTableIfMissing(ctx context.Context, identifie
 		schema: opts.Schema,
 		props:  opts.Properties,
 	}
-	m.tables[identifier.String()] = table
+	m.tables[catalog.TableIdentifierString(identifier)] = table
 	return table, nil
 }
 
-func (m *mockIcebergCatalog) GetCurrentSnapshot(ctx context.Context, identifier catalog.TableIdentifier) (*catalog.Snapshot, error) {
+func (m *mockIcebergCatalog) GetCurrentSnapshot(ctx context.Context, identifier catalog.TableIdentifier) (*table.Snapshot, error) {
 	return nil, catalog.ErrSnapshotNotFound
 }
 
-func (m *mockIcebergCatalog) AppendDataFiles(ctx context.Context, identifier catalog.TableIdentifier, files []catalog.DataFile, opts *catalog.AppendFilesOptions) (*catalog.Snapshot, error) {
+func (m *mockIcebergCatalog) AppendDataFiles(ctx context.Context, identifier catalog.TableIdentifier, files []catalog.DataFile, opts *catalog.AppendFilesOptions) (*table.Snapshot, error) {
 	return nil, nil
 }
 
@@ -60,7 +62,7 @@ func (m *mockIcebergCatalog) DropTable(ctx context.Context, identifier catalog.T
 	if m.dropError != nil {
 		return m.dropError
 	}
-	delete(m.tables, identifier.String())
+	delete(m.tables, catalog.TableIdentifierString(identifier))
 	return nil
 }
 
@@ -69,7 +71,7 @@ func (m *mockIcebergCatalog) ListTables(ctx context.Context, namespace []string)
 }
 
 func (m *mockIcebergCatalog) TableExists(ctx context.Context, identifier catalog.TableIdentifier) (bool, error) {
-	_, ok := m.tables[identifier.String()]
+	_, ok := m.tables[catalog.TableIdentifierString(identifier)]
 	return ok, nil
 }
 
@@ -80,18 +82,21 @@ func (m *mockIcebergCatalog) Close() error {
 // mockTable implements catalog.Table for testing.
 type mockTable struct {
 	id       catalog.TableIdentifier
-	schema   catalog.Schema
+	schema   *iceberg.Schema
 	props    catalog.TableProperties
 	location string
 }
 
 func (m *mockTable) Identifier() catalog.TableIdentifier { return m.id }
-func (m *mockTable) Schema() catalog.Schema             { return m.schema }
-func (m *mockTable) CurrentSnapshot(ctx context.Context) (*catalog.Snapshot, error) {
+func (m *mockTable) Schema() *iceberg.Schema             { return m.schema }
+func (m *mockTable) CurrentSnapshot(ctx context.Context) (*table.Snapshot, error) {
 	return nil, catalog.ErrSnapshotNotFound
 }
-func (m *mockTable) Snapshots(ctx context.Context) ([]catalog.Snapshot, error) { return nil, nil }
-func (m *mockTable) AppendFiles(ctx context.Context, files []catalog.DataFile, opts *catalog.AppendFilesOptions) (*catalog.Snapshot, error) {
+func (m *mockTable) Snapshots(ctx context.Context) ([]table.Snapshot, error) { return nil, nil }
+func (m *mockTable) AppendFiles(ctx context.Context, files []catalog.DataFile, opts *catalog.AppendFilesOptions) (*table.Snapshot, error) {
+	return nil, nil
+}
+func (m *mockTable) ReplaceFiles(ctx context.Context, added []catalog.DataFile, removed []catalog.DataFile, opts *catalog.ReplaceFilesOptions) (*table.Snapshot, error) {
 	return nil, nil
 }
 func (m *mockTable) Properties() catalog.TableProperties { return m.props }
@@ -543,10 +548,7 @@ func TestCreateTopicsHandler_WithIceberg(t *testing.T) {
 	}
 
 	// Verify Iceberg table was created
-	tableID := catalog.TableIdentifier{
-		Namespace: []string{"dray"},
-		Name:      "iceberg-topic",
-	}
+	tableID := catalog.NewTableIdentifier([]string{"dray"}, "iceberg-topic")
 	exists, err := icebergCatalog.TableExists(ctx, tableID)
 	if err != nil {
 		t.Fatalf("failed to check table existence: %v", err)
@@ -738,10 +740,7 @@ func TestCreateTopicsHandler_IcebergTableProperties(t *testing.T) {
 	}
 
 	// Verify Iceberg table was created with correct properties
-	tableID := catalog.TableIdentifier{
-		Namespace: []string{"custom", "ns"},
-		Name:      "props-topic",
-	}
+	tableID := catalog.NewTableIdentifier([]string{"custom", "ns"}, "props-topic")
 	table, err := icebergCatalog.LoadTable(ctx, tableID)
 	if err != nil {
 		t.Fatalf("failed to load Iceberg table: %v", err)
@@ -798,10 +797,7 @@ func TestCreateTopicsHandler_IcebergTableSchema(t *testing.T) {
 	}
 
 	// Verify Iceberg table schema
-	tableID := catalog.TableIdentifier{
-		Namespace: []string{"dray"},
-		Name:      "schema-topic",
-	}
+	tableID := catalog.NewTableIdentifier([]string{"dray"}, "schema-topic")
 	table, err := icebergCatalog.LoadTable(ctx, tableID)
 	if err != nil {
 		t.Fatalf("failed to load Iceberg table: %v", err)
@@ -821,7 +817,7 @@ func TestCreateTopicsHandler_IcebergTableSchema(t *testing.T) {
 	}
 
 	fieldNames := make(map[string]bool)
-	for _, f := range schema.Fields {
+	for _, f := range schema.Fields() {
 		fieldNames[f.Name] = true
 	}
 
@@ -840,10 +836,7 @@ func TestCreateTopicsHandler_IcebergExistingTableGraceful(t *testing.T) {
 	icebergCatalog := newMockIcebergCatalog()
 
 	// Pre-create the table
-	tableID := catalog.TableIdentifier{
-		Namespace: []string{"dray"},
-		Name:      "existing-iceberg-topic",
-	}
+	tableID := catalog.NewTableIdentifier([]string{"dray"}, "existing-iceberg-topic")
 	_, err := icebergCatalog.CreateTableIfMissing(ctx, tableID, catalog.CreateTableOptions{
 		Schema:     catalog.DefaultSchema(),
 		Properties: catalog.DefaultTableProperties("existing-iceberg-topic", "old-cluster"),

@@ -13,7 +13,6 @@ const (
 	ConfigCleanupPolicy      = "cleanup.policy"
 	ConfigMinInsyncReplicas  = "min.insync.replicas"
 	ConfigReplicationFactor  = "replication.factor"
-	ConfigIcebergEnabled     = "table.iceberg.enabled"
 )
 
 // Cleanup policy values.
@@ -54,7 +53,6 @@ func SupportedConfigs() []string {
 		ConfigCleanupPolicy,
 		ConfigMinInsyncReplicas,
 		ConfigReplicationFactor,
-		ConfigIcebergEnabled,
 	}
 }
 
@@ -62,7 +60,7 @@ func SupportedConfigs() []string {
 func IsSupportedConfig(key string) bool {
 	switch key {
 	case ConfigRetentionMs, ConfigRetentionBytes, ConfigCleanupPolicy,
-		ConfigMinInsyncReplicas, ConfigReplicationFactor, ConfigIcebergEnabled:
+		ConfigMinInsyncReplicas, ConfigReplicationFactor:
 		return true
 	default:
 		return false
@@ -95,8 +93,6 @@ func ValidateConfig(key, value string) error {
 		return validateMinInsyncReplicas(value)
 	case ConfigReplicationFactor:
 		return validateReplicationFactor(value)
-	case ConfigIcebergEnabled:
-		return validateIcebergEnabled(value)
 	default:
 		return &ConfigValidationError{
 			Key:     key,
@@ -267,27 +263,4 @@ func validateReplicationFactor(value string) error {
 		}
 	}
 	return nil
-}
-
-func validateIcebergEnabled(value string) error {
-	switch value {
-	case "true", "false":
-		return nil
-	default:
-		return &ConfigValidationError{
-			Key:     ConfigIcebergEnabled,
-			Value:   value,
-			Message: "must be 'true' or 'false'",
-		}
-	}
-}
-
-// GetIcebergEnabled returns the table.iceberg.enabled value from config.
-// If not set in the topic config, returns the globalDefault.
-// This implements per-topic override of duality mode per SPEC.md section 11.2.
-func GetIcebergEnabled(configs map[string]string, globalDefault bool) bool {
-	if value, ok := configs[ConfigIcebergEnabled]; ok {
-		return value == "true"
-	}
-	return globalDefault
 }

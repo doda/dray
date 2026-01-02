@@ -200,10 +200,7 @@ func (h *DeleteTopicsHandler) handleTopic(ctx context.Context, version int16, na
 		if len(namespace) == 0 {
 			namespace = []string{"dray"}
 		}
-		tableID := catalog.TableIdentifier{
-			Namespace: namespace,
-			Name:      topicName,
-		}
+		tableID := catalog.NewTableIdentifier(namespace, topicName)
 		if err := h.icebergCatalog.DropTable(ctx, tableID); err != nil {
 			// Iceberg table drop failure should not fail topic deletion
 			// per spec - the topic is already deleted from metadata.

@@ -93,7 +93,11 @@ func TestWriter_Headers(t *testing.T) {
 			Timestamp:  1000,
 			Key:        []byte("key"),
 			Value:      []byte("value"),
-			Headers:    `[{"Key":"h1","Value":"djE="},{"Key":"h2","Value":"djI="},{"Key":"h1","Value":"djM="}]`,
+			Headers: []Header{
+				{Key: "h1", Value: []byte("v1")},
+				{Key: "h2", Value: []byte("v2")},
+				{Key: "h1", Value: []byte("v3")},
+			},
 			Attributes: 0,
 		},
 	}
@@ -119,8 +123,13 @@ func TestWriter_Headers(t *testing.T) {
 	}
 
 	rec := readRecords[0]
-	if rec.Headers != records[0].Headers {
-		t.Errorf("headers mismatch: expected %q, got %q", records[0].Headers, rec.Headers)
+	if len(rec.Headers) != len(records[0].Headers) {
+		t.Fatalf("headers length mismatch: expected %d, got %d", len(records[0].Headers), len(rec.Headers))
+	}
+	for i := range rec.Headers {
+		if rec.Headers[i].Key != records[0].Headers[i].Key || !bytes.Equal(rec.Headers[i].Value, records[0].Headers[i].Value) {
+			t.Fatalf("header %d mismatch: expected %v, got %v", i, records[0].Headers[i], rec.Headers[i])
+		}
 	}
 }
 
@@ -469,7 +478,11 @@ func TestWriter_HeadersWithNullValues(t *testing.T) {
 			Timestamp:  1000,
 			Key:        []byte("key"),
 			Value:      []byte("value"),
-			Headers:    `[{"Key":"h1","Value":"djE="},{"Key":"h2","Value":null},{"Key":"h3","Value":""}]`,
+			Headers: []Header{
+				{Key: "h1", Value: []byte("v1")},
+				{Key: "h2", Value: nil},
+				{Key: "h3", Value: []byte("")},
+			},
 			Attributes: 0,
 		},
 	}
@@ -495,8 +508,13 @@ func TestWriter_HeadersWithNullValues(t *testing.T) {
 	}
 
 	rec := readRecords[0]
-	if rec.Headers != records[0].Headers {
-		t.Errorf("headers mismatch: expected %q, got %q", records[0].Headers, rec.Headers)
+	if len(rec.Headers) != len(records[0].Headers) {
+		t.Fatalf("headers length mismatch: expected %d, got %d", len(records[0].Headers), len(rec.Headers))
+	}
+	for i := range rec.Headers {
+		if rec.Headers[i].Key != records[0].Headers[i].Key || !bytes.Equal(rec.Headers[i].Value, records[0].Headers[i].Value) {
+			t.Fatalf("header %d mismatch: expected %v, got %v", i, records[0].Headers[i], rec.Headers[i])
+		}
 	}
 }
 
@@ -555,7 +573,10 @@ func TestWriter_RoundTripPreservesAllFields(t *testing.T) {
 		Timestamp:  time.Now().UnixMilli(),
 		Key:        []byte("test-key"),
 		Value:      []byte("test-value"),
-		Headers:    `[{"Key":"trace-id","Value":"YWJjMTIz"},{"Key":"meta","Value":null}]`,
+		Headers: []Header{
+			{Key: "trace-id", Value: []byte("abc123")},
+			{Key: "meta", Value: nil},
+		},
 		ProducerID: &pid,
 		ProducerEpoch: &epoch,
 		BaseSequence:  &seq,
@@ -599,8 +620,13 @@ func TestWriter_RoundTripPreservesAllFields(t *testing.T) {
 	if rec.Value != nil && !bytes.Equal(rec.Value, original.Value) {
 		t.Errorf("value mismatch: expected %v, got %v", original.Value, rec.Value)
 	}
-	if rec.Headers != original.Headers {
-		t.Errorf("headers mismatch: expected %q, got %q", original.Headers, rec.Headers)
+	if len(rec.Headers) != len(original.Headers) {
+		t.Fatalf("headers length mismatch: expected %d, got %d", len(original.Headers), len(rec.Headers))
+	}
+	for i := range rec.Headers {
+		if rec.Headers[i].Key != original.Headers[i].Key || !bytes.Equal(rec.Headers[i].Value, original.Headers[i].Value) {
+			t.Fatalf("header %d mismatch: expected %v, got %v", i, original.Headers[i], rec.Headers[i])
+		}
 	}
 	if rec.ProducerID == nil || *rec.ProducerID != *original.ProducerID {
 		t.Errorf("producer_id mismatch: expected %v, got %v", original.ProducerID, rec.ProducerID)
@@ -630,7 +656,10 @@ func TestWriter_CompatibilityWithFetchReader(t *testing.T) {
 			Timestamp:  1000,
 			Key:        []byte("test-key"),
 			Value:      []byte("test-value"),
-			Headers:    `[{"Key":"h1","Value":"djE="},{"Key":"h2","Value":null}]`,
+			Headers: []Header{
+				{Key: "h1", Value: []byte("v1")},
+				{Key: "h2", Value: nil},
+			},
 			ProducerID: &pid,
 			ProducerEpoch: &epoch,
 			BaseSequence:  &seq,
@@ -642,7 +671,7 @@ func TestWriter_CompatibilityWithFetchReader(t *testing.T) {
 			Timestamp:  1001,
 			Key:        nil,
 			Value:      []byte("value-only"),
-			Headers:    `[]`,
+			Headers:    nil,
 			ProducerID: nil,
 			ProducerEpoch: nil,
 			BaseSequence:  nil,
