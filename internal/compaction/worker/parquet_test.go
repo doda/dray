@@ -720,13 +720,13 @@ func TestWriter_ParquetFileStats(t *testing.T) {
 		switch field.Name() {
 		case "offset":
 			offsetColIdx = i
-		case "timestamp":
+		case "timestamp_ms":
 			timestampColIdx = i
 		}
 	}
 
 	if offsetColIdx < 0 || timestampColIdx < 0 {
-		t.Fatal("offset or timestamp column not found")
+		t.Fatal("offset or timestamp_ms column not found")
 	}
 
 	// Verify offset column stats
@@ -799,7 +799,7 @@ func TestParquetSchema_MatchesSpec(t *testing.T) {
 	expectedColumns := map[string]bool{
 		"partition":      true,
 		"offset":         true,
-		"timestamp":      true,
+		"timestamp_ms":   true,
 		"key":            true,
 		"value":          true,
 		"headers":        true,
@@ -807,7 +807,6 @@ func TestParquetSchema_MatchesSpec(t *testing.T) {
 		"producer_epoch": true,
 		"base_sequence":  true,
 		"attributes":     true,
-		"record_crc":     true,
 	}
 
 	for _, field := range schema.Fields() {

@@ -247,6 +247,33 @@ func writeManifestList(entries []AvroManifestListEntry) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// readManifestList reads and parses an Iceberg manifest list file (Avro OCF).
+func readManifestList(data []byte) ([]AvroManifestListEntry, error) {
+	if _, err := avro.Parse(manifestListSchema); err != nil {
+		return nil, fmt.Errorf("parsing manifest list schema: %w", err)
+	}
+
+	dec, err := ocf.NewDecoder(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("creating ocf decoder: %w", err)
+	}
+
+	var entries []AvroManifestListEntry
+	for dec.HasNext() {
+		var entry AvroManifestListEntry
+		if err := dec.Decode(&entry); err != nil {
+			return nil, fmt.Errorf("decoding manifest list entry: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+
+	if err := dec.Error(); err != nil {
+		return nil, fmt.Errorf("decoder error: %w", err)
+	}
+
+	return entries, nil
+}
+
 func toAvroDataFile(f DataFile) AvroDataFile {
 	adf := AvroDataFile{
 		Content:         0,

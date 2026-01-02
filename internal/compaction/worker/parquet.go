@@ -12,18 +12,19 @@ import (
 
 // Record represents a single Kafka record in the Parquet schema.
 // This matches SPEC section 5.3 - Compacted Parquet schema.
+// Column names must match the Iceberg schema in catalog/schema.go.
+// Field IDs must match the Iceberg field IDs for proper column mapping.
 type Record struct {
-	Partition     int32     `parquet:"partition"`
-	Offset        int64     `parquet:"offset"`
-	Timestamp     int64     `parquet:"timestamp,timestamp(millisecond)"`
-	Key           []byte    `parquet:"key,optional"`
-	Value         []byte    `parquet:"value,optional"`
-	Headers       string    `parquet:"headers,optional"`
-	ProducerID    *int64    `parquet:"producer_id,optional"`
-	ProducerEpoch *int32    `parquet:"producer_epoch,optional"`
-	BaseSequence  *int32    `parquet:"base_sequence,optional"`
-	Attributes    int32     `parquet:"attributes"`
-	RecordCRC     *int32    `parquet:"record_crc,optional"`
+	Partition     int32     `parquet:"partition,id(1)"`
+	Offset        int64     `parquet:"offset,id(2)"`
+	Timestamp     int64     `parquet:"timestamp_ms,timestamp(millisecond),id(3)"`
+	Key           []byte    `parquet:"key,optional,id(4)"`
+	Value         []byte    `parquet:"value,optional,id(5)"`
+	Headers       string    `parquet:"headers,optional,id(6)"`
+	ProducerID    *int64    `parquet:"producer_id,optional,id(7)"`
+	ProducerEpoch *int32    `parquet:"producer_epoch,optional,id(8)"`
+	BaseSequence  *int32    `parquet:"base_sequence,optional,id(9)"`
+	Attributes    int32     `parquet:"attributes,id(10)"`
 }
 
 // Header represents a single Kafka record header.

@@ -2,10 +2,11 @@ package catalog
 
 // Iceberg type constants for Dray schema fields.
 const (
-	TypeInt    = "int"
-	TypeLong   = "long"
-	TypeBinary = "binary"
-	TypeString = "string"
+	TypeInt         = "int"
+	TypeLong        = "long"
+	TypeBinary      = "binary"
+	TypeString      = "string"
+	TypeTimestampTz = "timestamptz" // Timestamp with timezone (stores UTC milliseconds)
 )
 
 // Dray schema field IDs. These are stable and should not change.
@@ -56,9 +57,9 @@ func DefaultSchema() Schema {
 			{
 				ID:       FieldIDTimestampMs,
 				Name:     "timestamp_ms",
-				Type:     TypeLong,
+				Type:     TypeTimestampTz,
 				Required: true,
-				Doc:      "Record timestamp in milliseconds",
+				Doc:      "Record timestamp in milliseconds (UTC)",
 			},
 			{
 				ID:       FieldIDKey,
@@ -129,11 +130,30 @@ func DefaultPartitionSpec() PartitionSpec {
 	}
 }
 
+// DefaultNameMapping returns the JSON name mapping for Iceberg tables.
+// This is required because parquet-go doesn't write Iceberg field IDs to parquet files.
+// The name mapping tells Iceberg how to map column names to field IDs.
+func DefaultNameMapping() string {
+	return `[
+		{"field-id": 1, "names": ["partition"]},
+		{"field-id": 2, "names": ["offset"]},
+		{"field-id": 3, "names": ["timestamp_ms"]},
+		{"field-id": 4, "names": ["key"]},
+		{"field-id": 5, "names": ["value"]},
+		{"field-id": 6, "names": ["headers"]},
+		{"field-id": 7, "names": ["producer_id"]},
+		{"field-id": 8, "names": ["producer_epoch"]},
+		{"field-id": 9, "names": ["base_sequence"]},
+		{"field-id": 10, "names": ["attributes"]}
+	]`
+}
+
 // DefaultTableProperties returns the default table properties for a Dray table.
 func DefaultTableProperties(topicName, clusterID string) TableProperties {
 	return TableProperties{
-		PropertyDrayTopic:         topicName,
-		PropertyDrayClusterID:     clusterID,
-		PropertyDraySchemaVersion: "1",
+		PropertyDrayTopic:            topicName,
+		PropertyDrayClusterID:        clusterID,
+		PropertyDraySchemaVersion:    "1",
+		PropertySchemaNameMappingDef: DefaultNameMapping(),
 	}
 }

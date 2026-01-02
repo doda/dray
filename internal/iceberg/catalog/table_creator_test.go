@@ -381,7 +381,7 @@ func TestTableCreator_SchemaCompliance(t *testing.T) {
 	}{
 		{"partition", "int", true},
 		{"offset", "long", true},
-		{"timestamp_ms", "long", true},
+		{"timestamp_ms", "timestamptz", true},
 		{"key", "binary", false},
 		{"value", "binary", false},
 		{"headers", "string", false},
@@ -450,5 +450,11 @@ func TestTableCreator_PropertiesCompliance(t *testing.T) {
 
 	if props[PropertyDraySchemaVersion] != "1" {
 		t.Errorf("expected dray.schema_version = '1', got %q", props[PropertyDraySchemaVersion])
+	}
+
+	// Verify name mapping is set (required for parquet files without field IDs)
+	nameMapping := props[PropertySchemaNameMappingDef]
+	if nameMapping == "" {
+		t.Error("expected schema.name-mapping.default to be set")
 	}
 }
