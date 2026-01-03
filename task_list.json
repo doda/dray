@@ -3757,7 +3757,7 @@
       "internal/wal/writer.go",
       "internal/wal/staging.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "parquet-timestamp-lookup-uses-stats",

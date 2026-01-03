@@ -633,6 +633,460 @@ func TestDefaultPathFormatter(t *testing.T) {
 // - Different domains never mix in same WAL
 // - Attempts to add streams from different MetaDomains are rejected
 // - Single-domain WAL writes succeed
+// multipartMockStore extends mockStore with multipart upload support for testing StreamingWriter.
+type multipartMockStore struct {
+	*mockStore
+	uploads          map[string]*multipartUploadMock
+	uploadIDCounter  int
+	MultipartTracker *objectstore.MultipartTracker
+	mu               sync.Mutex
+}
+
+type multipartUploadMock struct {
+	store       *multipartMockStore
+	uploadID    string
+	key         string
+	contentType string
+	parts       map[int][]byte
+	mu          sync.Mutex
+	completed   bool
+	aborted     bool
+}
+
+func newMultipartMockStore() *multipartMockStore {
+	return &multipartMockStore{
+		mockStore:        newMockStore(),
+		uploads:          make(map[string]*multipartUploadMock),
+		MultipartTracker: &objectstore.MultipartTracker{},
+	}
+}
+
+func (s *multipartMockStore) CreateMultipartUpload(ctx context.Context, key string, contentType string) (objectstore.MultipartUpload, error) {
+	return s.CreateMultipartUploadWithOptions(ctx, key, contentType, objectstore.PutOptions{})
+}
+
+func (s *multipartMockStore) CreateMultipartUploadWithOptions(ctx context.Context, key string, contentType string, opts objectstore.PutOptions) (objectstore.MultipartUpload, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.uploadIDCounter++
+	uploadID := fmt.Sprintf("upload-%d", s.uploadIDCounter)
+	upload := &multipartUploadMock{
+		store:       s,
+		uploadID:    uploadID,
+		key:         key,
+		contentType: contentType,
+		parts:       make(map[int][]byte),
+	}
+	s.uploads[uploadID] = upload
+	return upload, nil
+}
+
+func (m *multipartUploadMock) UploadID() string {
+	return m.uploadID
+}
+
+func (m *multipartUploadMock) UploadPart(ctx context.Context, partNum int, reader io.Reader, size int64) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.completed || m.aborted {
+		return "", errors.New("upload already finished")
+	}
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return "", err
+	}
+
+	m.parts[partNum] = data
+
+	if m.store.MultipartTracker != nil {
+		m.store.MultipartTracker.RecordPart(int64(len(data)))
+	}
+
+	return fmt.Sprintf("etag-part-%d", partNum), nil
+}
+
+func (m *multipartUploadMock) Complete(ctx context.Context, etags []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.completed || m.aborted {
+		return errors.New("upload already finished")
+	}
+
+	// Assemble parts
+	var totalData []byte
+	for i := 1; i <= len(m.parts); i++ {
+		part, ok := m.parts[i]
+		if !ok {
+			return fmt.Errorf("missing part %d", i)
+		}
+		totalData = append(totalData, part...)
+	}
+
+	m.store.mockStore.mu.Lock()
+	m.store.mockStore.objects[m.key] = totalData
+	m.store.mockStore.mu.Unlock()
+
+	m.store.mu.Lock()
+	delete(m.store.uploads, m.uploadID)
+	m.store.mu.Unlock()
+
+	m.completed = true
+
+	if m.store.MultipartTracker != nil {
+		m.store.MultipartTracker.RecordUpload(m.key)
+	}
+
+	return nil
+}
+
+func (m *multipartUploadMock) Abort(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.completed && !m.aborted {
+		m.store.mu.Lock()
+		delete(m.store.uploads, m.uploadID)
+		m.store.mu.Unlock()
+	}
+
+	m.aborted = true
+	return nil
+}
+
+func TestStreamingWriterSmallWAL(t *testing.T) {
+	store := newMultipartMockStore()
+	w := NewStreamingWriter(store, &StreamingWriterConfig{
+		MultipartThreshold: 1024 * 1024, // 1MB threshold
+		PartSize:           512 * 1024,  // 512KB parts
+	})
+	defer w.Close()
+
+	// Add a small chunk
+	chunk := Chunk{
+		StreamID:       1,
+		RecordCount:    10,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 2000,
+		Batches:        []BatchEntry{{Data: []byte("small batch data")}},
+	}
+
+	err := w.AddChunk(chunk, 0)
+	if err != nil {
+		t.Fatalf("AddChunk failed: %v", err)
+	}
+
+	ctx := context.Background()
+	result, err := w.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	// Verify multipart was NOT used (small WAL)
+	if store.MultipartTracker.UploadCount() != 0 {
+		t.Errorf("Expected no multipart uploads for small WAL, got %d", store.MultipartTracker.UploadCount())
+	}
+
+	// Verify object was written via regular Put
+	if len(store.mockStore.objects) != 1 {
+		t.Errorf("Expected 1 object in store, got %d", len(store.mockStore.objects))
+	}
+
+	// Verify WAL can be decoded
+	data := store.mockStore.objects[result.Path]
+	decoded, err := DecodeFromBytes(data)
+	if err != nil {
+		t.Fatalf("Failed to decode WAL: %v", err)
+	}
+	if len(decoded.Chunks) != 1 {
+		t.Errorf("Expected 1 chunk, got %d", len(decoded.Chunks))
+	}
+}
+
+func TestStreamingWriterLargeWALUsesMultipart(t *testing.T) {
+	store := newMultipartMockStore()
+	// Use small thresholds for testing
+	w := NewStreamingWriter(store, &StreamingWriterConfig{
+		MultipartThreshold: 1024, // 1KB threshold
+		PartSize:           512,  // 512 byte parts
+	})
+	defer w.Close()
+
+	// Create a chunk large enough to exceed the threshold
+	largeData := make([]byte, 2048) // 2KB
+	for i := range largeData {
+		largeData[i] = byte(i % 256)
+	}
+
+	chunk := Chunk{
+		StreamID:       1,
+		RecordCount:    100,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 2000,
+		Batches:        []BatchEntry{{Data: largeData}},
+	}
+
+	err := w.AddChunk(chunk, 0)
+	if err != nil {
+		t.Fatalf("AddChunk failed: %v", err)
+	}
+
+	ctx := context.Background()
+	result, err := w.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	// Verify multipart WAS used
+	if store.MultipartTracker.UploadCount() != 1 {
+		t.Errorf("Expected 1 multipart upload, got %d", store.MultipartTracker.UploadCount())
+	}
+
+	// With 2KB data + headers, we expect multiple parts at 512 byte part size
+	if store.MultipartTracker.PartCount() < 2 {
+		t.Errorf("Expected at least 2 parts for large WAL, got %d", store.MultipartTracker.PartCount())
+	}
+
+	// Verify object was written
+	if len(store.mockStore.objects) != 1 {
+		t.Errorf("Expected 1 object in store, got %d", len(store.mockStore.objects))
+	}
+
+	// Verify WAL can be decoded
+	data := store.mockStore.objects[result.Path]
+	decoded, err := DecodeFromBytes(data)
+	if err != nil {
+		t.Fatalf("Failed to decode WAL: %v", err)
+	}
+	if len(decoded.Chunks) != 1 {
+		t.Errorf("Expected 1 chunk, got %d", len(decoded.Chunks))
+	}
+	if !bytes.Equal(decoded.Chunks[0].Batches[0].Data, largeData) {
+		t.Error("Decoded data doesn't match original")
+	}
+
+	// Verify total bytes tracked
+	if store.MultipartTracker.TotalBytes() != result.Size {
+		t.Errorf("TotalBytes = %d, want %d", store.MultipartTracker.TotalBytes(), result.Size)
+	}
+}
+
+func TestStreamingWriterVeryLargeWAL(t *testing.T) {
+	store := newMultipartMockStore()
+	// Use small thresholds for testing
+	w := NewStreamingWriter(store, &StreamingWriterConfig{
+		MultipartThreshold: 1024,       // 1KB threshold
+		PartSize:           10 * 1024,  // 10KB parts
+	})
+	defer w.Close()
+
+	// Create a 100KB chunk
+	largeData := make([]byte, 100*1024)
+	for i := range largeData {
+		largeData[i] = byte(i % 256)
+	}
+
+	chunk := Chunk{
+		StreamID:       1,
+		RecordCount:    1000,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 2000,
+		Batches:        []BatchEntry{{Data: largeData}},
+	}
+
+	err := w.AddChunk(chunk, 0)
+	if err != nil {
+		t.Fatalf("AddChunk failed: %v", err)
+	}
+
+	ctx := context.Background()
+	result, err := w.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	// Verify multipart was used
+	if store.MultipartTracker.UploadCount() != 1 {
+		t.Errorf("Expected 1 multipart upload, got %d", store.MultipartTracker.UploadCount())
+	}
+
+	// With 100KB data at 10KB part size, expect ~11 parts (data + header/index/footer)
+	expectedParts := (100*1024 + HeaderSize + ChunkIndexEntrySize + FooterSize + 10*1024 - 1) / (10 * 1024)
+	if store.MultipartTracker.PartCount() < expectedParts-2 {
+		t.Errorf("Expected at least %d parts, got %d", expectedParts-2, store.MultipartTracker.PartCount())
+	}
+
+	// Verify object was written and can be decoded
+	data := store.mockStore.objects[result.Path]
+	decoded, err := DecodeFromBytes(data)
+	if err != nil {
+		t.Fatalf("Failed to decode WAL: %v", err)
+	}
+	if !bytes.Equal(decoded.Chunks[0].Batches[0].Data, largeData) {
+		t.Error("Decoded data doesn't match original")
+	}
+}
+
+func TestStreamingWriterMultipleChunksLarge(t *testing.T) {
+	store := newMultipartMockStore()
+	w := NewStreamingWriter(store, &StreamingWriterConfig{
+		MultipartThreshold: 1024, // 1KB threshold
+		PartSize:           1024, // 1KB parts
+	})
+	defer w.Close()
+
+	// Create multiple chunks
+	chunks := make([]Chunk, 5)
+	for i := 0; i < 5; i++ {
+		data := make([]byte, 500)
+		for j := range data {
+			data[j] = byte(i*100 + j%256)
+		}
+		chunks[i] = Chunk{
+			StreamID:       uint64(100 + i),
+			RecordCount:    uint32(10 + i),
+			MinTimestampMs: int64(1000 * (i + 1)),
+			MaxTimestampMs: int64(2000 * (i + 1)),
+			Batches:        []BatchEntry{{Data: data}},
+		}
+		err := w.AddChunk(chunks[i], 0)
+		if err != nil {
+			t.Fatalf("AddChunk failed: %v", err)
+		}
+	}
+
+	ctx := context.Background()
+	result, err := w.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	// Verify multipart was used (5 x 500 bytes > 1KB threshold)
+	if store.MultipartTracker.UploadCount() != 1 {
+		t.Errorf("Expected 1 multipart upload, got %d", store.MultipartTracker.UploadCount())
+	}
+
+	// Verify object was written
+	data := store.mockStore.objects[result.Path]
+	decoded, err := DecodeFromBytes(data)
+	if err != nil {
+		t.Fatalf("Failed to decode WAL: %v", err)
+	}
+	if len(decoded.Chunks) != 5 {
+		t.Errorf("Expected 5 chunks, got %d", len(decoded.Chunks))
+	}
+}
+
+func TestStreamingWriterNoMultipartSupport(t *testing.T) {
+	// Use regular mockStore which doesn't implement MultipartStore
+	store := newMockStore()
+	w := NewStreamingWriter(store, &StreamingWriterConfig{
+		MultipartThreshold: 100, // Very low threshold
+		PartSize:           50,
+	})
+	defer w.Close()
+
+	// Create a large chunk that would trigger multipart if available
+	largeData := make([]byte, 500)
+	for i := range largeData {
+		largeData[i] = byte(i)
+	}
+
+	chunk := Chunk{
+		StreamID:       1,
+		RecordCount:    10,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 2000,
+		Batches:        []BatchEntry{{Data: largeData}},
+	}
+
+	err := w.AddChunk(chunk, 0)
+	if err != nil {
+		t.Fatalf("AddChunk failed: %v", err)
+	}
+
+	ctx := context.Background()
+	result, err := w.Flush(ctx)
+	if err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	// Verify object was written using regular Put
+	if len(store.objects) != 1 {
+		t.Errorf("Expected 1 object in store, got %d", len(store.objects))
+	}
+
+	// Verify WAL can be decoded
+	data := store.objects[result.Path]
+	decoded, err := DecodeFromBytes(data)
+	if err != nil {
+		t.Fatalf("Failed to decode WAL: %v", err)
+	}
+	if !bytes.Equal(decoded.Chunks[0].Batches[0].Data, largeData) {
+		t.Error("Decoded data doesn't match original")
+	}
+}
+
+func TestStreamingWriterChunkOffsetsCorrect(t *testing.T) {
+	store := newMultipartMockStore()
+	w := NewStreamingWriter(store, &StreamingWriterConfig{
+		MultipartThreshold: 100, // Low threshold to trigger multipart
+		PartSize:           100,
+	})
+	defer w.Close()
+
+	chunks := []Chunk{
+		{
+			StreamID:       300,
+			RecordCount:    15,
+			MinTimestampMs: 3000,
+			MaxTimestampMs: 3500,
+			Batches:        []BatchEntry{{Data: make([]byte, 50)}},
+		},
+		{
+			StreamID:       100,
+			RecordCount:    5,
+			MinTimestampMs: 1000,
+			MaxTimestampMs: 1500,
+			Batches:        []BatchEntry{{Data: make([]byte, 30)}},
+		},
+		{
+			StreamID:       200,
+			RecordCount:    10,
+			MinTimestampMs: 2000,
+			MaxTimestampMs: 2500,
+			Batches:        []BatchEntry{{Data: make([]byte, 40)}},
+		},
+	}
+
+	for _, chunk := range chunks {
+		w.AddChunk(chunk, 1)
+	}
+
+	result, err := w.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	// Verify chunk offsets are returned in insertion order
+	if len(result.ChunkOffsets) != 3 {
+		t.Fatalf("Expected 3 chunk offsets, got %d", len(result.ChunkOffsets))
+	}
+
+	for i, chunk := range chunks {
+		offset := result.ChunkOffsets[i]
+		if offset.StreamID != chunk.StreamID {
+			t.Errorf("ChunkOffsets[%d].StreamID = %d, want %d", i, offset.StreamID, chunk.StreamID)
+		}
+		if offset.RecordCount != chunk.RecordCount {
+			t.Errorf("ChunkOffsets[%d].RecordCount = %d, want %d", i, offset.RecordCount, chunk.RecordCount)
+		}
+	}
+}
+
 func TestMetaDomainIsolation(t *testing.T) {
 	t.Run("reject_mixed_domains_at_second_chunk", func(t *testing.T) {
 		store := newMockStore()

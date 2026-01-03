@@ -2011,3 +2011,35 @@ Start with project-setup, then follow spec phases:
   - RangeReader interface allows easy integration with objectstore.Store.GetRange
   - Compaction worker already uses range reads; new decoder enables consistent pattern
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - wal-writer-streaming-upload
+
+- **Task**: wal-writer-streaming-upload (PASS)
+- **Summary**: Implemented streaming WAL uploads with multipart support for large WALs.
+- **Changes made**:
+  - Added `StreamingEncoder` that writes WAL data to an io.Writer while tracking CRC32C
+  - Added `StreamingWriter` that uses multipart upload for WALs above threshold (default 5MB)
+  - Added `partWriter` helper that buffers and uploads parts when buffer reaches partSize
+  - Extended `MockStore` with `MultipartStore` implementation and `MultipartTracker` for testing
+  - Added 6 StreamingWriter tests covering small/large WALs, multipart usage, fallback behavior
+  - Added 6 StreamingEncoder tests verifying output matches EncodeToBytes
+- **Files modified**:
+  - `internal/wal/encoder.go` (added StreamingEncoder)
+  - `internal/wal/encoder_test.go` (added 6 streaming encoder tests)
+  - `internal/wal/writer.go` (added StreamingWriter, StreamingWriterConfig, partWriter)
+  - `internal/wal/writer_test.go` (added multipartMockStore and 6 StreamingWriter tests)
+  - `internal/objectstore/mock.go` (added MultipartStore implementation, MultipartTracker)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/wal/... -run StreamingEncoder` - all 6 tests pass
+  - `go test ./internal/wal/... -run StreamingWriter` - all 6 tests pass
+  - `go test ./internal/wal/... ./internal/objectstore/...` - all tests pass
+  - `go test ./...` - all project tests pass
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - StreamingEncoder avoids full WAL buffering by writing header/chunks/index incrementally
+  - StreamingWriter selects multipart when WAL size >= threshold (configurable, default 5MB)
+  - partWriter buffers writes up to partSize, then uploads each part with UploadPart
+  - Falls back to regular Put when store doesn't implement MultipartStore
+  - Test `TestStreamingWriterLargeWALUsesMultipart` verifies multipart is used for large WALs
+- **No blockers or follow-ups identified**
