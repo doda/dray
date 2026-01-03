@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -66,8 +68,10 @@ func (s *Server) Start() error {
 	s.mu.Unlock()
 
 	go func() {
-		if err := s.server.Serve(ln); err != nil && err != http.ErrServerClosed {
-			// Log error but don't fail - metrics are best-effort
+		if err := s.server.Serve(ln); err != nil {
+			if !isExpectedShutdownError(err) {
+				slog.Error("metrics server error", "error", err)
+			}
 		}
 	}()
 
@@ -93,4 +97,16 @@ func (s *Server) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return s.server.Shutdown(ctx)
+}
+
+// isExpectedShutdownError returns true for errors that are expected during
+// graceful server shutdown and should not be logged as errors.
+func isExpectedShutdownError(err error) bool {
+	if errors.Is(err, http.ErrServerClosed) {
+		return true
+	}
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	return false
 }
