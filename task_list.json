@@ -3815,7 +3815,7 @@
       "internal/compaction/planner",
       "internal/compaction"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "streaming-compaction-conversion",

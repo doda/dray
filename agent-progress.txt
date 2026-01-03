@@ -2132,3 +2132,35 @@ Start with project-setup, then follow spec phases:
   - Bounds are big-endian encoded for proper lexicographic comparison per Iceberg spec
   - DefaultDataFileStats populates partition, offset, and timestamp bounds with value counts
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - wire-parquet-rewrite-compaction
+
+- **Task**: wire-parquet-rewrite-compaction (PASS)
+- **Summary**: Wired Parquet small-file rewrite planner into compaction loop via new Scheduler.
+- **Changes made**:
+  - Created `Scheduler` in `internal/compaction/scheduler.go` that invokes both WAL and Parquet rewrite planning
+  - Created `ParquetMerger` in `internal/compaction/worker/parquet_merger.go` to merge multiple Parquet files
+  - Scheduler prioritizes WAL compaction over Parquet rewrite when both are eligible
+  - Added 7 scheduler unit tests (WAL compaction, Parquet rewrite, priority, disabled features, etc.)
+  - Added 5 ParquetMerger unit tests (merge files, error cases, storage write)
+  - Added 3 integration tests for end-to-end Parquet rewrite compaction verification
+  - Updated `ParquetRewritePlanner` comment to remove TODO
+- **Files modified**:
+  - `internal/compaction/scheduler.go` (new file - Scheduler + SchedulerConfig + CompactionPlan types)
+  - `internal/compaction/scheduler_test.go` (new file - 7 unit tests)
+  - `internal/compaction/worker/parquet_merger.go` (new file - ParquetMerger + MergeResult)
+  - `internal/compaction/worker/parquet_merger_test.go` (new file - 5 unit tests)
+  - `tests/integration/parquet_rewrite_compaction_test.go` (new file - 3 integration tests)
+  - `internal/compaction/planner/parquet_rewrite.go` (updated comment)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/compaction/...` - all 72 tests pass
+  - `go test ./tests/integration/... -run TestParquetRewrite` - all 3 tests pass
+  - `go test ./...` - all project tests pass
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - Scheduler.Plan() checks WAL planner first (priority), then Parquet rewrite planner
+  - ParquetMerger reads from object store and writes merged Parquet back
+  - IndexSwapper.Swap() already supports ParquetIndexKeys for replacing old entries
+  - Integration tests verify data consistency after merge (all records preserved)
+- **No blockers or follow-ups identified**
