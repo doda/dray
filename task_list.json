@@ -3656,7 +3656,7 @@
     "scope": [
       "internal/protocol/fetch.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "pool-request-read-buffers",

@@ -347,6 +347,7 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 	// Combine batches into RecordBatches
 	if len(fetchResp.Batches) > 0 {
 		var buf bytes.Buffer
+		buf.Grow(int(fetchResp.TotalBytes))
 		for _, batch := range fetchResp.Batches {
 			buf.Write(batch)
 		}

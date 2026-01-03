@@ -1828,3 +1828,22 @@ Start with project-setup, then follow spec phases:
   - `go test ./internal/protocol/...` - all tests pass
   - `./init.sh --quick` - SUCCESS
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - preallocate-fetch-response-buffer
+
+- **Task**: preallocate-fetch-response-buffer (PASS)
+- **Summary**: Added buffer preallocation for fetch response buffers using known TotalBytes size.
+- **Changes made**:
+  - Added `buf.Grow(int(fetchResp.TotalBytes))` before writing batches to response buffer
+  - Added `TestFetchHandler_BufferPreallocation` test verifying correct buffer behavior
+  - Added `BenchmarkFetchResponseBufferGrow` benchmark showing 1 alloc/op with preallocation
+- **Files modified**:
+  - `internal/protocol/fetch.go` (added buf.Grow call on line 350)
+  - `internal/protocol/fetch_test.go` (added test and benchmark, added fmt import)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/protocol/... -run TestFetchHandler_BufferPreallocation` - PASS
+  - `go test ./internal/protocol/... -bench=BenchmarkFetchResponseBufferGrow` - 1 allocs/op verified
+  - `go test ./internal/protocol/...` - all tests pass
+  - `./init.sh --quick` - SUCCESS
+- **No blockers or follow-ups identified**
