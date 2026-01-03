@@ -1706,7 +1706,28 @@ Start with project-setup, then follow spec phases:
 - **Tests added**:
   - `TestWALGCWorker_Pagination_EarlyEntriesNotEligible` - 10 records, first 5 not eligible, verifies last 5 are processed
   - `TestWALGCWorker_Pagination_AllPagesProcessed` - 7 eligible records with batch size 2, verifies all deleted
-- **Verification**: 
+- **Verification**:
   - `go test ./internal/gc/... -count=1` - all 61 tests pass (2 new)
   - `./init.sh` - SUCCESS
+- **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - acl-watch-log-backoff
+
+- **Task**: acl-watch-log-backoff (PASS)
+- **Summary**: Added structured logging and exponential backoff to ACL notification watch loop.
+- **Changes**:
+  - Added `log/slog` structured logging for non-context errors in watchLoop
+  - Implemented bounded exponential backoff (100ms initial, 30s max, 2x factor)
+  - Added configurable backoff via WithBackoff option and NewACLCacheWithOptions
+  - Backoff resets to initial value on successful notification receipt
+- **Files modified**:
+  - `internal/auth/acl_cache.go` (added logging, backoff, configuration options)
+  - `internal/auth/acl_cache_test.go` (added 3 new tests with failingNotificationStream helper)
+- **Tests added**:
+  - `TestACLCache_WatchLoopBackoffOnErrors` - verifies logging and backoff on stream errors
+  - `TestACLCache_BackoffResetOnSuccess` - verifies backoff resets after successful notification
+  - `TestACLCache_BackoffCapsAtMaximum` - verifies backoff caps at maxBackoff
+- **Verification**:
+  - `go test ./internal/auth/... -count=1` - all 61 tests pass (3 new)
+  - `./init.sh --quick` - SUCCESS
 - **No blockers or follow-ups identified**

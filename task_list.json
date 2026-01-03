@@ -3568,7 +3568,7 @@
     "scope": [
       "internal/auth"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "metrics-server-log-serve-error",

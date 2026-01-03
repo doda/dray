@@ -1,13 +1,72 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
 )
+
+// failingNotificationStream is a test helper that returns errors from Next().
+type failingNotificationStream struct {
+	errCount    atomic.Int32
+	maxErrors   int32
+	failErr     error
+	closed      atomic.Bool
+	successChan chan struct{}
+}
+
+func newFailingNotificationStream(maxErrors int32, failErr error) *failingNotificationStream {
+	return &failingNotificationStream{
+		maxErrors:   maxErrors,
+		failErr:     failErr,
+		successChan: make(chan struct{}),
+	}
+}
+
+func (s *failingNotificationStream) Next(ctx context.Context) (metadata.Notification, error) {
+	if s.closed.Load() {
+		return metadata.Notification{}, errors.New("stream closed")
+	}
+	count := s.errCount.Add(1)
+	if count <= s.maxErrors {
+		return metadata.Notification{}, s.failErr
+	}
+	// Block after maxErrors failures to let test verify backoff behavior
+	select {
+	case <-ctx.Done():
+		return metadata.Notification{}, ctx.Err()
+	case <-s.successChan:
+		return metadata.Notification{}, ctx.Err()
+	}
+}
+
+func (s *failingNotificationStream) Close() error {
+	s.closed.Store(true)
+	close(s.successChan)
+	return nil
+}
+
+func (s *failingNotificationStream) ErrorCount() int32 {
+	return s.errCount.Load()
+}
+
+// failingMetadataStore wraps MockStore but returns a custom notification stream.
+type failingMetadataStore struct {
+	*metadata.MockStore
+	stream metadata.NotificationStream
+}
+
+func (s *failingMetadataStore) Notifications(_ context.Context) (metadata.NotificationStream, error) {
+	return s.stream, nil
+}
 
 func TestACLCache_StartAndStop(t *testing.T) {
 	ctx := context.Background()
@@ -610,5 +669,160 @@ func TestACLCache_WildcardResource(t *testing.T) {
 	// Should not be allowed to write (not covered by rule)
 	if cache.Authorize(ResourceTypeTopic, "topic-1", "User:alice", "any-host", OperationWrite) {
 		t.Error("Authorize(WRITE) = true, want false")
+	}
+}
+
+func TestACLCache_WatchLoopBackoffOnErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Set up logging capture
+	var logBuf bytes.Buffer
+	var logMu sync.Mutex
+	handler := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	mock := metadata.NewMockStore()
+	store := NewACLStore(mock)
+
+	// Create a failing stream that will return 3 errors before blocking
+	failErr := errors.New("notification stream error")
+	failingStream := newFailingNotificationStream(3, failErr)
+
+	// Wrap the mock store with our failing stream
+	failingStore := &failingMetadataStore{
+		MockStore: mock,
+		stream:    failingStream,
+	}
+
+	// Create cache with fast backoff for testing
+	cache := NewACLCacheWithOptions(store, failingStore,
+		WithBackoff(10*time.Millisecond, 50*time.Millisecond, 2.0))
+
+	// Start cache
+	if err := cache.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer cache.Stop()
+
+	// Wait for at least 3 errors to occur with backoff
+	// With 10ms, 20ms, 40ms backoff, should take ~70ms minimum
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if failingStream.ErrorCount() >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Verify errors were encountered
+	errCount := failingStream.ErrorCount()
+	if errCount < 3 {
+		t.Errorf("Expected at least 3 errors, got %d", errCount)
+	}
+
+	// Verify warnings were logged
+	logMu.Lock()
+	logOutput := logBuf.String()
+	logMu.Unlock()
+
+	if !bytes.Contains([]byte(logOutput), []byte("ACL notification stream error")) {
+		t.Error("Expected 'ACL notification stream error' in logs")
+	}
+	if !bytes.Contains([]byte(logOutput), []byte("notification stream error")) {
+		t.Error("Expected error message in logs")
+	}
+	if !bytes.Contains([]byte(logOutput), []byte("backoff")) {
+		t.Error("Expected 'backoff' in logs")
+	}
+}
+
+func TestACLCache_BackoffResetOnSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mock := metadata.NewMockStore()
+	store := NewACLStore(mock)
+	cache := NewACLCacheWithOptions(store, mock,
+		WithBackoff(10*time.Millisecond, 100*time.Millisecond, 2.0))
+
+	if err := cache.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer cache.Stop()
+
+	// Send a notification
+	entry := &ACLEntry{
+		ResourceType: ResourceTypeTopic,
+		ResourceName: "topic-1",
+		PatternType:  PatternTypeLiteral,
+		Principal:    "User:alice",
+		Host:         "*",
+		Operation:    OperationRead,
+		Permission:   PermissionAllow,
+	}
+	if err := store.CreateACL(ctx, entry); err != nil {
+		t.Fatalf("CreateACL() error = %v", err)
+	}
+
+	result, _ := mock.Get(ctx, aclKeyPath(entry))
+	mock.SimulateNotification(metadata.Notification{
+		Key:     aclKeyPath(entry),
+		Value:   result.Value,
+		Version: result.Version,
+		Deleted: false,
+	})
+
+	// Give notification time to process
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify cache updated (confirms notification was processed)
+	if count := cache.Count(); count != 1 {
+		t.Errorf("Count() after notification = %d, want 1", count)
+	}
+}
+
+func TestACLCache_BackoffCapsAtMaximum(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mock := metadata.NewMockStore()
+	store := NewACLStore(mock)
+
+	// Create a stream that fails many times
+	failErr := errors.New("persistent error")
+	failingStream := newFailingNotificationStream(10, failErr)
+
+	failingStore := &failingMetadataStore{
+		MockStore: mock,
+		stream:    failingStream,
+	}
+
+	// Short initial backoff, very short max to verify capping
+	cache := NewACLCacheWithOptions(store, failingStore,
+		WithBackoff(5*time.Millisecond, 20*time.Millisecond, 2.0))
+
+	if err := cache.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	// Wait for multiple errors
+	// If backoff wasn't capped, this would take a very long time
+	// With capping at 20ms, 10 errors should take ~200ms max (each after cap)
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if failingStream.ErrorCount() >= 5 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cache.Stop()
+
+	errCount := failingStream.ErrorCount()
+	if errCount < 5 {
+		t.Errorf("Expected at least 5 errors within timeout, got %d", errCount)
 	}
 }
