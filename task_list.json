@@ -3598,7 +3598,7 @@
     "scope": [
       "internal/metrics"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "gc-metrics-log-scan-errors",

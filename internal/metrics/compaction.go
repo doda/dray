@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -291,7 +292,10 @@ func (s *BacklogScanner) scanOnce() {
 
 	results, err := s.ScanAll(ctx)
 	if err != nil {
-		// Log error but continue - metrics will be stale until next scan
+		slog.Warn("compaction backlog scan failed",
+			"scope", "all_streams",
+			"error", err,
+		)
 		return
 	}
 
@@ -309,6 +313,10 @@ func (s *BacklogScanner) scanOnce() {
 func (s *BacklogScanner) ScanAll(ctx context.Context) ([]BacklogScanResult, error) {
 	streams, err := s.indexLister.ListStreams(ctx)
 	if err != nil {
+		slog.Warn("compaction backlog scan failed to list streams",
+			"scope", "list_streams",
+			"error", err,
+		)
 		return nil, err
 	}
 
@@ -316,7 +324,11 @@ func (s *BacklogScanner) ScanAll(ctx context.Context) ([]BacklogScanResult, erro
 	for _, streamID := range streams {
 		result, err := s.ScanStream(ctx, streamID)
 		if err != nil {
-			// Skip this stream but continue with others
+			slog.Warn("compaction backlog scan failed for stream",
+				"scope", "stream",
+				"stream_id", streamID,
+				"error", err,
+			)
 			continue
 		}
 		results = append(results, result)
