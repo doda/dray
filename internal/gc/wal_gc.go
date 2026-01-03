@@ -150,29 +150,63 @@ func (w *WALGCWorker) scan(ctx context.Context) {
 }
 
 // scanDomain scans a single metadata domain for GC-eligible WAL objects.
+// It paginates through all GC markers to avoid starvation when early entries
+// are not yet eligible for deletion.
 func (w *WALGCWorker) scanDomain(ctx context.Context, metaDomain int) error {
 	prefix := keys.WALGCDomainPrefix(metaDomain)
-	kvs, err := w.meta.List(ctx, prefix, "", w.config.BatchSize)
-	if err != nil {
-		return fmt.Errorf("list GC markers for domain %d: %w", metaDomain, err)
-	}
-
 	now := time.Now().UnixMilli()
+	firstPage := true
+	startKey := prefix
+	// endKey bounds the range to stay within the prefix - used after the first page
+	endKey := prefix[:len(prefix)-1] + string(prefix[len(prefix)-1]+1)
 
-	for _, kv := range kvs {
+	for {
 		select {
 		case <-w.stopCh:
 			return nil
 		default:
 		}
 
-		if _, err := w.processGCRecord(ctx, kv.Key, kv.Value, now); err != nil {
-			// Log error but continue processing other records
-			continue
+		var kvs []metadata.KV
+		var err error
+		if firstPage {
+			// First page uses prefix matching (empty endKey)
+			kvs, err = w.meta.List(ctx, prefix, "", w.config.BatchSize)
+			firstPage = false
+		} else {
+			// Subsequent pages use range query [startKey, endKey)
+			kvs, err = w.meta.List(ctx, startKey, endKey, w.config.BatchSize)
 		}
-	}
+		if err != nil {
+			return fmt.Errorf("list GC markers for domain %d: %w", metaDomain, err)
+		}
 
-	return nil
+		if len(kvs) == 0 {
+			// No more records in this domain
+			return nil
+		}
+
+		for _, kv := range kvs {
+			select {
+			case <-w.stopCh:
+				return nil
+			default:
+			}
+
+			if _, err := w.processGCRecord(ctx, kv.Key, kv.Value, now); err != nil {
+				// Log error but continue processing other records
+				continue
+			}
+		}
+
+		// If we got fewer than BatchSize records, there are no more pages
+		if len(kvs) < w.config.BatchSize {
+			return nil
+		}
+
+		// Move to the next page by starting after the last key
+		startKey = kvs[len(kvs)-1].Key + "\x00"
+	}
 }
 
 // processGCRecord processes a single GC record.

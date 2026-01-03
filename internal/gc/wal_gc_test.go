@@ -504,3 +504,139 @@ func TestWALGCWorker_IntegrationWithWALRefCount(t *testing.T) {
 		t.Error("GC marker should have been deleted")
 	}
 }
+
+func TestWALGCWorker_Pagination_EarlyEntriesNotEligible(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	// Use a small batch size (3) to force multiple pages
+	batchSize := 3
+	now := time.Now()
+
+	// Create 10 records total:
+	// - Records 0-4 (first two pages, 5 records) are NOT eligible (deleteAfterMs in future)
+	// - Records 5-9 (later pages) ARE eligible (deleteAfterMs in past)
+	// Without pagination, only the first 3 records would be scanned and none deleted.
+	// With pagination, all 10 are scanned and records 5-9 are deleted.
+	for i := 0; i < 10; i++ {
+		// Use zero-padded IDs to ensure lexicographic ordering matches numeric ordering
+		walID := "wal-" + string(rune('0'+i/10)) + string(rune('0'+i%10))
+		path := testWALPath(0, walID)
+
+		var deleteAfterMs int64
+		if i < 5 {
+			// Not yet eligible (grace period not passed)
+			deleteAfterMs = now.Add(1 * time.Hour).UnixMilli()
+		} else {
+			// Eligible for deletion
+			deleteAfterMs = now.Add(-1 * time.Hour).UnixMilli()
+		}
+
+		gcRecord := WALGCRecord{
+			Path:          path,
+			DeleteAfterMs: deleteAfterMs,
+			CreatedAt:     now.Add(-2 * time.Hour).UnixMilli(),
+			SizeBytes:     100,
+		}
+		gcRecordBytes, _ := json.Marshal(gcRecord)
+		objStore.Put(ctx, path, bytes.NewReader([]byte("data")), 4, "application/octet-stream")
+		gcKey := keys.WALGCKeyPath(0, walID)
+		metaStore.Put(ctx, gcKey, gcRecordBytes)
+	}
+
+	// Create worker with small BatchSize to force pagination
+	worker := NewWALGCWorker(metaStore, objStore, WALGCWorkerConfig{
+		NumDomains: 1,
+		BatchSize:  batchSize,
+	})
+
+	err := worker.ScanOnce(ctx)
+	if err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// Verify that eligible records (5-9) were deleted
+	for i := 5; i < 10; i++ {
+		walID := "wal-" + string(rune('0'+i/10)) + string(rune('0'+i%10))
+		gcKey := keys.WALGCKeyPath(0, walID)
+		result, _ := metaStore.Get(ctx, gcKey)
+		if result.Exists {
+			t.Errorf("GC marker for %s should have been deleted (was eligible)", walID)
+		}
+		path := testWALPath(0, walID)
+		if objStore.hasObject(path) {
+			t.Errorf("Object for %s should have been deleted", walID)
+		}
+	}
+
+	// Verify that non-eligible records (0-4) still exist
+	for i := 0; i < 5; i++ {
+		walID := "wal-" + string(rune('0'+i/10)) + string(rune('0'+i%10))
+		gcKey := keys.WALGCKeyPath(0, walID)
+		result, _ := metaStore.Get(ctx, gcKey)
+		if !result.Exists {
+			t.Errorf("GC marker for %s should NOT have been deleted (not yet eligible)", walID)
+		}
+		path := testWALPath(0, walID)
+		if !objStore.hasObject(path) {
+			t.Errorf("Object for %s should NOT have been deleted", walID)
+		}
+	}
+}
+
+func TestWALGCWorker_Pagination_AllPagesProcessed(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	// Use a batch size of 2 to force many pages
+	batchSize := 2
+	now := time.Now()
+
+	// Create 7 eligible records - should require 4 pages (2+2+2+1)
+	for i := 0; i < 7; i++ {
+		walID := "wal-" + string(rune('a'+i))
+		path := testWALPath(0, walID)
+
+		gcRecord := WALGCRecord{
+			Path:          path,
+			DeleteAfterMs: now.Add(-1 * time.Hour).UnixMilli(),
+			CreatedAt:     now.Add(-2 * time.Hour).UnixMilli(),
+			SizeBytes:     100,
+		}
+		gcRecordBytes, _ := json.Marshal(gcRecord)
+		objStore.Put(ctx, path, bytes.NewReader([]byte("data")), 4, "application/octet-stream")
+		gcKey := keys.WALGCKeyPath(0, walID)
+		metaStore.Put(ctx, gcKey, gcRecordBytes)
+	}
+
+	worker := NewWALGCWorker(metaStore, objStore, WALGCWorkerConfig{
+		NumDomains: 1,
+		BatchSize:  batchSize,
+	})
+
+	err := worker.ScanOnce(ctx)
+	if err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// Verify all 7 records were deleted
+	for i := 0; i < 7; i++ {
+		walID := "wal-" + string(rune('a'+i))
+		gcKey := keys.WALGCKeyPath(0, walID)
+		result, _ := metaStore.Get(ctx, gcKey)
+		if result.Exists {
+			t.Errorf("GC marker for %s should have been deleted", walID)
+		}
+	}
+
+	// Verify no pending records remain
+	pending, err := worker.GetPendingCount(ctx)
+	if err != nil {
+		t.Fatalf("GetPendingCount failed: %v", err)
+	}
+	if pending != 0 {
+		t.Errorf("Expected 0 pending records, got %d", pending)
+	}
+}

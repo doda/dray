@@ -1689,3 +1689,24 @@ Start with project-setup, then follow spec phases:
   - `go test ./internal/compaction/... ./internal/produce/... -count=1` - all pass
   - `./init.sh --quick` - SUCCESS
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - wal-gc-pagination
+
+- **Task**: wal-gc-pagination (PASS)
+- **Summary**: Added pagination to WAL GC scans to avoid starvation when early entries are not yet eligible for deletion.
+- **Problem**: scanDomain only fetched BatchSize records and stopped, missing eligible entries in later pages.
+- **Solution**:
+  - Modified scanDomain to loop through pages using range queries
+  - First page uses prefix matching; subsequent pages use [startKey, endKey) range query
+  - Computes endKey by incrementing last char of prefix to bound the range
+  - Continues until fewer than BatchSize records returned
+- **Files modified**:
+  - `internal/gc/wal_gc.go` (added pagination loop to scanDomain)
+  - `internal/gc/wal_gc_test.go` (added 2 pagination tests)
+- **Tests added**:
+  - `TestWALGCWorker_Pagination_EarlyEntriesNotEligible` - 10 records, first 5 not eligible, verifies last 5 are processed
+  - `TestWALGCWorker_Pagination_AllPagesProcessed` - 7 eligible records with batch size 2, verifies all deleted
+- **Verification**: 
+  - `go test ./internal/gc/... -count=1` - all 61 tests pass (2 new)
+  - `./init.sh` - SUCCESS
+- **No blockers or follow-ups identified**
