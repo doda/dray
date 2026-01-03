@@ -1327,3 +1327,124 @@ func TestFetchHandler_MetricsWithWALData(t *testing.T) {
 		t.Errorf("WAL source counter = %f, want 1", got)
 	}
 }
+
+// TestFetchHandler_LoggingLevels verifies that per-partition logs are at debug level
+// and aggregate request-level logging is at info level.
+func TestFetchHandler_LoggingLevels(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+
+	// Create a test topic with 2 partitions to verify aggregate behavior
+	result, err := topicStore.CreateTopic(context.Background(), topics.CreateTopicRequest{
+		Name:           "log-test-topic",
+		PartitionCount: 2,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	for _, p := range result.Partitions {
+		if err := streamManager.CreateStreamWithID(context.Background(), p.StreamID, "log-test-topic", p.Partition); err != nil {
+			t.Fatalf("failed to create stream: %v", err)
+		}
+	}
+
+	mockObjStore := NewMockObjectStore()
+	fetcher := fetch.NewFetcher(mockObjStore, streamManager)
+	handler := NewFetchHandler(FetchHandlerConfig{MaxBytes: 1024 * 1024}, topicStore, fetcher, streamManager)
+
+	// Test with INFO level - should only see aggregate log, not per-partition logs
+	t.Run("info level shows aggregate only", func(t *testing.T) {
+		ctx, buf := newInfoLogContext()
+		req := &kmsg.FetchRequest{
+			Topics: []kmsg.FetchRequestTopic{
+				{
+					Topic: "log-test-topic",
+					Partitions: []kmsg.FetchRequestTopicPartition{
+						{Partition: 0, FetchOffset: 0, PartitionMaxBytes: 1024},
+						{Partition: 1, FetchOffset: 0, PartitionMaxBytes: 1024},
+					},
+				},
+			},
+		}
+		_ = handler.Handle(ctx, 12, req)
+
+		logOutput := buf.String()
+
+		// Should contain aggregate log at info level
+		if !bytes.Contains([]byte(logOutput), []byte("fetch complete")) {
+			t.Error("expected 'fetch complete' aggregate log at info level")
+		}
+
+		// Should NOT contain per-partition debug logs at info level
+		if bytes.Contains([]byte(logOutput), []byte("processPartition:")) {
+			t.Error("per-partition 'processPartition' log should not appear at info level")
+		}
+		if bytes.Contains([]byte(logOutput), []byte("fetch result")) {
+			t.Error("per-partition 'fetch result' log should not appear at info level")
+		}
+		if bytes.Contains([]byte(logOutput), []byte("response built")) {
+			t.Error("per-partition 'response built' log should not appear at info level")
+		}
+	})
+
+	// Test with DEBUG level - should see both aggregate and per-partition logs
+	t.Run("debug level shows all logs", func(t *testing.T) {
+		ctx, buf := newLogContext()
+		req := &kmsg.FetchRequest{
+			Topics: []kmsg.FetchRequestTopic{
+				{
+					Topic: "log-test-topic",
+					Partitions: []kmsg.FetchRequestTopicPartition{
+						{Partition: 0, FetchOffset: 0, PartitionMaxBytes: 1024},
+					},
+				},
+			},
+		}
+		_ = handler.Handle(ctx, 12, req)
+
+		logOutput := buf.String()
+
+		// Should contain aggregate log
+		if !bytes.Contains([]byte(logOutput), []byte("fetch complete")) {
+			t.Error("expected 'fetch complete' aggregate log")
+		}
+
+		// Should contain per-partition debug logs
+		if !bytes.Contains([]byte(logOutput), []byte("processPartition:")) {
+			t.Error("expected 'processPartition' debug log")
+		}
+	})
+
+	// Test aggregate log contains expected fields
+	t.Run("aggregate log contains expected fields", func(t *testing.T) {
+		ctx, buf := newInfoLogContext()
+		req := &kmsg.FetchRequest{
+			Topics: []kmsg.FetchRequestTopic{
+				{
+					Topic: "log-test-topic",
+					Partitions: []kmsg.FetchRequestTopicPartition{
+						{Partition: 0, FetchOffset: 0, PartitionMaxBytes: 1024},
+						{Partition: 1, FetchOffset: 0, PartitionMaxBytes: 1024},
+					},
+				},
+			},
+		}
+		_ = handler.Handle(ctx, 12, req)
+
+		logOutput := buf.String()
+
+		// Verify aggregate log contains expected fields
+		if !bytes.Contains([]byte(logOutput), []byte("topics=")) {
+			t.Error("expected 'topics' field in aggregate log")
+		}
+		if !bytes.Contains([]byte(logOutput), []byte("partitions=")) {
+			t.Error("expected 'partitions' field in aggregate log")
+		}
+		if !bytes.Contains([]byte(logOutput), []byte("durationMs=")) {
+			t.Error("expected 'durationMs' field in aggregate log")
+		}
+	})
+}

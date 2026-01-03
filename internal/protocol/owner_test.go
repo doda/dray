@@ -29,6 +29,18 @@ func newLogContext() (context.Context, *bytes.Buffer) {
 	return ctx, buf
 }
 
+func newInfoLogContext() (context.Context, *bytes.Buffer) {
+	buf := &bytes.Buffer{}
+	logger := logging.New(logging.Config{
+		Level:  logging.LevelInfo,
+		Format: logging.FormatText,
+		Output: buf,
+	})
+	ctx := logging.WithLoggerCtx(context.Background(), logger)
+	ctx = WithZoneID(ctx, "zone-a")
+	return ctx, buf
+}
+
 func assertLogContains(t *testing.T, buf *bytes.Buffer, msg string) {
 	t.Helper()
 	if !strings.Contains(buf.String(), msg) {
