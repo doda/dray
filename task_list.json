@@ -3771,7 +3771,7 @@
     "scope": [
       "internal/fetch/timestamp_scan.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "parquet-fetch-batch-aggregation",

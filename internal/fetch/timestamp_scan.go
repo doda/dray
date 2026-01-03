@@ -78,27 +78,34 @@ func (r *WALReader) FindOffsetByTimestamp(ctx context.Context, entry *index.Inde
 }
 
 // FindOffsetByTimestamp scans a Parquet entry to find the first offset with timestamp >= requested.
+// It uses row group min/max timestamp stats to prune row groups that cannot contain the target timestamp.
 func (r *ParquetReader) FindOffsetByTimestamp(ctx context.Context, entry *index.IndexEntry, timestamp int64) (int64, int64, bool, error) {
 	if entry.FileType != index.FileTypeParquet {
 		return -1, -1, false, fmt.Errorf("fetch: expected Parquet entry, got %s", entry.FileType)
 	}
 
-	rc, err := r.store.Get(ctx, entry.ParquetPath)
+	meta, err := r.store.Head(ctx, entry.ParquetPath)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
 			return -1, -1, false, fmt.Errorf("%w: %s", ErrParquetNotFound, entry.ParquetPath)
 		}
-		return -1, -1, false, fmt.Errorf("fetch: reading parquet file: %w", err)
+		return -1, -1, false, fmt.Errorf("fetch: reading parquet metadata: %w", err)
 	}
-	defer rc.Close()
 
-	data, err := io.ReadAll(rc)
+	if meta.Size == 0 {
+		return -1, -1, false, ErrInvalidParquet
+	}
+
+	readerAt := newObjectStoreReaderAt(ctx, r.store, entry.ParquetPath, meta.Size)
+	parquetFile, err := parquet.OpenFile(readerAt, meta.Size, parquet.SkipPageIndex(true), parquet.SkipBloomFilters(true))
 	if err != nil {
-		return -1, -1, false, fmt.Errorf("fetch: reading parquet data: %w", err)
+		return -1, -1, false, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
 	}
 
-	reader := parquet.NewGenericReader[ParquetRecordWithHeaders](newParquetBytesFile(data))
-	defer reader.Close()
+	rowGroups := selectRowGroupsByTimestamp(parquetFile, timestamp)
+	if len(rowGroups) == 0 {
+		return -1, -1, false, nil
+	}
 
 	var (
 		found     bool
@@ -107,27 +114,44 @@ func (r *ParquetReader) FindOffsetByTimestamp(ctx context.Context, entry *index.
 		readBatch = make([]ParquetRecordWithHeaders, 128)
 	)
 
-	for {
-		n, err := reader.Read(readBatch)
-		if n > 0 {
-			for _, rec := range readBatch[:n] {
-				if rec.Offset < entry.StartOffset || rec.Offset >= entry.EndOffset {
-					continue
-				}
-				if rec.Timestamp >= timestamp {
-					if !found || rec.Offset < bestOff {
-						bestOff = rec.Offset
-						bestTs = rec.Timestamp
-						found = true
+	for _, rowGroup := range rowGroups {
+		groupReader := parquet.NewGenericRowGroupReader[ParquetRecordWithHeaders](rowGroup)
+
+		for {
+			n, err := groupReader.Read(readBatch)
+			if n > 0 {
+				for _, rec := range readBatch[:n] {
+					if rec.Offset < entry.StartOffset || rec.Offset >= entry.EndOffset {
+						continue
+					}
+					if rec.Timestamp >= timestamp {
+						if !found || rec.Offset < bestOff {
+							bestOff = rec.Offset
+							bestTs = rec.Timestamp
+							found = true
+						}
 					}
 				}
 			}
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				groupReader.Close()
+				return -1, -1, false, fmt.Errorf("fetch: parsing parquet records: %w", err)
+			}
 		}
-		if err == io.EOF {
+
+		if err := groupReader.Close(); err != nil {
+			return -1, -1, false, fmt.Errorf("fetch: closing row group reader: %w", err)
+		}
+
+		// If we found a match in this row group, we can stop.
+		// Row groups are assumed to be in timestamp order, so once we find the first
+		// offset >= timestamp, any subsequent matches in other row groups would have
+		// higher offsets (which we don't want - we want the minimum offset).
+		if found {
 			break
-		}
-		if err != nil {
-			return -1, -1, false, fmt.Errorf("fetch: parsing parquet records: %w", err)
 		}
 	}
 
@@ -136,6 +160,46 @@ func (r *ParquetReader) FindOffsetByTimestamp(ctx context.Context, entry *index.
 	}
 
 	return bestOff, bestTs, true, nil
+}
+
+// selectRowGroupsByTimestamp selects row groups that could contain records with timestamp >= target.
+// It uses the min/max timestamp column stats to prune row groups.
+func selectRowGroupsByTimestamp(file *parquet.File, timestamp int64) []parquet.RowGroup {
+	timestampColumn, ok := file.Schema().Lookup("timestamp_ms")
+	rowGroups := file.RowGroups()
+	if !ok {
+		return rowGroups
+	}
+
+	columnIndex := timestampColumn.ColumnIndex
+	selected := make([]parquet.RowGroup, 0, len(rowGroups))
+	for _, rowGroup := range rowGroups {
+		chunks := rowGroup.ColumnChunks()
+		if columnIndex >= len(chunks) {
+			selected = append(selected, rowGroup)
+			continue
+		}
+		boundsChunk, ok := chunks[columnIndex].(interface {
+			Bounds() (parquet.Value, parquet.Value, bool)
+		})
+		if !ok {
+			selected = append(selected, rowGroup)
+			continue
+		}
+		minValue, maxValue, ok := boundsChunk.Bounds()
+		if !ok || minValue.IsNull() || maxValue.IsNull() {
+			selected = append(selected, rowGroup)
+			continue
+		}
+		maxTs := maxValue.Int64()
+		// Skip row groups where max timestamp < target (no records can match)
+		if maxTs < timestamp {
+			continue
+		}
+		selected = append(selected, rowGroup)
+	}
+
+	return selected
 }
 
 func findRecordByTimestamp(batchData []byte, baseOffset int64, timestamp int64) (int64, int64, bool, error) {

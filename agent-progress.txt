@@ -2043,3 +2043,29 @@ Start with project-setup, then follow spec phases:
   - Falls back to regular Put when store doesn't implement MultipartStore
   - Test `TestStreamingWriterLargeWALUsesMultipart` verifies multipart is used for large WALs
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - parquet-timestamp-lookup-uses-stats
+
+- **Task**: parquet-timestamp-lookup-uses-stats (PASS)
+- **Summary**: Optimized Parquet timestamp lookup to use row group stats for pruning and range reads.
+- **Changes made**:
+  - Modified `FindOffsetByTimestamp` in `ParquetReader` to use `parquet.OpenFile` with range reads instead of loading entire file
+  - Added `selectRowGroupsByTimestamp()` function that prunes row groups using min/max timestamp column stats
+  - Row groups where `maxTimestamp < targetTimestamp` are skipped entirely
+  - Implemented early termination: stops scanning after finding first match in a row group
+- **Files modified**:
+  - `internal/fetch/timestamp_scan.go` (rewrote `FindOffsetByTimestamp`, added `selectRowGroupsByTimestamp`)
+  - `internal/fetch/timestamp_scan_test.go` (new file with 8 test functions)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `TestParquetReader_FindOffsetByTimestamp_UsesRowGroupStats`: reads 27% of file (vs 100% before)
+  - `TestParquetReader_FindOffsetByTimestamp_BoundedReadsForLargeFile`: reads only 8.9% of file
+  - All fetch tests pass
+  - All project tests pass
+  - `./init.sh` - SUCCESS
+- **Key test results** (from 509KB file with 20 row groups):
+  - Last row group search: 8.9% of file read
+  - First row group search: 8.9% of file read
+  - Not-found search: 4.2% of file read
+- **No blockers or follow-ups identified**
+
