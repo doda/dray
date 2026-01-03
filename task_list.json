@@ -3965,7 +3965,7 @@
       "Verify no data loss or duplication after recovery",
       "Run integration tests and fix any failures"
     ],
-    "completed": false,
+    "completed": true,
     "depends_on": [
       "compaction-saga-add-wal-gc-ready-state"
     ],

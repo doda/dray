@@ -948,6 +948,365 @@ func TestCrashRecovery_MultipleJobsRecovery(t *testing.T) {
 	t.Log("All jobs recovered and transitioned to terminal states")
 }
 
+// TestCrashRecovery_AfterCreated tests that a crash after CREATED state
+// (before Parquet file is written) requires re-running the entire compaction.
+func TestCrashRecovery_AfterCreated(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	topicStore := topics.NewStore(metaStore)
+	streamManager := index.NewStreamManager(metaStore)
+	objStore := newCrashRecoveryObjectStore()
+	ctx := context.Background()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "created-crash-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	streamID := result.Partitions[0].StreamID
+	if err := streamManager.CreateStreamWithID(ctx, streamID, "created-crash-topic", 0); err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	committer := produce.NewCommitter(objStore, metaStore, produce.CommitterConfig{
+		NumDomains: 4,
+	})
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush:        committer.CreateFlushHandler(),
+	})
+	defer buffer.Close()
+
+	produceHandler := protocol.NewProduceHandler(
+		protocol.ProduceHandlerConfig{},
+		topicStore,
+		buffer,
+	)
+
+	totalRecords := 6
+	produceReq := buildCompactionTestProduceRequest("created-crash-topic", 0, totalRecords, 0)
+	produceResp := produceHandler.Handle(ctx, 9, produceReq)
+	if produceResp.Topics[0].Partitions[0].ErrorCode != 0 {
+		t.Fatalf("produce failed with error code %d", produceResp.Topics[0].Partitions[0].ErrorCode)
+	}
+
+	sagaManager1 := compaction.NewSagaManager(metaStore, "compactor-1")
+	job, err := sagaManager1.CreateJob(ctx, streamID,
+		compaction.WithSourceRange(0, int64(totalRecords)),
+		compaction.WithSourceWALCount(1),
+		compaction.WithSourceSizeBytes(1000))
+	if err != nil {
+		t.Fatalf("failed to create compaction job: %v", err)
+	}
+	t.Logf("Created job %s in state %s", job.JobID, job.State)
+
+	if job.State != compaction.JobStateCreated {
+		t.Fatalf("expected state CREATED, got %s", job.State)
+	}
+
+	// --- CRASH SIMULATION ---
+	// compactor-1 crashes immediately after creating the job but before writing Parquet
+
+	// --- RECOVERY ---
+	sagaManager2 := compaction.NewSagaManager(metaStore, "compactor-2")
+
+	incompleteJobs, err := sagaManager2.ListIncompleteJobs(ctx, streamID)
+	if err != nil {
+		t.Fatalf("failed to list incomplete jobs: %v", err)
+	}
+	if len(incompleteJobs) != 1 {
+		t.Fatalf("expected 1 incomplete job, got %d", len(incompleteJobs))
+	}
+
+	recoveredJob := incompleteJobs[0]
+	t.Logf("Recovered job %s in state %s (created by %s)", recoveredJob.JobID, recoveredJob.State, recoveredJob.CompactorID)
+
+	if recoveredJob.State != compaction.JobStateCreated {
+		t.Fatalf("expected recovered job in CREATED state, got %s", recoveredJob.State)
+	}
+
+	recoveredJob, err = sagaManager2.ResumeJob(ctx, streamID, recoveredJob.JobID)
+	if err != nil {
+		t.Fatalf("failed to resume job: %v", err)
+	}
+	if recoveredJob.RetryCount != 1 {
+		t.Errorf("expected retry count 1, got %d", recoveredJob.RetryCount)
+	}
+
+	// Recovery from CREATED state requires re-running the entire compaction from scratch
+	prefix := keys.OffsetIndexPrefix(streamID)
+	kvs, err := metaStore.List(ctx, prefix, "", 0)
+	if err != nil {
+		t.Fatalf("failed to list index entries: %v", err)
+	}
+
+	var walEntries []*index.IndexEntry
+	for _, kv := range kvs {
+		var entry index.IndexEntry
+		if err := json.Unmarshal(kv.Value, &entry); err != nil {
+			t.Fatalf("failed to parse index entry: %v", err)
+		}
+		if entry.FileType == index.FileTypeWAL {
+			walEntries = append(walEntries, &entry)
+		}
+	}
+
+	converter := worker.NewConverter(objStore)
+	convertResult, err := converter.Convert(ctx, walEntries, 0)
+	if err != nil {
+		t.Fatalf("failed to convert WAL to Parquet: %v", err)
+	}
+
+	parquetPath := worker.GenerateParquetPath("created-crash-topic", 0, "2025-01-01", worker.GenerateParquetID())
+	if err := converter.WriteParquetToStorage(ctx, parquetPath, convertResult.ParquetData); err != nil {
+		t.Fatalf("failed to write Parquet: %v", err)
+	}
+
+	recoveredJob, err = sagaManager2.MarkParquetWritten(ctx, streamID, recoveredJob.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
+	if err != nil {
+		t.Fatalf("failed to mark parquet written: %v", err)
+	}
+
+	icebergSnapshotID := int64(11111)
+	recoveredJob, err = sagaManager2.MarkIcebergCommitted(ctx, streamID, recoveredJob.JobID, icebergSnapshotID)
+	if err != nil {
+		t.Fatalf("failed to mark iceberg committed: %v", err)
+	}
+
+	swapper := compaction.NewIndexSwapper(metaStore)
+	swapResult, err := swapper.SwapFromJob(ctx, recoveredJob, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, 0)
+	if err != nil {
+		t.Fatalf("failed to swap index: %v", err)
+	}
+
+	recoveredJob, err = sagaManager2.MarkIndexSwappedWithGC(ctx, streamID, recoveredJob.JobID, swapResult.DecrementedWALObjects, swapResult.ParquetGCCandidates, swapResult.ParquetGCGracePeriodMs)
+	if err != nil {
+		t.Fatalf("failed to mark index swapped: %v", err)
+	}
+
+	recoveredJob, err = sagaManager2.MarkWALGCReady(ctx, streamID, recoveredJob.JobID)
+	if err != nil {
+		t.Fatalf("failed to mark WAL GC ready: %v", err)
+	}
+
+	recoveredJob, err = sagaManager2.MarkDone(ctx, streamID, recoveredJob.JobID)
+	if err != nil {
+		t.Fatalf("failed to mark done: %v", err)
+	}
+	t.Logf("Job completed, final state: %s", recoveredJob.State)
+
+	if recoveredJob.State != compaction.JobStateDone {
+		t.Fatalf("expected state DONE, got %s", recoveredJob.State)
+	}
+
+	// Verify data integrity
+	fetcher := fetch.NewFetcher(objStore, streamManager)
+	fetchHandler := protocol.NewFetchHandler(
+		protocol.FetchHandlerConfig{MaxBytes: 1024 * 1024},
+		topicStore,
+		fetcher,
+		streamManager,
+	)
+
+	records := fetchAllRecords(t, fetchHandler, ctx, "created-crash-topic", 0, 0)
+	if len(records) != totalRecords {
+		t.Fatalf("expected %d records after recovery, got %d", totalRecords, len(records))
+	}
+
+	for i, rec := range records {
+		if rec.Offset != int64(i) {
+			t.Errorf("record %d has offset %d, expected %d", i, rec.Offset, i)
+		}
+	}
+
+	t.Log("Recovery after CREATED completed successfully - no data loss")
+}
+
+// TestCrashRecovery_AfterWALGCReady tests that a crash after WAL_GC_READY state
+// can be recovered by simply marking the job as DONE.
+func TestCrashRecovery_AfterWALGCReady(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	topicStore := topics.NewStore(metaStore)
+	streamManager := index.NewStreamManager(metaStore)
+	objStore := newCrashRecoveryObjectStore()
+	ctx := context.Background()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "wal-gc-ready-crash-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	streamID := result.Partitions[0].StreamID
+	if err := streamManager.CreateStreamWithID(ctx, streamID, "wal-gc-ready-crash-topic", 0); err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	committer := produce.NewCommitter(objStore, metaStore, produce.CommitterConfig{
+		NumDomains: 4,
+	})
+
+	buffer := produce.NewBuffer(produce.BufferConfig{
+		MaxBufferBytes: 1024 * 1024,
+		FlushSizeBytes: 1,
+		NumDomains:     4,
+		OnFlush:        committer.CreateFlushHandler(),
+	})
+	defer buffer.Close()
+
+	produceHandler := protocol.NewProduceHandler(
+		protocol.ProduceHandlerConfig{},
+		topicStore,
+		buffer,
+	)
+
+	totalRecords := 8
+	produceReq := buildCompactionTestProduceRequest("wal-gc-ready-crash-topic", 0, totalRecords, 0)
+	produceResp := produceHandler.Handle(ctx, 9, produceReq)
+	if produceResp.Topics[0].Partitions[0].ErrorCode != 0 {
+		t.Fatalf("produce failed")
+	}
+
+	sagaManager1 := compaction.NewSagaManager(metaStore, "compactor-1")
+	job, err := sagaManager1.CreateJob(ctx, streamID,
+		compaction.WithSourceRange(0, int64(totalRecords)),
+		compaction.WithSourceWALCount(1),
+		compaction.WithSourceSizeBytes(1000))
+	if err != nil {
+		t.Fatalf("failed to create job: %v", err)
+	}
+
+	prefix := keys.OffsetIndexPrefix(streamID)
+	kvs, err := metaStore.List(ctx, prefix, "", 0)
+	if err != nil {
+		t.Fatalf("failed to list index entries: %v", err)
+	}
+
+	var walEntries []*index.IndexEntry
+	for _, kv := range kvs {
+		var entry index.IndexEntry
+		if err := json.Unmarshal(kv.Value, &entry); err != nil {
+			t.Fatalf("failed to parse index entry: %v", err)
+		}
+		if entry.FileType == index.FileTypeWAL {
+			walEntries = append(walEntries, &entry)
+		}
+	}
+
+	converter := worker.NewConverter(objStore)
+	convertResult, err := converter.Convert(ctx, walEntries, 0)
+	if err != nil {
+		t.Fatalf("failed to convert: %v", err)
+	}
+
+	parquetPath := worker.GenerateParquetPath("wal-gc-ready-crash-topic", 0, "2025-01-01", worker.GenerateParquetID())
+	if err := converter.WriteParquetToStorage(ctx, parquetPath, convertResult.ParquetData); err != nil {
+		t.Fatalf("failed to write Parquet: %v", err)
+	}
+
+	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
+	if err != nil {
+		t.Fatalf("failed to mark parquet written: %v", err)
+	}
+
+	job, err = sagaManager1.MarkIcebergCommitted(ctx, streamID, job.JobID, 77777)
+	if err != nil {
+		t.Fatalf("failed to mark iceberg committed: %v", err)
+	}
+
+	swapper := compaction.NewIndexSwapper(metaStore)
+	swapResult, err := swapper.SwapFromJob(ctx, job, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, 0)
+	if err != nil {
+		t.Fatalf("failed to swap index: %v", err)
+	}
+
+	job, err = sagaManager1.MarkIndexSwappedWithGC(ctx, streamID, job.JobID, swapResult.DecrementedWALObjects, swapResult.ParquetGCCandidates, swapResult.ParquetGCGracePeriodMs)
+	if err != nil {
+		t.Fatalf("failed to mark index swapped: %v", err)
+	}
+
+	// Transition to WAL_GC_READY state (per SPEC 11.6)
+	job, err = sagaManager1.MarkWALGCReady(ctx, streamID, job.JobID)
+	if err != nil {
+		t.Fatalf("failed to mark WAL GC ready: %v", err)
+	}
+	t.Logf("Job reached state %s before crash", job.State)
+
+	if job.State != compaction.JobStateWALGCReady {
+		t.Fatalf("expected state WAL_GC_READY, got %s", job.State)
+	}
+
+	// --- CRASH SIMULATION ---
+	// compactor-1 crashes after WAL_GC_READY (WAL GC has been scheduled but DONE not marked)
+
+	// --- RECOVERY ---
+	sagaManager2 := compaction.NewSagaManager(metaStore, "compactor-2")
+
+	incompleteJobs, err := sagaManager2.ListIncompleteJobs(ctx, streamID)
+	if err != nil {
+		t.Fatalf("failed to list incomplete jobs: %v", err)
+	}
+	if len(incompleteJobs) != 1 {
+		t.Fatalf("expected 1 incomplete job, got %d", len(incompleteJobs))
+	}
+
+	recoveredJob := incompleteJobs[0]
+	t.Logf("Recovered job in state %s", recoveredJob.State)
+
+	if recoveredJob.State != compaction.JobStateWALGCReady {
+		t.Fatalf("expected WAL_GC_READY state, got %s", recoveredJob.State)
+	}
+
+	// Verify the job preserved all previous state
+	if recoveredJob.ParquetPath != parquetPath {
+		t.Errorf("parquet path not preserved: got %s, want %s", recoveredJob.ParquetPath, parquetPath)
+	}
+	if recoveredJob.IcebergSnapshotID != 77777 {
+		t.Errorf("iceberg snapshot ID not preserved: got %d, want 77777", recoveredJob.IcebergSnapshotID)
+	}
+
+	recoveredJob, err = sagaManager2.ResumeJob(ctx, streamID, recoveredJob.JobID)
+	if err != nil {
+		t.Fatalf("failed to resume job: %v", err)
+	}
+
+	// Recovery from WAL_GC_READY: just mark as DONE
+	recoveredJob, err = sagaManager2.MarkDone(ctx, streamID, recoveredJob.JobID)
+	if err != nil {
+		t.Fatalf("failed to mark done: %v", err)
+	}
+	t.Logf("Job completed, final state: %s", recoveredJob.State)
+
+	if recoveredJob.State != compaction.JobStateDone {
+		t.Fatalf("expected DONE state, got %s", recoveredJob.State)
+	}
+
+	// Verify data integrity
+	fetcher := fetch.NewFetcher(objStore, streamManager)
+	fetchHandler := protocol.NewFetchHandler(
+		protocol.FetchHandlerConfig{MaxBytes: 1024 * 1024},
+		topicStore,
+		fetcher,
+		streamManager,
+	)
+
+	records := fetchAllRecords(t, fetchHandler, ctx, "wal-gc-ready-crash-topic", 0, 0)
+	if len(records) != totalRecords {
+		t.Fatalf("expected %d records after recovery, got %d", totalRecords, len(records))
+	}
+
+	t.Log("Recovery after WAL_GC_READY completed successfully - no data loss")
+}
+
 // crashRecoveryObjectStore is a copy of compactionTestObjectStore for the crash recovery tests.
 type crashRecoveryObjectStore struct {
 	objects map[string][]byte

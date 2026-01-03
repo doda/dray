@@ -2417,3 +2417,29 @@ Start with project-setup, then follow spec phases:
   - record_crc uses CRC32C (Castagnoli) computed over key+value+headers
   - Tests use parquet-go's Schema().Fields() API for nested type verification
 - **No blockers or follow-ups identified**
+
+---
+## 2026-01-03: Task integration-test-compaction-saga-recovery - PASS
+- **Task**: Add integration tests for compaction saga recovery at each state including WAL_GC_READY
+- **Implementation**:
+  - Added 2 new comprehensive integration tests to `tests/integration/compaction_crash_recovery_test.go`
+  - `TestCrashRecovery_AfterCreated` - Tests recovery from CREATED state (re-runs entire compaction)
+  - `TestCrashRecovery_AfterWALGCReady` - Tests recovery from WAL_GC_READY state (just marks DONE)
+- **Key files changed**:
+  - `tests/integration/compaction_crash_recovery_test.go` (~360 lines added)
+  - `task_list.json` (marked task completed)
+- **Existing tests verified**:
+  - `TestCrashRecovery_AfterParquetWritten` - Recovery retries Iceberg commit
+  - `TestCrashRecovery_AfterIcebergCommitted` - Recovery retries index swap
+  - `TestCrashRecovery_AfterIndexSwapped` - Recovery transitions to WAL_GC_READY
+  - `TestCrashRecovery_NoDataLossOrDuplication` - Verifies no data loss at each state
+- **Verification**:
+  - `go test ./tests/integration/... -run TestCrashRecovery -v` - all 8 tests pass
+  - `go test ./tests/integration/...` - all integration tests pass
+  - `go test ./...` - full test suite passes
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - CREATED state requires re-running entire compaction (no partial progress saved)
+  - WAL_GC_READY recovery just transitions to DONE (all work already complete)
+  - Each test verifies job state, data integrity, and no duplicates after recovery
+- **No blockers or follow-ups identified**
