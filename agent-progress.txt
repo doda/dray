@@ -2337,3 +2337,28 @@ Start with project-setup, then follow spec phases:
   - Parquet type remains timestamp(millisecond) - only name changed
   - WAL MinTimestampMs/MaxTimestampMs fields unchanged (per SPEC 5.2.2)
 - **No blockers or follow-ups identified**
+
+---
+## 2026-01-03: Task populate-parquet-index-entry-ids - PASS
+- **Task**: Populate ParquetID and IcebergDataFileID fields in IndexEntry per SPEC 6.3.3
+- **Implementation**:
+  - Added `ParquetID` and `IcebergDataFileID` fields to `SwapRequest` struct
+  - Auto-generate UUID for `ParquetID` when not provided in `Swap()` function
+  - Pass `IcebergDataFileID` from job to index entry via `SwapFromJob()`
+  - Added `IcebergDataFileID` field to `Job` struct in saga
+  - Added `MarkIcebergCommittedWithDataFileID()` method to saga manager
+- **Key files changed**:
+  - `internal/compaction/swap.go` (updated SwapRequest, Swap(), SwapFromJob())
+  - `internal/compaction/saga.go` (added IcebergDataFileID to Job, new transition method)
+  - `internal/compaction/swap_test.go` (added 5 tests for ParquetID/IcebergDataFileID)
+  - `internal/compaction/saga_test.go` (added 2 tests for IcebergDataFileID)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/compaction/...` - all tests pass
+  - `go test ./...` - full test suite passes
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - ParquetID is UUID format (36 chars with dashes), auto-generated via google/uuid
+  - IcebergDataFileID is set from job when Iceberg commit succeeds
+  - Backwards compatible: existing code without IcebergDataFileID continues to work
+- **No blockers**
