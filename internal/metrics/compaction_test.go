@@ -1,7 +1,11 @@
 package metrics
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -593,4 +597,164 @@ func TestCompactionMetrics_ConcurrentAccess(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestBacklogScanner_LogsListStreamsError(t *testing.T) {
+	var logBuf bytes.Buffer
+	var logMu sync.Mutex
+	handler := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	reg := prometheus.NewRegistry()
+	m := NewCompactionMetricsWithRegistry(reg)
+
+	listErr := errors.New("metadata connection failed")
+	lister := &mockIndexLister{
+		listErr: listErr,
+	}
+
+	scanner := NewBacklogScanner(m, lister, time.Hour)
+
+	// Trigger a scan - should log the error
+	scanner.ScanOnce()
+
+	logMu.Lock()
+	logOutput := logBuf.String()
+	logMu.Unlock()
+
+	if !strings.Contains(logOutput, "compaction backlog scan failed to list streams") {
+		t.Errorf("expected log to contain 'compaction backlog scan failed to list streams', got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "list_streams") {
+		t.Errorf("expected log to contain scope 'list_streams', got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "metadata connection failed") {
+		t.Errorf("expected log to contain error message 'metadata connection failed', got: %s", logOutput)
+	}
+}
+
+func TestBacklogScanner_LogsStreamScanError(t *testing.T) {
+	var logBuf bytes.Buffer
+	var logMu sync.Mutex
+	handler := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	reg := prometheus.NewRegistry()
+	m := NewCompactionMetricsWithRegistry(reg)
+
+	entriesErr := errors.New("index scan timeout")
+	lister := &mockIndexLister{
+		streams:    []string{"stream-1", "stream-2"},
+		entriesErr: entriesErr,
+		walEntries: map[string][]WALEntryInfo{},
+	}
+
+	scanner := NewBacklogScanner(m, lister, time.Hour)
+
+	// Trigger a scan - should log errors for each stream
+	scanner.ScanOnce()
+
+	logMu.Lock()
+	logOutput := logBuf.String()
+	logMu.Unlock()
+
+	if !strings.Contains(logOutput, "compaction backlog scan failed for stream") {
+		t.Errorf("expected log to contain 'compaction backlog scan failed for stream', got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "stream-1") {
+		t.Errorf("expected log to contain stream_id 'stream-1', got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "index scan timeout") {
+		t.Errorf("expected log to contain error message 'index scan timeout', got: %s", logOutput)
+	}
+}
+
+func TestBacklogScanner_LogsPartialStreamErrors(t *testing.T) {
+	var logBuf bytes.Buffer
+	var logMu sync.Mutex
+	handler := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	reg := prometheus.NewRegistry()
+	m := NewCompactionMetricsWithRegistry(reg)
+
+	// Create a lister that fails for one stream but succeeds for another
+	lister := &selectiveErrorIndexLister{
+		streams: []string{"stream-ok", "stream-fail"},
+		walEntries: map[string][]WALEntryInfo{
+			"stream-ok": {{SizeBytes: 1024}},
+		},
+		failStream: "stream-fail",
+		failErr:    errors.New("stream-specific error"),
+	}
+
+	scanner := NewBacklogScanner(m, lister, time.Hour)
+	scanner.ScanOnce()
+
+	logMu.Lock()
+	logOutput := logBuf.String()
+	logMu.Unlock()
+
+	// Should log error for the failing stream
+	if !strings.Contains(logOutput, "stream-fail") {
+		t.Errorf("expected log to contain failing stream_id 'stream-fail', got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "stream-specific error") {
+		t.Errorf("expected log to contain error 'stream-specific error', got: %s", logOutput)
+	}
+
+	// Should NOT log anything about the successful stream
+	if strings.Contains(logOutput, "stream-ok") {
+		t.Errorf("should not log successful stream 'stream-ok', got: %s", logOutput)
+	}
+
+	// Verify metrics were still updated for the successful stream
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	var foundStreamBytes bool
+	for _, family := range families {
+		if family.GetName() == "dray_compaction_stream_pending_bytes" {
+			for _, metric := range family.GetMetric() {
+				for _, label := range metric.GetLabel() {
+					if label.GetName() == "stream_id" && label.GetValue() == "stream-ok" {
+						foundStreamBytes = true
+						if metric.Gauge.GetValue() != 1024 {
+							t.Errorf("expected stream-ok bytes = 1024, got %f", metric.Gauge.GetValue())
+						}
+					}
+				}
+			}
+		}
+	}
+	if !foundStreamBytes {
+		t.Error("expected metrics for stream-ok to be recorded despite stream-fail error")
+	}
+}
+
+// selectiveErrorIndexLister fails for a specific stream.
+type selectiveErrorIndexLister struct {
+	streams    []string
+	walEntries map[string][]WALEntryInfo
+	failStream string
+	failErr    error
+}
+
+func (l *selectiveErrorIndexLister) ListStreams(ctx context.Context) ([]string, error) {
+	return l.streams, nil
+}
+
+func (l *selectiveErrorIndexLister) ListWALEntries(ctx context.Context, streamID string) ([]WALEntryInfo, error) {
+	if streamID == l.failStream {
+		return nil, l.failErr
+	}
+	return l.walEntries[streamID], nil
 }
