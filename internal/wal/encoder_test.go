@@ -627,3 +627,188 @@ func TestManyChunks(t *testing.T) {
 		t.Errorf("CRC mismatch")
 	}
 }
+
+func TestStreamingEncoderEmpty(t *testing.T) {
+	walID := uuid.MustParse("12345678-1234-1234-1234-123456789abc")
+	wal := NewWAL(walID, 42, 1703686800000)
+
+	var buf bytes.Buffer
+	encoder := NewStreamingEncoder(&buf)
+	n, err := encoder.Encode(wal)
+	if err != nil {
+		t.Fatalf("StreamingEncoder.Encode failed: %v", err)
+	}
+
+	if n != int64(buf.Len()) {
+		t.Errorf("returned size = %d, actual buffer size = %d", n, buf.Len())
+	}
+
+	// Compare with EncodeToBytes
+	expected, _ := EncodeToBytes(wal)
+	if !bytes.Equal(buf.Bytes(), expected) {
+		t.Errorf("StreamingEncoder output differs from EncodeToBytes")
+	}
+}
+
+func TestStreamingEncoderSingleChunk(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 1, 1700000000000)
+	wal.AddChunk(Chunk{
+		StreamID:       42,
+		Batches:        []BatchEntry{{Data: []byte("test")}},
+		RecordCount:    1,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 1000,
+	})
+
+	var buf bytes.Buffer
+	encoder := NewStreamingEncoder(&buf)
+	n, err := encoder.Encode(wal)
+	if err != nil {
+		t.Fatalf("StreamingEncoder.Encode failed: %v", err)
+	}
+
+	if n != int64(buf.Len()) {
+		t.Errorf("returned size = %d, actual buffer size = %d", n, buf.Len())
+	}
+
+	// Compare with EncodeToBytes
+	expected, _ := EncodeToBytes(wal)
+	if !bytes.Equal(buf.Bytes(), expected) {
+		t.Errorf("StreamingEncoder output differs from EncodeToBytes")
+	}
+
+	if encoder.BytesWritten() != n {
+		t.Errorf("BytesWritten() = %d, want %d", encoder.BytesWritten(), n)
+	}
+}
+
+func TestStreamingEncoderMultipleChunks(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 5, 1700000000000)
+
+	// Add chunks in non-sorted order
+	wal.AddChunk(Chunk{
+		StreamID:       300,
+		Batches:        []BatchEntry{{Data: []byte("third")}},
+		RecordCount:    1,
+		MinTimestampMs: 3000,
+		MaxTimestampMs: 3000,
+	})
+	wal.AddChunk(Chunk{
+		StreamID:       100,
+		Batches:        []BatchEntry{{Data: []byte("first")}},
+		RecordCount:    1,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 1000,
+	})
+	wal.AddChunk(Chunk{
+		StreamID:       200,
+		Batches:        []BatchEntry{{Data: []byte("second")}},
+		RecordCount:    1,
+		MinTimestampMs: 2000,
+		MaxTimestampMs: 2000,
+	})
+
+	var buf bytes.Buffer
+	encoder := NewStreamingEncoder(&buf)
+	_, err := encoder.Encode(wal)
+	if err != nil {
+		t.Fatalf("StreamingEncoder.Encode failed: %v", err)
+	}
+
+	// Compare with EncodeToBytes
+	expected, _ := EncodeToBytes(wal)
+	if !bytes.Equal(buf.Bytes(), expected) {
+		t.Errorf("StreamingEncoder output differs from EncodeToBytes")
+	}
+}
+
+func TestStreamingEncoderMultipleBatches(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 1, 1700000000000)
+
+	wal.AddChunk(Chunk{
+		StreamID: 1,
+		Batches: []BatchEntry{
+			{Data: []byte("batch one data")},
+			{Data: []byte("batch two with more bytes")},
+			{Data: []byte("b3")},
+		},
+		RecordCount:    10,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 3000,
+	})
+
+	var buf bytes.Buffer
+	encoder := NewStreamingEncoder(&buf)
+	_, err := encoder.Encode(wal)
+	if err != nil {
+		t.Fatalf("StreamingEncoder.Encode failed: %v", err)
+	}
+
+	// Compare with EncodeToBytes
+	expected, _ := EncodeToBytes(wal)
+	if !bytes.Equal(buf.Bytes(), expected) {
+		t.Errorf("StreamingEncoder output differs from EncodeToBytes")
+	}
+}
+
+func TestStreamingEncoderLargePayload(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 1, 1700000000000)
+
+	// Create a 1MB payload
+	largeData := make([]byte, 1024*1024)
+	for i := range largeData {
+		largeData[i] = byte(i % 256)
+	}
+
+	wal.AddChunk(Chunk{
+		StreamID:       1,
+		Batches:        []BatchEntry{{Data: largeData}},
+		RecordCount:    1000,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 2000,
+	})
+
+	var buf bytes.Buffer
+	encoder := NewStreamingEncoder(&buf)
+	_, err := encoder.Encode(wal)
+	if err != nil {
+		t.Fatalf("StreamingEncoder.Encode failed: %v", err)
+	}
+
+	// Compare with EncodeToBytes
+	expected, _ := EncodeToBytes(wal)
+	if !bytes.Equal(buf.Bytes(), expected) {
+		t.Errorf("StreamingEncoder output differs from EncodeToBytes")
+	}
+}
+
+func TestStreamingEncoderDuplicateStreamID(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 1, 1700000000000)
+
+	wal.AddChunk(Chunk{
+		StreamID:       1,
+		Batches:        []BatchEntry{{Data: []byte("first")}},
+		RecordCount:    1,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 1000,
+	})
+	wal.AddChunk(Chunk{
+		StreamID:       1, // Duplicate
+		Batches:        []BatchEntry{{Data: []byte("second")}},
+		RecordCount:    1,
+		MinTimestampMs: 2000,
+		MaxTimestampMs: 2000,
+	})
+
+	var buf bytes.Buffer
+	encoder := NewStreamingEncoder(&buf)
+	_, err := encoder.Encode(wal)
+	if !errors.Is(err, ErrDuplicateStreamID) {
+		t.Errorf("expected ErrDuplicateStreamID, got %v", err)
+	}
+}

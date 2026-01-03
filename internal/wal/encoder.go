@@ -355,3 +355,123 @@ func writeFull(w io.Writer, buf []byte) (int64, error) {
 	}
 	return int64(written), nil
 }
+
+// StreamingEncoder writes WAL objects in a streaming fashion to an io.Writer.
+// Unlike the standard Encoder which buffers the entire WAL in memory,
+// StreamingEncoder writes data as it goes while tracking the CRC32C checksum.
+type StreamingEncoder struct {
+	w      io.Writer
+	crc    uint32
+	offset int64
+}
+
+// NewStreamingEncoder creates a new streaming WAL encoder.
+func NewStreamingEncoder(w io.Writer) *StreamingEncoder {
+	return &StreamingEncoder{w: w}
+}
+
+// Encode writes the complete WAL to the underlying writer in a streaming fashion.
+// Returns the total bytes written and any error encountered.
+func (e *StreamingEncoder) Encode(wal *WAL) (int64, error) {
+	// Sort chunks by StreamID as required by spec
+	sortedChunks := make([]Chunk, len(wal.Chunks))
+	copy(sortedChunks, wal.Chunks)
+	sort.Slice(sortedChunks, func(i, j int) bool {
+		return sortedChunks[i].StreamID < sortedChunks[j].StreamID
+	})
+	if err := validateSortedChunks(sortedChunks); err != nil {
+		return 0, err
+	}
+
+	// Calculate layout
+	chunkBodiesOffset := uint64(HeaderSize)
+	type chunkLayout struct {
+		offset uint64
+		length uint32
+	}
+	layouts := make([]chunkLayout, len(sortedChunks))
+	currentOffset := chunkBodiesOffset
+
+	for i, chunk := range sortedChunks {
+		layouts[i].offset = currentOffset
+		size, err := calculateChunkBodySize(chunk)
+		if err != nil {
+			return 0, err
+		}
+		layouts[i].length = size
+		currentOffset += uint64(size)
+	}
+
+	chunkIndexOffset := currentOffset
+
+	// Write header
+	headerBuf := make([]byte, HeaderSize)
+	encodeHeader(headerBuf, wal, uint32(len(sortedChunks)), chunkIndexOffset)
+	if err := e.writeWithCRC(headerBuf); err != nil {
+		return e.offset, err
+	}
+
+	// Write chunk bodies
+	for i, chunk := range sortedChunks {
+		if uint64(e.offset) != layouts[i].offset {
+			return e.offset, fmt.Errorf("%w: chunk %d offset %d expected %d", ErrLayoutMismatch, i, e.offset, layouts[i].offset)
+		}
+		if err := e.writeChunkBody(chunk); err != nil {
+			return e.offset, err
+		}
+	}
+
+	// Write chunk index
+	if uint64(e.offset) != chunkIndexOffset {
+		return e.offset, fmt.Errorf("%w: chunk index offset %d expected %d", ErrLayoutMismatch, e.offset, chunkIndexOffset)
+	}
+	indexBuf := make([]byte, ChunkIndexEntrySize)
+	for i, chunk := range sortedChunks {
+		encodeChunkIndexEntry(indexBuf, chunk, layouts[i].offset, layouts[i].length)
+		if err := e.writeWithCRC(indexBuf); err != nil {
+			return e.offset, err
+		}
+	}
+
+	// Write CRC32C footer
+	footerBuf := make([]byte, FooterSize)
+	binary.BigEndian.PutUint32(footerBuf, e.crc)
+	if _, err := writeFull(e.w, footerBuf); err != nil {
+		return e.offset, err
+	}
+	e.offset += FooterSize
+
+	return e.offset, nil
+}
+
+// writeWithCRC writes data to the underlying writer and updates the CRC32C.
+func (e *StreamingEncoder) writeWithCRC(buf []byte) error {
+	if _, err := writeFull(e.w, buf); err != nil {
+		return err
+	}
+	e.crc = crc32.Update(e.crc, crc32cTable, buf)
+	e.offset += int64(len(buf))
+	return nil
+}
+
+// writeChunkBody writes chunk body data in a streaming fashion.
+func (e *StreamingEncoder) writeChunkBody(chunk Chunk) error {
+	batchLenBuf := make([]byte, 4)
+	for _, batch := range chunk.Batches {
+		// Write batch length
+		binary.BigEndian.PutUint32(batchLenBuf, uint32(len(batch.Data)))
+		if err := e.writeWithCRC(batchLenBuf); err != nil {
+			return err
+		}
+		// Write batch data
+		if err := e.writeWithCRC(batch.Data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// BytesWritten returns the total number of bytes written so far.
+func (e *StreamingEncoder) BytesWritten() int64 {
+	return e.offset
+}

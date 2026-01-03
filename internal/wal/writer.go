@@ -258,3 +258,322 @@ func normalizeZoneID(zoneID string) string {
 	}
 	return zoneID
 }
+
+// DefaultMultipartThreshold is the size threshold above which WALs use multipart upload.
+// Default is 5MB which is also the minimum part size for S3.
+const DefaultMultipartThreshold = 5 * 1024 * 1024
+
+// DefaultPartSize is the target size for each multipart upload part.
+// Default is 5MB which is the minimum part size for S3.
+const DefaultPartSize = 5 * 1024 * 1024
+
+// StreamingWriterConfig configures the streaming WAL writer.
+type StreamingWriterConfig struct {
+	// PathFormatter generates object storage paths. If nil, DefaultPathFormatter is used.
+	PathFormatter PathFormatter
+	// ZoneID is the broker zone identifier to include in WAL paths.
+	ZoneID string
+	// MultipartThreshold is the WAL size above which multipart upload is used.
+	// Default is 5MB.
+	MultipartThreshold int64
+	// PartSize is the target size for each multipart upload part.
+	// Default is 5MB.
+	PartSize int64
+}
+
+// StreamingWriter batches multi-stream entries and writes WAL objects to storage
+// using streaming/multipart uploads to avoid buffering entire files in memory.
+// For small WALs (below MultipartThreshold), it uses regular Put.
+// For large WALs, it uses multipart upload.
+type StreamingWriter struct {
+	store              objectstore.Store
+	multipartStore     objectstore.MultipartStore
+	pathFormatter      PathFormatter
+	zoneID             string
+	metaDomain         *uint32
+	chunks             []Chunk
+	closed             bool
+	multipartThreshold int64
+	partSize           int64
+}
+
+// NewStreamingWriter creates a new streaming WAL writer.
+// If the store implements MultipartStore, multipart uploads are enabled for large WALs.
+func NewStreamingWriter(store objectstore.Store, cfg *StreamingWriterConfig) *StreamingWriter {
+	var pf PathFormatter = &DefaultPathFormatter{}
+	zoneID := ""
+	multipartThreshold := int64(DefaultMultipartThreshold)
+	partSize := int64(DefaultPartSize)
+
+	if cfg != nil {
+		if cfg.PathFormatter != nil {
+			pf = cfg.PathFormatter
+		}
+		zoneID = cfg.ZoneID
+		if cfg.MultipartThreshold > 0 {
+			multipartThreshold = cfg.MultipartThreshold
+		}
+		if cfg.PartSize > 0 {
+			partSize = cfg.PartSize
+		}
+	}
+
+	var multipartStore objectstore.MultipartStore
+	if ms, ok := store.(objectstore.MultipartStore); ok {
+		multipartStore = ms
+	}
+
+	return &StreamingWriter{
+		store:              store,
+		multipartStore:     multipartStore,
+		pathFormatter:      pf,
+		zoneID:             normalizeZoneID(zoneID),
+		chunks:             make([]Chunk, 0),
+		multipartThreshold: multipartThreshold,
+		partSize:           partSize,
+	}
+}
+
+// AddChunk adds a chunk to be written in the next WAL object.
+func (w *StreamingWriter) AddChunk(chunk Chunk, metaDomain uint32) error {
+	if w.closed {
+		return ErrWriterClosed
+	}
+
+	if w.metaDomain == nil {
+		w.metaDomain = &metaDomain
+	} else if *w.metaDomain != metaDomain {
+		return ErrMetaDomainMismatch
+	}
+
+	w.chunks = append(w.chunks, chunk)
+	return nil
+}
+
+// ChunkCount returns the number of chunks currently buffered.
+func (w *StreamingWriter) ChunkCount() int {
+	return len(w.chunks)
+}
+
+// MetaDomain returns the MetaDomain for this writer, or nil if no chunks have been added.
+func (w *StreamingWriter) MetaDomain() *uint32 {
+	return w.metaDomain
+}
+
+// Flush writes all buffered chunks to object storage as a single WAL object.
+// For WALs larger than MultipartThreshold, it uses streaming multipart upload.
+func (w *StreamingWriter) Flush(ctx context.Context) (*WriteResult, error) {
+	if w.closed {
+		return nil, ErrWriterClosed
+	}
+
+	if len(w.chunks) == 0 {
+		return nil, ErrEmptyWAL
+	}
+
+	walID := uuid.New()
+	now := time.Now().UTC()
+	createdAt := now.UnixMilli()
+	metaDomain := *w.metaDomain
+
+	wal := NewWAL(walID, metaDomain, createdAt)
+	for _, chunk := range w.chunks {
+		wal.AddChunk(chunk)
+	}
+
+	// Calculate expected size to determine if we should use multipart
+	expectedSize, err := CalculateEncodedSize(wal)
+	if err != nil {
+		return nil, fmt.Errorf("wal: size calculation failed: %w", err)
+	}
+
+	path := w.pathFormatter.FormatPath(metaDomain, walID, now, w.zoneID)
+
+	var size int64
+	if w.multipartStore != nil && int64(expectedSize) >= w.multipartThreshold {
+		size, err = w.flushMultipart(ctx, wal, path)
+	} else {
+		size, err = w.flushSimple(ctx, wal, path)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	result := &WriteResult{
+		WalID:           walID,
+		Path:            path,
+		MetaDomain:      metaDomain,
+		CreatedAtUnixMs: createdAt,
+		Size:            size,
+		ChunkOffsets:    make([]ChunkOffset, len(w.chunks)),
+	}
+
+	layouts, err := CalculateChunkLayouts(wal)
+	if err != nil {
+		return nil, fmt.Errorf("wal: chunk layout failed: %w", err)
+	}
+	layoutByStream := make(map[uint64]ChunkLayout, len(layouts))
+	for _, layout := range layouts {
+		layoutByStream[layout.StreamID] = layout
+	}
+
+	for i, chunk := range w.chunks {
+		layout := layoutByStream[chunk.StreamID]
+		result.ChunkOffsets[i] = ChunkOffset{
+			StreamID:       chunk.StreamID,
+			RecordCount:    chunk.RecordCount,
+			BatchCount:     uint32(len(chunk.Batches)),
+			MinTimestampMs: chunk.MinTimestampMs,
+			MaxTimestampMs: chunk.MaxTimestampMs,
+			ByteOffset:     layout.ByteOffset,
+			ByteLength:     layout.ByteLength,
+		}
+	}
+
+	w.Reset()
+	return result, nil
+}
+
+// flushSimple writes WAL using a single Put operation (for small WALs).
+func (w *StreamingWriter) flushSimple(ctx context.Context, wal *WAL, path string) (int64, error) {
+	data, err := EncodeToBytes(wal)
+	if err != nil {
+		return 0, fmt.Errorf("wal: encoding failed: %w", err)
+	}
+
+	err = w.store.Put(ctx, path, bytes.NewReader(data), int64(len(data)), "application/octet-stream")
+	if err != nil {
+		return 0, fmt.Errorf("wal: write to object store failed: %w", err)
+	}
+
+	return int64(len(data)), nil
+}
+
+// flushMultipart writes WAL using streaming multipart upload (for large WALs).
+func (w *StreamingWriter) flushMultipart(ctx context.Context, wal *WAL, path string) (int64, error) {
+	upload, err := w.multipartStore.CreateMultipartUpload(ctx, path, "application/octet-stream")
+	if err != nil {
+		return 0, fmt.Errorf("wal: create multipart upload failed: %w", err)
+	}
+
+	// Use a partWriter that buffers and uploads parts
+	pw := newPartWriter(ctx, upload, w.partSize)
+
+	encoder := NewStreamingEncoder(pw)
+	bytesWritten, err := encoder.Encode(wal)
+	if err != nil {
+		if abortErr := upload.Abort(ctx); abortErr != nil {
+			return 0, fmt.Errorf("wal: encoding failed: %w (abort failed: %v)", err, abortErr)
+		}
+		return 0, fmt.Errorf("wal: encoding failed: %w", err)
+	}
+
+	// Flush any remaining buffered data
+	if err := pw.Flush(); err != nil {
+		if abortErr := upload.Abort(ctx); abortErr != nil {
+			return 0, fmt.Errorf("wal: flush failed: %w (abort failed: %v)", err, abortErr)
+		}
+		return 0, fmt.Errorf("wal: flush failed: %w", err)
+	}
+
+	// Complete the multipart upload
+	if err := upload.Complete(ctx, pw.ETags()); err != nil {
+		return 0, fmt.Errorf("wal: complete multipart upload failed: %w", err)
+	}
+
+	return bytesWritten, nil
+}
+
+// Reset clears all buffered chunks and resets the MetaDomain.
+func (w *StreamingWriter) Reset() {
+	w.chunks = make([]Chunk, 0)
+	w.metaDomain = nil
+}
+
+// Close closes the writer and releases resources.
+func (w *StreamingWriter) Close() error {
+	w.closed = true
+	w.chunks = nil
+	return nil
+}
+
+// partWriter buffers writes and uploads parts when buffer reaches partSize.
+type partWriter struct {
+	ctx      context.Context
+	upload   objectstore.MultipartUpload
+	partSize int64
+	buffer   *bytes.Buffer
+	partNum  int
+	etags    []string
+	err      error
+}
+
+func newPartWriter(ctx context.Context, upload objectstore.MultipartUpload, partSize int64) *partWriter {
+	return &partWriter{
+		ctx:      ctx,
+		upload:   upload,
+		partSize: partSize,
+		buffer:   bytes.NewBuffer(make([]byte, 0, partSize)),
+	}
+}
+
+func (pw *partWriter) Write(p []byte) (int, error) {
+	if pw.err != nil {
+		return 0, pw.err
+	}
+
+	written := 0
+	for len(p) > 0 {
+		// How much can we write to buffer before it's full?
+		remaining := pw.partSize - int64(pw.buffer.Len())
+		if int64(len(p)) <= remaining {
+			// Just buffer it
+			n, _ := pw.buffer.Write(p)
+			written += n
+			break
+		}
+
+		// Write what we can to fill the buffer
+		n, _ := pw.buffer.Write(p[:remaining])
+		written += n
+		p = p[remaining:]
+
+		// Upload the full part
+		if err := pw.uploadPart(); err != nil {
+			pw.err = err
+			return written, err
+		}
+	}
+
+	return written, nil
+}
+
+func (pw *partWriter) uploadPart() error {
+	if pw.buffer.Len() == 0 {
+		return nil
+	}
+
+	pw.partNum++
+	data := pw.buffer.Bytes()
+	etag, err := pw.upload.UploadPart(pw.ctx, pw.partNum, bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return err
+	}
+	pw.etags = append(pw.etags, etag)
+	pw.buffer.Reset()
+	return nil
+}
+
+// Flush uploads any remaining buffered data.
+func (pw *partWriter) Flush() error {
+	if pw.err != nil {
+		return pw.err
+	}
+	return pw.uploadPart()
+}
+
+// ETags returns the ETags of all uploaded parts.
+func (pw *partWriter) ETags() []string {
+	return pw.etags
+}
