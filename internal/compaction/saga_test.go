@@ -903,3 +903,92 @@ func TestJobState_CanTransitionTo_IcebergCommit(t *testing.T) {
 		t.Error("PARQUET_WRITTEN should not transition to INDEX_SWAPPED directly")
 	}
 }
+
+// TestMarkIcebergCommittedWithDataFileID verifies that IcebergDataFileID is stored
+// when transitioning to ICEBERG_COMMITTED per SPEC 6.3.3.
+func TestMarkIcebergCommittedWithDataFileID(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMockStore()
+	sm := NewSagaManager(meta, "compactor-test")
+
+	streamID := "stream-iceberg-datafile"
+	expectedDataFileID := "s3://bucket/iceberg/stream-iceberg-datafile/data-001.parquet"
+	expectedSnapshotID := int64(12345)
+
+	// Create a job
+	job, err := sm.CreateJob(ctx, streamID)
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	// Mark Parquet written
+	job, err = sm.MarkParquetWritten(ctx, streamID, job.JobID, expectedDataFileID, 1000, 100, 0, 0)
+	if err != nil {
+		t.Fatalf("MarkParquetWritten failed: %v", err)
+	}
+
+	// Mark Iceberg committed with data file ID
+	job, err = sm.MarkIcebergCommittedWithDataFileID(ctx, streamID, job.JobID, expectedSnapshotID, expectedDataFileID)
+	if err != nil {
+		t.Fatalf("MarkIcebergCommittedWithDataFileID failed: %v", err)
+	}
+
+	// Verify state
+	if job.State != JobStateIcebergCommitted {
+		t.Errorf("expected ICEBERG_COMMITTED, got %s", job.State)
+	}
+
+	// Verify snapshot ID
+	if job.IcebergSnapshotID != expectedSnapshotID {
+		t.Errorf("IcebergSnapshotID = %d, want %d", job.IcebergSnapshotID, expectedSnapshotID)
+	}
+
+	// Verify data file ID
+	if job.IcebergDataFileID != expectedDataFileID {
+		t.Errorf("IcebergDataFileID = %s, want %s", job.IcebergDataFileID, expectedDataFileID)
+	}
+}
+
+// TestMarkIcebergCommitted_BackwardsCompatible verifies that MarkIcebergCommitted
+// still works and doesn't set IcebergDataFileID (backwards compatibility).
+func TestMarkIcebergCommitted_BackwardsCompatible(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMockStore()
+	sm := NewSagaManager(meta, "compactor-test")
+
+	streamID := "stream-iceberg-compat"
+	expectedSnapshotID := int64(99999)
+
+	// Create a job
+	job, err := sm.CreateJob(ctx, streamID)
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+
+	// Mark Parquet written
+	job, err = sm.MarkParquetWritten(ctx, streamID, job.JobID, "/parquet/path.parquet", 1000, 100, 0, 0)
+	if err != nil {
+		t.Fatalf("MarkParquetWritten failed: %v", err)
+	}
+
+	// Mark Iceberg committed with the old function (no data file ID)
+	job, err = sm.MarkIcebergCommitted(ctx, streamID, job.JobID, expectedSnapshotID)
+	if err != nil {
+		t.Fatalf("MarkIcebergCommitted failed: %v", err)
+	}
+
+	// Verify state
+	if job.State != JobStateIcebergCommitted {
+		t.Errorf("expected ICEBERG_COMMITTED, got %s", job.State)
+	}
+
+	// Verify snapshot ID
+	if job.IcebergSnapshotID != expectedSnapshotID {
+		t.Errorf("IcebergSnapshotID = %d, want %d", job.IcebergSnapshotID, expectedSnapshotID)
+	}
+
+	// IcebergDataFileID should be empty when using the old function
+	if job.IcebergDataFileID != "" {
+		t.Errorf("IcebergDataFileID should be empty, got %s", job.IcebergDataFileID)
+	}
+}

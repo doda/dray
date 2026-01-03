@@ -15,6 +15,7 @@ import (
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
 	"github.com/dray-io/dray/internal/produce"
+	"github.com/google/uuid"
 )
 
 // IndexSwapper errors.
@@ -44,6 +45,14 @@ type SwapRequest struct {
 
 	// ParquetEntry is the new Parquet index entry to insert.
 	ParquetEntry index.IndexEntry
+
+	// ParquetID is the UUID for the new Parquet file per SPEC 6.3.3.
+	// If empty, a new UUID will be generated.
+	ParquetID string
+
+	// IcebergDataFileID is the Iceberg data file reference (optional).
+	// Set when Iceberg commit succeeds in duality mode per SPEC 6.3.3.
+	IcebergDataFileID string
 
 	// MetaDomain is the metadata domain for the WAL objects.
 	MetaDomain int
@@ -180,6 +189,18 @@ func (s *IndexSwapper) Swap(ctx context.Context, req SwapRequest) (*SwapResult, 
 	// Set cumulative size on the Parquet entry
 	parquetEntry := req.ParquetEntry
 	parquetEntry.CumulativeSize = prevCumulativeSize + int64(parquetEntry.ParquetSizeBytes)
+
+	// Set ParquetID per SPEC 6.3.3 - generate UUID if not provided
+	if req.ParquetID != "" {
+		parquetEntry.ParquetID = req.ParquetID
+	} else if parquetEntry.ParquetID == "" {
+		parquetEntry.ParquetID = uuid.New().String()
+	}
+
+	// Set IcebergDataFileID per SPEC 6.3.3 (optional, set when Iceberg commit succeeds)
+	if req.IcebergDataFileID != "" {
+		parquetEntry.IcebergDataFileID = req.IcebergDataFileID
+	}
 
 	// Create the new Parquet index key
 	newIndexKey, err := keys.OffsetIndexKeyPath(req.StreamID, parquetEntry.EndOffset, parquetEntry.CumulativeSize)
@@ -409,6 +430,8 @@ func (s *IndexSwapper) decrementWALRefCountInTxn(txn metadata.Txn, metaDomain in
 // SwapFromJob performs an index swap using information from a compaction job.
 // This is a convenience method for the compaction worker.
 // Uses targeted range queries based on job offset bounds to avoid O(N) full index scans.
+// If the job has an IcebergDataFileID set (from MarkIcebergCommitted), it will be
+// included in the index entry per SPEC 6.3.3.
 func (s *IndexSwapper) SwapFromJob(ctx context.Context, job *Job, parquetPath string, parquetSizeBytes int64, parquetRecordCount int64, metaDomain int) (*SwapResult, error) {
 	if job.StreamID == "" {
 		return nil, ErrInvalidStreamID
@@ -483,9 +506,10 @@ func (s *IndexSwapper) SwapFromJob(ctx context.Context, job *Job, parquetPath st
 	}
 
 	return s.Swap(ctx, SwapRequest{
-		StreamID:     job.StreamID,
-		WALIndexKeys: walIndexKeys,
-		ParquetEntry: parquetEntry,
-		MetaDomain:   metaDomain,
+		StreamID:          job.StreamID,
+		WALIndexKeys:      walIndexKeys,
+		ParquetEntry:      parquetEntry,
+		IcebergDataFileID: job.IcebergDataFileID, // Set from job if Iceberg commit succeeded
+		MetaDomain:        metaDomain,
 	})
 }

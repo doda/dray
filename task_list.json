@@ -3909,7 +3909,7 @@
       "Add tests verifying ParquetID is populated in index entries",
       "Run compaction/index tests and fix any failures"
     ],
-    "completed": false,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/compaction/swap.go",

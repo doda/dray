@@ -138,6 +138,11 @@ type Job struct {
 	// Set when state transitions to ICEBERG_COMMITTED.
 	IcebergSnapshotID int64 `json:"icebergSnapshotId,omitempty"`
 
+	// IcebergDataFileID is the Iceberg data file reference.
+	// Set when Iceberg commit succeeds in duality mode per SPEC 6.3.3.
+	// This is typically the ParquetPath registered with Iceberg.
+	IcebergDataFileID string `json:"icebergDataFileId,omitempty"`
+
 	// ---- Index Swap Phase Fields ----
 
 	// WALObjectsToDecrement contains WAL object IDs whose refcounts need decrementing.
@@ -431,8 +436,17 @@ func (sm *SagaManager) MarkParquetWritten(ctx context.Context, streamID, jobID, 
 
 // MarkIcebergCommitted transitions a job to ICEBERG_COMMITTED state.
 func (sm *SagaManager) MarkIcebergCommitted(ctx context.Context, streamID, jobID string, snapshotID int64) (*Job, error) {
+	return sm.MarkIcebergCommittedWithDataFileID(ctx, streamID, jobID, snapshotID, "")
+}
+
+// MarkIcebergCommittedWithDataFileID transitions a job to ICEBERG_COMMITTED state
+// and records the Iceberg data file ID per SPEC 6.3.3.
+func (sm *SagaManager) MarkIcebergCommittedWithDataFileID(ctx context.Context, streamID, jobID string, snapshotID int64, dataFileID string) (*Job, error) {
 	return sm.TransitionState(ctx, streamID, jobID, JobStateIcebergCommitted, func(j *Job) error {
 		j.IcebergSnapshotID = snapshotID
+		if dataFileID != "" {
+			j.IcebergDataFileID = dataFileID
+		}
 		return nil
 	})
 }
