@@ -3349,11 +3349,11 @@
       "Add a unit test asserting the mapping matches the supported API matrix",
       "Run protocol/server tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/server",
       "internal/protocol"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "log-iceberg-topic-lifecycle-errors",
@@ -3365,10 +3365,10 @@
       "Add a test or logger capture to assert errors are logged on failure paths",
       "Run protocol tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/protocol"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "return-kafka-error-on-handler-failure",
@@ -3380,11 +3380,11 @@
       "Add a unit/integration test that forces a handler error and asserts a response is sent",
       "Run server/protocol tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/server",
       "internal/protocol"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-writer-reject-duplicate-stream-chunks",
@@ -3396,10 +3396,10 @@
       "Add a unit test that submits duplicate StreamID chunks and validates behavior",
       "Run WAL tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/wal"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-encoder-no-panic-on-layout-mismatch",
@@ -3411,10 +3411,10 @@
       "Add a unit test that triggers layout mismatch and asserts error handling",
       "Run WAL tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/wal"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-encoder-handle-short-writes",
@@ -3426,10 +3426,10 @@
       "Add a unit test using a short writer to validate error behavior",
       "Run WAL tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/wal"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-encoder-chunk-length-overflow-check",
@@ -3441,10 +3441,10 @@
       "Add a unit test with oversized chunk to verify error behavior",
       "Run WAL tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/wal"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "config-cluster-id-and-namespace",
@@ -3456,11 +3456,11 @@
       "Add unit tests for config parsing and namespace formatting",
       "Run metadata/config tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/config",
       "internal/metadata/oxia"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "broker-registration-ephemeral-cas",
@@ -3472,11 +3472,11 @@
       "Add a unit test that simulates duplicate brokerId registration",
       "Run routing/server tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/routing",
       "internal/server"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "lease-manager-synchronization",
@@ -3488,10 +3488,10 @@
       "Ensure sweeper and Acquire/Release paths are safe",
       "Run groups tests with -race and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/groups"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "list-groups-prefix-scope",
@@ -3503,10 +3503,10 @@
       "Add a unit test to ensure ListGroups does not read member/offset keys",
       "Run groups tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/groups"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "iceberg-catalog-remove-files-support",
@@ -3519,11 +3519,11 @@
       "Add tests covering rewrite compaction with file removal semantics",
       "Run Iceberg/compaction tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/iceberg",
       "internal/compaction"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "retention-refcount-atomicity",
@@ -3535,10 +3535,10 @@
       "Add a unit test that simulates retention failure and validates refcount consistency",
       "Run GC/retention tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/gc"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-gc-pagination",
@@ -3550,10 +3550,10 @@
       "Add a unit test with multiple pages where early entries are not eligible",
       "Run GC tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/gc"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "acl-watch-log-backoff",
@@ -3565,10 +3565,10 @@
       "Add a unit test with a failing notification stream to assert logging/backoff",
       "Run auth tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/auth"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "metrics-server-log-serve-error",
@@ -3580,10 +3580,10 @@
       "Add a unit test or logger capture to confirm error logging",
       "Run metrics tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/metrics"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "compaction-metrics-log-scan-errors",
@@ -3595,10 +3595,10 @@
       "Add a unit test with a failing scanner to verify logging",
       "Run metrics tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/metrics"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "gc-metrics-log-scan-errors",
@@ -3610,9 +3610,253 @@
       "Add a unit test with a failing provider to verify logging",
       "Run metrics tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/metrics"
+    ]
+  },
+  {
+    "id": "cancel-inflight-fetch-on-conn-close",
+    "category": "reliability",
+    "description": "Tie request contexts to connection lifecycle so long-poll fetches stop when clients disconnect.",
+    "steps": [
+      "Thread per-connection context into request handlers and cancel on connection close",
+      "Add a test that closes the client during a long-poll fetch and asserts the handler exits early",
+      "Run protocol/server tests and fix any failures"
     ],
-    "completed": true
+    "scope": [
+      "internal/server",
+      "internal/protocol"
+    ],
+    "completed": false
+  },
+  {
+    "id": "reduce-fetch-per-partition-logging",
+    "category": "performance",
+    "description": "Avoid info-level logging per partition in Fetch to reduce hot-path overhead.",
+    "steps": [
+      "Downgrade per-partition logs to debug or aggregate to a single request-level log",
+      "Add or update logging tests if present",
+      "Run protocol tests and ensure logs remain useful"
+    ],
+    "scope": [
+      "internal/protocol/fetch.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "preallocate-fetch-response-buffer",
+    "category": "performance",
+    "description": "Preallocate fetch response buffers using known total size to reduce reallocations.",
+    "steps": [
+      "Compute total response size and call Grow on the buffer before writes",
+      "Add a small unit benchmark or test asserting buffer growth",
+      "Run fetch tests and fix any failures"
+    ],
+    "scope": [
+      "internal/protocol/fetch.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "pool-request-read-buffers",
+    "category": "performance",
+    "description": "Introduce a buffer pool for request reads to reduce per-request allocations and GC pressure.",
+    "steps": [
+      "Add a sync.Pool for read buffers sized to max request size",
+      "Use pooled buffers in the request read path with safe reset/return",
+      "Add a test for buffer reuse safety and run server tests"
+    ],
+    "scope": [
+      "internal/server/server.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "optimize-listoffsets-index-scan",
+    "category": "performance",
+    "description": "Avoid full index scans on ListOffsets timestamp path by using bounded range queries and timestamp metadata.",
+    "steps": [
+      "Use index entry min/max timestamps to narrow search and avoid loading all entries",
+      "Add a unit test that asserts only a limited number of List calls for large index sizes",
+      "Run protocol/index tests and fix failures"
+    ],
+    "scope": [
+      "internal/protocol/list_offsets.go",
+      "internal/index/entry.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wire-index-hwm-caches-into-read-paths",
+    "category": "performance",
+    "description": "Use IndexCache/HWM cache for lookup and hwm reads to avoid direct metadata hits per request.",
+    "steps": [
+      "Integrate caches into LookupOffset and GetHWM paths with revision stamping",
+      "Add tests that verify cache hits after warm-up and invalidation on notifications",
+      "Run index/protocol tests and fix any failures"
+    ],
+    "scope": [
+      "internal/index"
+    ],
+    "completed": false
+  },
+  {
+    "id": "add-backoff-to-index-watchers",
+    "category": "reliability",
+    "description": "Add bounded backoff to index and hwm notification watcher retry loops to avoid tight spins on failures.",
+    "steps": [
+      "Introduce exponential backoff with max cap on watcher errors",
+      "Log errors with context and reset backoff on success",
+      "Add a unit test simulating stream errors and run index tests"
+    ],
+    "scope": [
+      "internal/index/index_cache.go",
+      "internal/index/hwm_cache.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wal-decoder-optional-footer",
+    "category": "bug",
+    "description": "Allow WAL decoding when CRC32C footer is absent per spec (optional footer).",
+    "steps": [
+      "Make CRC validation conditional on footer presence",
+      "Add a unit test that decodes WALs without a footer",
+      "Run WAL tests and fix any failures"
+    ],
+    "scope": [
+      "internal/wal/decoder.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "streaming-wal-decoder",
+    "category": "performance",
+    "description": "Avoid loading entire WAL into memory by streaming decode or range-reading chunks.",
+    "steps": [
+      "Refactor decoder to read header + chunk index then stream chunk bodies as needed",
+      "Add a test verifying memory usage stays bounded for large WALs",
+      "Run WAL and compaction tests and fix any failures"
+    ],
+    "scope": [
+      "internal/wal/decoder.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wal-writer-streaming-upload",
+    "category": "performance",
+    "description": "Write WAL objects via streaming/multipart uploads instead of buffering entire files in memory.",
+    "steps": [
+      "Implement streaming encoder to io.Writer and use multipart for large WALs",
+      "Add a test that writes a large WAL and asserts multipart usage",
+      "Run WAL/objectstore tests and fix any failures"
+    ],
+    "scope": [
+      "internal/wal/writer.go",
+      "internal/wal/staging.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "parquet-timestamp-lookup-uses-stats",
+    "category": "performance",
+    "description": "Use Parquet file and row-group stats for timestamp-based offset lookup before scanning records.",
+    "steps": [
+      "Use min/max timestamp stats to prune row groups and avoid full scans",
+      "Add a test with large Parquet files to assert bounded reads for timestamp lookup",
+      "Run fetch tests and fix any failures"
+    ],
+    "scope": [
+      "internal/fetch/timestamp_scan.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "parquet-fetch-batch-aggregation",
+    "category": "performance",
+    "description": "Aggregate Parquet rows into record batches instead of one batch per record to reduce overhead.",
+    "steps": [
+      "Group rows into batches by target size/record count and emit fewer batches",
+      "Add a test to ensure batch boundaries preserve ordering and offsets",
+      "Run fetch tests and fix any failures"
+    ],
+    "scope": [
+      "internal/fetch/parquet_reader.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "iceberg-datafile-stats-population",
+    "category": "bug",
+    "description": "Populate Iceberg DataFile stats (record counts and min/max offset/timestamp) in compaction commits.",
+    "steps": [
+      "Extend DataFile struct to include stats and record count fields",
+      "Populate stats from Parquet writer metadata when building DataFiles",
+      "Add tests asserting stats are present in commits and run Iceberg tests"
+    ],
+    "scope": [
+      "internal/iceberg/catalog",
+      "internal/compaction/worker"
+    ],
+    "completed": false
+  },
+  {
+    "id": "wire-parquet-rewrite-compaction",
+    "category": "performance",
+    "description": "Wire the Parquet small-file rewrite planner into the compaction loop so rewrite compactions run.",
+    "steps": [
+      "Invoke parquet rewrite planning in the compaction scheduler",
+      "Add an integration test that creates many small files and verifies rewrite compaction runs",
+      "Run compaction tests and fix any failures"
+    ],
+    "scope": [
+      "internal/compaction/planner",
+      "internal/compaction"
+    ],
+    "completed": false
+  },
+  {
+    "id": "streaming-compaction-conversion",
+    "category": "performance",
+    "description": "Stream WAL-to-Parquet conversion to avoid loading all records into memory at once.",
+    "steps": [
+      "Refactor conversion to process batches incrementally and write Parquet in streaming mode",
+      "Add a test with large WAL input to validate bounded memory usage",
+      "Run compaction tests and fix any failures"
+    ],
+    "scope": [
+      "internal/compaction/worker"
+    ],
+    "completed": false
+  },
+  {
+    "id": "optimize-compaction-index-swap-scans",
+    "category": "performance",
+    "description": "Avoid O(N) index scans during compaction swap by using targeted range queries or cached metadata.",
+    "steps": [
+      "Refactor swapper to compute cumulative size and WAL keys without full index scan",
+      "Add a test that asserts only bounded List calls for large indexes",
+      "Run compaction/index tests and fix any failures"
+    ],
+    "scope": [
+      "internal/compaction/swap.go"
+    ],
+    "completed": false
+  },
+  {
+    "id": "validate-batch-crc-in-compaction",
+    "category": "bug",
+    "description": "Validate record batch CRC/compression integrity during WAL-to-Parquet conversion before writing output.",
+    "steps": [
+      "Use franz-go batch parsing utilities to validate CRC/compression during conversion",
+      "Add a unit test with corrupted WAL batches that must fail compaction",
+      "Run compaction tests and fix any failures"
+    ],
+    "scope": [
+      "internal/compaction/worker/converter.go"
+    ],
+    "completed": false
   }
 ]
