@@ -3,11 +3,20 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
+)
+
+// ACL watch loop backoff configuration defaults.
+const (
+	defaultInitialBackoff = 100 * time.Millisecond
+	defaultMaxBackoff     = 30 * time.Second
+	defaultBackoffFactor  = 2.0
 )
 
 // ACLCache provides a cached view of ACLs with notification-based invalidation.
@@ -19,16 +28,51 @@ type ACLCache struct {
 	loaded bool
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// Backoff configuration for watch loop errors.
+	initialBackoff time.Duration
+	maxBackoff     time.Duration
+	backoffFactor  float64
 }
 
 // NewACLCache creates a new ACL cache wrapping the given store.
 func NewACLCache(store *ACLStore, meta metadata.MetadataStore) *ACLCache {
 	return &ACLCache{
-		store: store,
-		meta:  meta,
-		acls:  make(map[string]*ACLEntry),
-		done:  make(chan struct{}),
+		store:          store,
+		meta:           meta,
+		acls:           make(map[string]*ACLEntry),
+		done:           make(chan struct{}),
+		initialBackoff: defaultInitialBackoff,
+		maxBackoff:     defaultMaxBackoff,
+		backoffFactor:  defaultBackoffFactor,
 	}
+}
+
+// ACLCacheOption configures an ACLCache.
+type ACLCacheOption func(*ACLCache)
+
+// WithBackoff configures backoff parameters for the ACL watch loop.
+func WithBackoff(initial, max time.Duration, factor float64) ACLCacheOption {
+	return func(c *ACLCache) {
+		if initial > 0 {
+			c.initialBackoff = initial
+		}
+		if max > 0 {
+			c.maxBackoff = max
+		}
+		if factor > 1.0 {
+			c.backoffFactor = factor
+		}
+	}
+}
+
+// NewACLCacheWithOptions creates a new ACL cache with custom options.
+func NewACLCacheWithOptions(store *ACLStore, meta metadata.MetadataStore, opts ...ACLCacheOption) *ACLCache {
+	c := NewACLCache(store, meta)
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // Start begins watching for ACL changes.
@@ -86,14 +130,35 @@ func (c *ACLCache) watchLoop(ctx context.Context, stream metadata.NotificationSt
 	defer close(c.done)
 	defer stream.Close()
 
+	backoff := c.initialBackoff
+
 	for {
 		notification, err := stream.Next(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
+			slog.Warn("ACL notification stream error",
+				"error", err,
+				"backoff", backoff,
+			)
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+
+			// Exponential backoff capped at maxBackoff
+			backoff = time.Duration(float64(backoff) * c.backoffFactor)
+			if backoff > c.maxBackoff {
+				backoff = c.maxBackoff
+			}
 			continue
 		}
+
+		// Reset backoff on successful notification
+		backoff = c.initialBackoff
 
 		// Only process ACL key changes
 		if !strings.HasPrefix(notification.Key, keys.ACLsPrefix+"/") {
