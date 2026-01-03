@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -267,27 +268,57 @@ func (s *GCBacklogScanner) scanOnce() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if orphans, err := s.provider.GetOrphanWALCount(ctx); err == nil {
+	if orphans, err := s.provider.GetOrphanWALCount(ctx); err != nil {
+		slog.Warn("gc backlog scan failed",
+			"provider", "orphan_wal_count",
+			"error", err,
+		)
+	} else {
 		s.metrics.RecordOrphanWALCount(int64(orphans))
 	}
 
-	if staging, err := s.provider.GetStagingWALCount(ctx); err == nil {
+	if staging, err := s.provider.GetStagingWALCount(ctx); err != nil {
+		slog.Warn("gc backlog scan failed",
+			"provider", "staging_wal_count",
+			"error", err,
+		)
+	} else {
 		s.metrics.RecordStagingWALCount(int64(staging))
 	}
 
-	if pending, err := s.provider.GetPendingWALDeleteCount(ctx); err == nil {
+	if pending, err := s.provider.GetPendingWALDeleteCount(ctx); err != nil {
+		slog.Warn("gc backlog scan failed",
+			"provider", "pending_wal_delete_count",
+			"error", err,
+		)
+	} else {
 		s.metrics.RecordPendingWALDeletes(int64(pending))
 	}
 
-	if eligible, err := s.provider.GetEligibleWALDeleteCount(ctx); err == nil {
+	if eligible, err := s.provider.GetEligibleWALDeleteCount(ctx); err != nil {
+		slog.Warn("gc backlog scan failed",
+			"provider", "eligible_wal_delete_count",
+			"error", err,
+		)
+	} else {
 		s.metrics.RecordEligibleWALDeletes(int64(eligible))
 	}
 
-	if pending, err := s.provider.GetPendingParquetDeleteCount(ctx); err == nil {
+	if pending, err := s.provider.GetPendingParquetDeleteCount(ctx); err != nil {
+		slog.Warn("gc backlog scan failed",
+			"provider", "pending_parquet_delete_count",
+			"error", err,
+		)
+	} else {
 		s.metrics.RecordPendingParquetDeletes(int64(pending))
 	}
 
-	if eligible, err := s.provider.GetEligibleParquetDeleteCount(ctx); err == nil {
+	if eligible, err := s.provider.GetEligibleParquetDeleteCount(ctx); err != nil {
+		slog.Warn("gc backlog scan failed",
+			"provider", "eligible_parquet_delete_count",
+			"error", err,
+		)
+	} else {
 		s.metrics.RecordEligibleParquetDeletes(int64(eligible))
 	}
 }
