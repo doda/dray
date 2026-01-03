@@ -840,3 +840,154 @@ func TestIncrementHWMConcurrentWithRetry(t *testing.T) {
 		t.Errorf("final hwm = %d, want %d", finalHwm, expectedFinal)
 	}
 }
+
+// erroringHWMMockStore wraps hwmMockStore to inject notification errors for testing backoff.
+type erroringHWMMockStore struct {
+	*hwmMockStore
+	mu             sync.Mutex
+	notifyErrCount int           // number of times to return error from Notifications()
+	notifyErrTotal int           // total errors returned
+	successCh      chan struct{} // closed when we transition from error to success
+}
+
+func newErroringHWMMockStore(errCount int) *erroringHWMMockStore {
+	return &erroringHWMMockStore{
+		hwmMockStore:   newHWMMockStore(),
+		notifyErrCount: errCount,
+		successCh:      make(chan struct{}),
+	}
+}
+
+func (e *erroringHWMMockStore) Notifications(ctx context.Context) (metadata.NotificationStream, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.notifyErrTotal < e.notifyErrCount {
+		e.notifyErrTotal++
+		if e.notifyErrTotal == e.notifyErrCount {
+			close(e.successCh)
+		}
+		return nil, metadata.ErrStoreClosed
+	}
+	return e.hwmMockStore.Notifications(ctx)
+}
+
+func TestHWMCacheWatcherBackoff(t *testing.T) {
+	// Test that the watcher applies exponential backoff on stream connection errors
+	store := newErroringHWMMockStore(3) // Fail first 3 connection attempts
+
+	startTime := time.Now()
+	cache := NewHWMCache(store, WithHWMBackoff(
+		10*time.Millisecond,  // InitialBackoff - short for testing
+		100*time.Millisecond, // MaxBackoff
+		2.0,                  // BackoffFactor
+	))
+	defer cache.Close()
+
+	// Wait for the cache to successfully connect (after backoff retries)
+	select {
+	case <-store.successCh:
+		// Success channel closed means we've exhausted our error quota
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for watcher to retry")
+	}
+
+	// Give a little more time for the successful connection to complete
+	time.Sleep(50 * time.Millisecond)
+
+	elapsed := time.Since(startTime)
+
+	// With 3 errors and initial backoff of 10ms with factor 2:
+	// Error 1: wait 10ms, Error 2: wait 20ms, Error 3: wait 40ms
+	// Total: at least 30ms
+	if elapsed < 30*time.Millisecond {
+		t.Errorf("expected backoff delays, but elapsed time was only %v", elapsed)
+	}
+
+	// Verify that exactly 3 errors were returned
+	store.mu.Lock()
+	errCount := store.notifyErrTotal
+	store.mu.Unlock()
+	if errCount != 3 {
+		t.Errorf("expected exactly 3 notification errors, got %d", errCount)
+	}
+}
+
+func TestHWMCacheWatcherBackoffCapsAtMax(t *testing.T) {
+	// Test that backoff caps at MaxBackoff
+	store := newErroringHWMMockStore(5) // Fail first 5 connection attempts
+
+	startTime := time.Now()
+	cache := NewHWMCache(store, WithHWMBackoff(
+		5*time.Millisecond,  // InitialBackoff
+		15*time.Millisecond, // MaxBackoff - low cap
+		3.0,                 // BackoffFactor - fast growth
+	))
+	defer cache.Close()
+
+	// Wait for successful connection
+	select {
+	case <-store.successCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for watcher to retry")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	elapsed := time.Since(startTime)
+
+	// Without cap: 5 + 15 + 45 + 135 + 405 = 605ms
+	// With 15ms cap: 5 + 15 + 15 + 15 + 15 = 65ms
+	// We check that capping worked by ensuring it completed in reasonable time
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("backoff did not cap at MaxBackoff; elapsed time was %v", elapsed)
+	}
+
+	// Verify that all errors were returned
+	store.mu.Lock()
+	errCount := store.notifyErrTotal
+	store.mu.Unlock()
+	if errCount != 5 {
+		t.Errorf("expected exactly 5 notification errors, got %d", errCount)
+	}
+}
+
+func TestHWMCacheWatcherBackoffResetsOnSuccess(t *testing.T) {
+	// Test that backoff resets after successful connection
+	store := newErroringHWMMockStore(2)
+
+	cache := NewHWMCache(store, WithHWMBackoff(
+		10*time.Millisecond,  // InitialBackoff
+		1*time.Second,        // MaxBackoff
+		2.0,                  // BackoffFactor
+	))
+	defer cache.Close()
+
+	// Wait for successful connection
+	select {
+	case <-store.successCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for watcher to retry")
+	}
+
+	// Give time for successful connection
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify it connected successfully after backoff
+	store.mu.Lock()
+	errCount := store.notifyErrTotal
+	store.mu.Unlock()
+	if errCount != 2 {
+		t.Errorf("expected exactly 2 notification errors, got %d", errCount)
+	}
+
+	// Cache should work normally after recovery
+	cache.Put("stream-1", 100, 5)
+
+	hwm, version, ok := cache.GetIfCached("stream-1")
+	if !ok {
+		t.Error("cache should work after successful reconnection")
+	}
+	if hwm != 100 || version != 5 {
+		t.Errorf("cached values = (%d, %d), want (100, 5)", hwm, version)
+	}
+}

@@ -3714,7 +3714,7 @@
       "internal/index/index_cache.go",
       "internal/index/hwm_cache.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "wal-decoder-optional-footer",

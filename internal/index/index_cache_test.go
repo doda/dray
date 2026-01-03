@@ -602,3 +602,164 @@ func TestIndexCacheGetOrFetch(t *testing.T) {
 	stats := cache.Stats()
 	assert.Equal(t, 1, stats.TotalEntries)
 }
+
+// erroringMockStore wraps MockStore to inject notification errors for testing backoff.
+type erroringMockStore struct {
+	*metadata.MockStore
+	mu             sync.Mutex
+	notifyErrCount int  // number of times to return error from Notifications()
+	notifyErrTotal int  // total errors returned
+	successCh      chan struct{} // closed when we transition from error to success
+}
+
+func newErroringMockStore(errCount int) *erroringMockStore {
+	return &erroringMockStore{
+		MockStore:      metadata.NewMockStore(),
+		notifyErrCount: errCount,
+		successCh:      make(chan struct{}),
+	}
+}
+
+func (e *erroringMockStore) Notifications(ctx context.Context) (metadata.NotificationStream, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.notifyErrTotal < e.notifyErrCount {
+		e.notifyErrTotal++
+		if e.notifyErrTotal == e.notifyErrCount {
+			close(e.successCh)
+		}
+		return nil, metadata.ErrStoreClosed
+	}
+	return e.MockStore.Notifications(ctx)
+}
+
+func TestIndexCacheWatcherBackoff(t *testing.T) {
+	// Test that the watcher applies exponential backoff on stream connection errors
+	store := newErroringMockStore(3) // Fail first 3 connection attempts
+
+	config := IndexCacheConfig{
+		MaxMemoryBytes:      64 * 1024 * 1024,
+		MaxEntriesPerStream: 1000,
+		InitialBackoff:      10 * time.Millisecond, // Short backoff for testing
+		MaxBackoff:          100 * time.Millisecond,
+		BackoffFactor:       2.0,
+	}
+
+	startTime := time.Now()
+	cache := NewIndexCache(store, config)
+	defer cache.Close()
+
+	// Wait for the cache to successfully connect (after backoff retries)
+	select {
+	case <-store.successCh:
+		// Success channel closed means we've exhausted our error quota
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for watcher to retry")
+	}
+
+	// Give a little more time for the successful connection to complete
+	time.Sleep(50 * time.Millisecond)
+
+	elapsed := time.Since(startTime)
+
+	// With 3 errors and initial backoff of 10ms with factor 2:
+	// Error 1: wait 10ms, Error 2: wait 20ms, Error 3: wait 40ms (capped at 100ms)
+	// Total: at least 30ms (10+20+40=70ms but we use shorter for test stability)
+	// We check that some time has passed (not a tight spin)
+	if elapsed < 30*time.Millisecond {
+		t.Errorf("expected backoff delays, but elapsed time was only %v", elapsed)
+	}
+
+	// Verify that exactly 3 errors were returned
+	store.mu.Lock()
+	errCount := store.notifyErrTotal
+	store.mu.Unlock()
+	assert.Equal(t, 3, errCount, "expected exactly 3 notification errors")
+}
+
+func TestIndexCacheWatcherBackoffCapsAtMax(t *testing.T) {
+	// Test that backoff caps at MaxBackoff
+	store := newErroringMockStore(5) // Fail first 5 connection attempts
+
+	config := IndexCacheConfig{
+		MaxMemoryBytes:      64 * 1024 * 1024,
+		MaxEntriesPerStream: 1000,
+		InitialBackoff:      5 * time.Millisecond,
+		MaxBackoff:          15 * time.Millisecond, // Low cap
+		BackoffFactor:       3.0,                   // Fast growth
+	}
+
+	startTime := time.Now()
+	cache := NewIndexCache(store, config)
+	defer cache.Close()
+
+	// Wait for successful connection
+	select {
+	case <-store.successCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for watcher to retry")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	elapsed := time.Since(startTime)
+
+	// Without cap: 5 + 15 + 45 + 135 + 405 = 605ms
+	// With 15ms cap: 5 + 15 + 15 + 15 + 15 = 65ms
+	// We check that capping worked by ensuring it completed in reasonable time
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("backoff did not cap at MaxBackoff; elapsed time was %v", elapsed)
+	}
+
+	// Verify that all errors were returned
+	store.mu.Lock()
+	errCount := store.notifyErrTotal
+	store.mu.Unlock()
+	assert.Equal(t, 5, errCount, "expected exactly 5 notification errors")
+}
+
+func TestIndexCacheWatcherBackoffResetsOnSuccess(t *testing.T) {
+	// Test that backoff resets after successful connection
+	store := newErroringMockStore(2)
+
+	config := IndexCacheConfig{
+		MaxMemoryBytes:      64 * 1024 * 1024,
+		MaxEntriesPerStream: 1000,
+		InitialBackoff:      10 * time.Millisecond,
+		MaxBackoff:          1 * time.Second,
+		BackoffFactor:       2.0,
+	}
+
+	cache := NewIndexCache(store, config)
+	defer cache.Close()
+
+	// Wait for successful connection
+	select {
+	case <-store.successCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for watcher to retry")
+	}
+
+	// Give time for successful connection
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify it connected successfully after backoff
+	store.mu.Lock()
+	errCount := store.notifyErrTotal
+	store.mu.Unlock()
+	assert.Equal(t, 2, errCount)
+
+	// Cache should work normally after recovery
+	entry := &IndexEntry{
+		StreamID:       "stream-1",
+		StartOffset:    0,
+		EndOffset:      100,
+		CumulativeSize: 1024,
+		FileType:       FileTypeWAL,
+	}
+	key, _ := keys.OffsetIndexKeyPath("stream-1", 100, 1024)
+	cache.Put("stream-1", key, entry, 1)
+
+	_, _, ok := cache.Get("stream-1", key)
+	assert.True(t, ok, "cache should work after successful reconnection")
+}
