@@ -3,6 +3,7 @@ package compaction
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -871,5 +872,243 @@ func TestIndexSwapper_Swap_ParquetRewrite_IcebergDisabled(t *testing.T) {
 	candidate := result.ParquetGCCandidates[0]
 	if candidate.IcebergEnabled {
 		t.Error("expected GC candidate IcebergEnabled to be false when swap has IcebergEnabled=false")
+	}
+}
+
+// listCallTrackingStore wraps a MetadataStore and records all List calls
+// to verify that the implementation uses bounded queries.
+type listCallTrackingStore struct {
+	metadata.MetadataStore
+	mu        sync.Mutex
+	listCalls []listCallRecord
+}
+
+type listCallRecord struct {
+	StartKey    string
+	EndKey      string
+	Limit       int
+	ResultCount int
+}
+
+func (s *listCallTrackingStore) List(ctx context.Context, startKey, endKey string, limit int) ([]metadata.KV, error) {
+	result, err := s.MetadataStore.List(ctx, startKey, endKey, limit)
+	s.mu.Lock()
+	s.listCalls = append(s.listCalls, listCallRecord{
+		StartKey:    startKey,
+		EndKey:      endKey,
+		Limit:       limit,
+		ResultCount: len(result),
+	})
+	s.mu.Unlock()
+	return result, err
+}
+
+func (s *listCallTrackingStore) getListCalls() []listCallRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]listCallRecord{}, s.listCalls...)
+}
+
+// TestIndexSwapper_BoundedListCalls verifies that the swapper uses targeted range queries
+// instead of O(N) full index scans even with large indexes.
+func TestIndexSwapper_BoundedListCalls(t *testing.T) {
+	ctx := context.Background()
+	baseMeta := metadata.NewMockStore()
+	meta := &listCallTrackingStore{MetadataStore: baseMeta}
+	swapper := NewIndexSwapper(meta)
+
+	streamID := "test-stream-bounded-list"
+	metaDomain := 1
+
+	// Create a large number of entries to simulate a large index.
+	// This is to verify that the swapper doesn't scan all entries.
+	numEntries := 1000
+	entrySize := 100
+
+	for i := 0; i < numEntries; i++ {
+		startOffset := int64(i * 100)
+		endOffset := int64((i + 1) * 100)
+		cumulativeSize := int64((i + 1) * entrySize)
+
+		entry := index.IndexEntry{
+			StreamID:       streamID,
+			StartOffset:    startOffset,
+			EndOffset:      endOffset,
+			CumulativeSize: cumulativeSize,
+			FileType:       index.FileTypeWAL,
+			RecordCount:    100,
+			MessageCount:   100,
+			MinTimestampMs: 1000 + int64(i*1000),
+			MaxTimestampMs: 2000 + int64(i*1000),
+			WalID:          fmt.Sprintf("wal-%04d", i),
+			WalPath:        fmt.Sprintf("/wal/domain-1/wal-%04d.wal", i),
+			ChunkOffset:    0,
+			ChunkLength:    uint32(entrySize),
+		}
+		entryBytes, _ := json.Marshal(entry)
+		entryKey, _ := keys.OffsetIndexKeyPath(streamID, entry.EndOffset, entry.CumulativeSize)
+		baseMeta.Put(ctx, entryKey, entryBytes)
+
+		// Create WAL object record
+		walObjectKey := keys.WALObjectKeyPath(metaDomain, entry.WalID)
+		walRecord := produce.WALObjectRecord{
+			Path:      entry.WalPath,
+			RefCount:  1,
+			CreatedAt: time.Now().UnixMilli(),
+			SizeBytes: int64(entrySize),
+		}
+		walRecordBytes, _ := json.Marshal(walRecord)
+		baseMeta.Put(ctx, walObjectKey, walRecordBytes)
+	}
+
+	// Swap a small range in the middle of the index (entries 500-502, covering 3 entries).
+	// This tests that we don't scan all 1000 entries.
+	swapStartOffset := int64(50000) // Start of entry 500
+	swapEndOffset := int64(50300)   // End of entry 502
+
+	job := &Job{
+		StreamID:          streamID,
+		SourceStartOffset: swapStartOffset,
+		SourceEndOffset:   swapEndOffset,
+	}
+
+	_, err := swapper.SwapFromJob(ctx, job, "/parquet/test.parquet", 300, 300, metaDomain)
+	if err != nil {
+		t.Fatalf("SwapFromJob failed: %v", err)
+	}
+
+	// Check that List calls were bounded
+	calls := meta.getListCalls()
+	if len(calls) == 0 {
+		t.Fatal("expected at least one List call")
+	}
+
+	// Total results from all List calls should be much less than numEntries
+	totalResults := 0
+	for _, call := range calls {
+		totalResults += call.ResultCount
+	}
+
+	// We should only have scanned a few entries (3 WAL entries in range + 1 for cumulative size),
+	// not all 1000 entries.
+	maxExpectedResults := 10 // Very generous bound
+	if totalResults > maxExpectedResults {
+		t.Errorf("List calls scanned too many entries: got %d results, expected at most %d (full index has %d entries)",
+			totalResults, maxExpectedResults, numEntries)
+		for i, call := range calls {
+			t.Logf("List call %d: startKey=%s, endKey=%s, limit=%d, results=%d",
+				i, call.StartKey, call.EndKey, call.Limit, call.ResultCount)
+		}
+	}
+}
+
+// TestIndexSwapper_Swap_BoundedCumulativeSizeLookup verifies that getPreviousCumulativeSize
+// uses a targeted query instead of scanning from offset 0.
+func TestIndexSwapper_Swap_BoundedCumulativeSizeLookup(t *testing.T) {
+	ctx := context.Background()
+	baseMeta := metadata.NewMockStore()
+	meta := &listCallTrackingStore{MetadataStore: baseMeta}
+	swapper := NewIndexSwapper(meta)
+
+	streamID := "test-stream-cumulative-bounded"
+
+	// Create 100 existing Parquet entries
+	numEntries := 100
+	entrySize := 1000
+
+	for i := 0; i < numEntries; i++ {
+		startOffset := int64(i * 100)
+		endOffset := int64((i + 1) * 100)
+		cumulativeSize := int64((i + 1) * entrySize)
+
+		entry := index.IndexEntry{
+			StreamID:         streamID,
+			StartOffset:      startOffset,
+			EndOffset:        endOffset,
+			CumulativeSize:   cumulativeSize,
+			FileType:         index.FileTypeParquet,
+			RecordCount:      100,
+			ParquetPath:      fmt.Sprintf("/parquet/%04d.parquet", i),
+			ParquetSizeBytes: uint64(entrySize),
+		}
+		entryBytes, _ := json.Marshal(entry)
+		entryKey, _ := keys.OffsetIndexKeyPath(streamID, entry.EndOffset, entry.CumulativeSize)
+		baseMeta.Put(ctx, entryKey, entryBytes)
+	}
+
+	// Add a WAL entry at the end (entry 100)
+	walEntry := index.IndexEntry{
+		StreamID:       streamID,
+		StartOffset:    10000,
+		EndOffset:      10100,
+		CumulativeSize: 101000,
+		FileType:       index.FileTypeWAL,
+		RecordCount:    100,
+		WalID:          "wal-last",
+	}
+	walBytes, _ := json.Marshal(walEntry)
+	walKey, _ := keys.OffsetIndexKeyPath(streamID, walEntry.EndOffset, walEntry.CumulativeSize)
+	baseMeta.Put(ctx, walKey, walBytes)
+
+	// Create WAL object record
+	walObjectKey := keys.WALObjectKeyPath(0, walEntry.WalID)
+	walRecord := produce.WALObjectRecord{RefCount: 1}
+	walRecordBytes, _ := json.Marshal(walRecord)
+	baseMeta.Put(ctx, walObjectKey, walRecordBytes)
+
+	// Create Parquet entry to replace
+	parquetEntry := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      10000,
+		EndOffset:        10100,
+		FileType:         index.FileTypeParquet,
+		RecordCount:      100,
+		ParquetSizeBytes: 500,
+	}
+
+	_, err := swapper.Swap(ctx, SwapRequest{
+		StreamID:     streamID,
+		WALIndexKeys: []string{walKey},
+		ParquetEntry: parquetEntry,
+		MetaDomain:   0,
+	})
+	if err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	// Check that the cumulative size lookup was bounded
+	calls := meta.getListCalls()
+	if len(calls) == 0 {
+		t.Fatal("expected at least one List call for cumulative size lookup")
+	}
+
+	// The getPreviousCumulativeSize call should have used limit=1 and targeted the specific offset.
+	// It should not have scanned all 100 previous entries.
+	totalResults := 0
+	for _, call := range calls {
+		totalResults += call.ResultCount
+	}
+
+	// We should only have fetched 1 entry for the cumulative size lookup
+	maxExpectedResults := 2 // 1 for cumulative size, potentially 0 if not needed
+	if totalResults > maxExpectedResults {
+		t.Errorf("List calls scanned too many entries: got %d results, expected at most %d (full index has %d entries)",
+			totalResults, maxExpectedResults, numEntries+1)
+		for i, call := range calls {
+			t.Logf("List call %d: startKey=%s, endKey=%s, limit=%d, results=%d",
+				i, call.StartKey, call.EndKey, call.Limit, call.ResultCount)
+		}
+	}
+
+	// Verify that at least one call used limit=1
+	hasLimitedCall := false
+	for _, call := range calls {
+		if call.Limit == 1 {
+			hasLimitedCall = true
+			break
+		}
+	}
+	if !hasLimitedCall {
+		t.Error("expected at least one List call with limit=1 for cumulative size lookup")
 	}
 }

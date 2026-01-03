@@ -3843,7 +3843,7 @@
     "scope": [
       "internal/compaction/swap.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "validate-batch-crc-in-compaction",

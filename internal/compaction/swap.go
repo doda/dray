@@ -320,41 +320,46 @@ func (s *IndexSwapper) validateOffsets(sourceEntries []index.IndexEntry, newParq
 }
 
 // getPreviousCumulativeSize finds the cumulative size of the entry just before startOffset.
+// Uses a targeted range query to avoid O(N) full index scans.
 func (s *IndexSwapper) getPreviousCumulativeSize(ctx context.Context, streamID string, startOffset int64) (int64, error) {
 	if startOffset == 0 {
 		// No previous entry, cumulative size starts at 0
 		return 0, nil
 	}
 
-	// List entries with endOffset <= startOffset
-	// The last such entry is the one just before our range
-	startKey, err := keys.OffsetIndexStartKey(streamID, 0)
+	// The previous entry should have endOffset == startOffset (since entries are contiguous).
+	// Query for entries with endOffset in the range [startOffset, startOffset+1).
+	// This is a bounded O(1) lookup rather than an O(N) full index scan.
+	startKey, err := keys.OffsetIndexStartKey(streamID, startOffset)
 	if err != nil {
 		return 0, fmt.Errorf("build start key: %w", err)
 	}
-	endKey := keys.OffsetIndexEndKey(streamID)
-	kvs, err := s.meta.List(ctx, startKey, endKey, 0)
+	// End key is exclusive, so use startOffset+1 to get entries with endOffset == startOffset
+	endKey, err := keys.OffsetIndexStartKey(streamID, startOffset+1)
+	if err != nil {
+		return 0, fmt.Errorf("build end key: %w", err)
+	}
+
+	// Limit to 1 since we only need the entry at exactly startOffset
+	// (there may be multiple entries with same endOffset but different cumulativeSize)
+	kvs, err := s.meta.List(ctx, startKey, endKey, 1)
 	if err != nil {
 		return 0, err
 	}
 
-	var prevCumulativeSize int64
-	for _, kv := range kvs {
-		var entry index.IndexEntry
-		if err := json.Unmarshal(kv.Value, &entry); err != nil {
-			return 0, err
-		}
-
-		if entry.EndOffset <= startOffset {
-			// This entry is before our range
-			prevCumulativeSize = entry.CumulativeSize
-		} else {
-			// We've passed our range
-			break
-		}
+	if len(kvs) == 0 {
+		// No previous entry found - this can happen if startOffset doesn't align
+		// with an existing entry boundary. This shouldn't happen in normal operation
+		// but we return 0 as a safe default.
+		return 0, nil
 	}
 
-	return prevCumulativeSize, nil
+	var entry index.IndexEntry
+	if err := json.Unmarshal(kvs[0].Value, &entry); err != nil {
+		return 0, err
+	}
+
+	return entry.CumulativeSize, nil
 }
 
 // decrementWALRefCount atomically decrements the refcount for a WAL object.
@@ -403,6 +408,7 @@ func (s *IndexSwapper) decrementWALRefCountInTxn(txn metadata.Txn, metaDomain in
 
 // SwapFromJob performs an index swap using information from a compaction job.
 // This is a convenience method for the compaction worker.
+// Uses targeted range queries based on job offset bounds to avoid O(N) full index scans.
 func (s *IndexSwapper) SwapFromJob(ctx context.Context, job *Job, parquetPath string, parquetSizeBytes int64, parquetRecordCount int64, metaDomain int) (*SwapResult, error) {
 	if job.StreamID == "" {
 		return nil, ErrInvalidStreamID
@@ -411,13 +417,20 @@ func (s *IndexSwapper) SwapFromJob(ctx context.Context, job *Job, parquetPath st
 		return nil, fmt.Errorf("compaction: parquet record count must be positive")
 	}
 
-	// Build the list of WAL index entries to swap
-	// The job should have the source offset range
-	startKey, err := keys.OffsetIndexStartKey(job.StreamID, 0)
+	// Query only entries in the job's offset range using targeted range query.
+	// Keys are sorted by endOffset, so query [SourceStartOffset+1, SourceEndOffset+1)
+	// to get entries where endOffset > SourceStartOffset && endOffset <= SourceEndOffset.
+	// The +1 on startOffset is because we want entries that end AFTER the job start.
+	startKey, err := keys.OffsetIndexStartKey(job.StreamID, job.SourceStartOffset+1)
 	if err != nil {
 		return nil, fmt.Errorf("build start key: %w", err)
 	}
-	endKey := keys.OffsetIndexEndKey(job.StreamID)
+	endKey, err := keys.OffsetIndexStartKey(job.StreamID, job.SourceEndOffset+1)
+	if err != nil {
+		return nil, fmt.Errorf("build end key: %w", err)
+	}
+
+	// Use limit 0 to get all matching entries within the bounded range
 	kvs, err := s.meta.List(ctx, startKey, endKey, 0)
 	if err != nil {
 		return nil, fmt.Errorf("list index entries: %w", err)
