@@ -43,6 +43,32 @@ type DataFile struct {
 	// Path is the full object storage path to the data file.
 	// Example: s3://bucket/prefix/compaction/v1/topic=foo/partition=0/date=2025/01/15/abc123.parquet
 	Path string
+
+	// RecordCount is the number of records in the file.
+	RecordCount int64
+
+	// FileSizeBytes is the file size in bytes.
+	FileSizeBytes int64
+
+	// PartitionValue is the Kafka partition ID for this file.
+	PartitionValue int32
+
+	// LowerBounds maps field IDs to their lower bound values.
+	// Used for query pruning in Iceberg.
+	LowerBounds map[int][]byte
+
+	// UpperBounds maps field IDs to their upper bound values.
+	// Used for query pruning in Iceberg.
+	UpperBounds map[int][]byte
+
+	// NullValueCounts maps field IDs to their null value counts.
+	NullValueCounts map[int]int64
+
+	// ValueCounts maps field IDs to their non-null value counts.
+	ValueCounts map[int]int64
+
+	// ColumnSizes maps field IDs to their total size in bytes.
+	ColumnSizes map[int]int64
 }
 
 // TableProperties contains table configuration properties.

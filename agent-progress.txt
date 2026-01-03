@@ -2102,3 +2102,33 @@ Start with project-setup, then follow spec phases:
   - CRC32C computed over aggregated batch data
   - Example: 50 records aggregated into 1 batch, 2500 records into 3 batches
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - iceberg-datafile-stats-population
+
+- **Task**: iceberg-datafile-stats-population (PASS)
+- **Summary**: Extended DataFile struct with stats fields and implemented BuildDataFileFromStats to populate them.
+- **Changes made**:
+  - Extended `DataFile` struct in `catalog.go` with: `RecordCount`, `FileSizeBytes`, `PartitionValue`, `LowerBounds`, `UpperBounds`, `NullValueCounts`, `ValueCounts`, `ColumnSizes`
+  - Updated `BuildDataFileFromStats` in `appender.go` to copy all stats from `DataFileStats` to `DataFile`
+  - Added `datafile_test.go` with 8 test functions covering:
+    - `TestDataFileStatsIntegration`: End-to-end workflow simulation
+    - `TestBuildDataFileFromStats_Basic`: Basic population without stats
+    - `TestBuildDataFileFromStats_WithStats`: Full stats population
+    - `TestNewOffsetBounds`, `TestNewTimestampBounds`, `TestNewPartitionBound`: Encoding helpers
+    - `TestDefaultDataFileStats`: Stats factory function
+    - `TestBuildDataFileFromStats_EmptyStats`: Empty stats handling
+- **Files modified**:
+  - `internal/iceberg/catalog/catalog.go` (extended DataFile struct)
+  - `internal/iceberg/catalog/appender.go` (implemented BuildDataFileFromStats)
+  - `internal/iceberg/catalog/datafile_test.go` (new file with 8 tests)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/iceberg/catalog/...` - all 30 tests pass
+  - `go test ./...` - all project tests pass
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - Field IDs in DataFile use `int` type (matching iceberg-go expectations)
+  - DataFileStats uses `int32` for field IDs, conversion done in BuildDataFileFromStats
+  - Bounds are big-endian encoded for proper lexicographic comparison per Iceberg spec
+  - DefaultDataFileStats populates partition, offset, and timestamp bounds with value counts
+- **No blockers or follow-ups identified**

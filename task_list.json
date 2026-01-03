@@ -3800,7 +3800,7 @@
       "internal/iceberg/catalog",
       "internal/compaction/worker"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "wire-parquet-rewrite-compaction",
