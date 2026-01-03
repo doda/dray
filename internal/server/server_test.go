@@ -586,9 +586,8 @@ func TestParseRequestHeader(t *testing.T) {
 }
 
 func TestReadRequest(t *testing.T) {
-	srv := &Server{
-		cfg: DefaultConfig(),
-	}
+	cfg := DefaultConfig()
+	srv := New(cfg, nil, nil)
 
 	// Build a request with length prefix (ApiVersions v2, non-flexible)
 	headerBuf := make([]byte, 14)
@@ -605,10 +604,11 @@ func TestReadRequest(t *testing.T) {
 	binary.Write(&buf, binary.BigEndian, int32(len(body)))
 	buf.Write(body)
 
-	header, gotPayload, err := srv.readRequest(&buf)
+	header, gotPayload, bufPtr, err := srv.readRequest(&buf)
 	if err != nil {
 		t.Fatalf("readRequest failed: %v", err)
 	}
+	defer srv.putBuffer(bufPtr)
 
 	if header.APIKey != 18 {
 		t.Errorf("APIKey = %d, want 18", header.APIKey)
@@ -628,17 +628,19 @@ func TestReadRequest(t *testing.T) {
 }
 
 func TestReadRequestInvalidSize(t *testing.T) {
-	srv := &Server{
-		cfg: Config{
-			MaxRequestSize: 1000,
-		},
+	cfg := Config{
+		MaxRequestSize: 1000,
 	}
+	srv := New(cfg, nil, nil)
 
 	// Try to send a request larger than max
 	var buf bytes.Buffer
 	binary.Write(&buf, binary.BigEndian, int32(2000)) // claims 2000 bytes
 
-	_, _, err := srv.readRequest(&buf)
+	_, _, bufPtr, err := srv.readRequest(&buf)
+	if bufPtr != nil {
+		srv.putBuffer(bufPtr)
+	}
 	if err == nil {
 		t.Error("expected error for oversized request")
 	}
@@ -947,5 +949,147 @@ func TestServer_LongPollExitsOnConnectionClose(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Error("server didn't stop in time")
+	}
+}
+
+// TestBufferPool_ReuseSafety verifies that pooled buffers are properly cleared
+// between uses to prevent data leakage and that buffers are reused.
+func TestBufferPool_ReuseSafety(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxRequestSize = 1024 // Small size for test
+	srv := New(cfg, nil, nil)
+
+	// First request with sensitive data
+	sensitivePayload := []byte("SECRET_DATA_12345")
+	headerBuf1 := make([]byte, 14)
+	binary.BigEndian.PutUint16(headerBuf1[0:2], 18)    // apiKey
+	binary.BigEndian.PutUint16(headerBuf1[2:4], 2)     // apiVersion
+	binary.BigEndian.PutUint32(headerBuf1[4:8], 1)     // correlationId
+	binary.BigEndian.PutUint16(headerBuf1[8:10], 4)    // clientId length
+	copy(headerBuf1[10:14], "cli1")
+	body1 := append(headerBuf1, sensitivePayload...)
+
+	var buf1 bytes.Buffer
+	binary.Write(&buf1, binary.BigEndian, int32(len(body1)))
+	buf1.Write(body1)
+
+	header1, payload1, bufPtr1, err := srv.readRequest(&buf1)
+	if err != nil {
+		t.Fatalf("first readRequest failed: %v", err)
+	}
+	if !bytes.Equal(payload1, sensitivePayload) {
+		t.Errorf("first payload = %q, want %q", payload1, sensitivePayload)
+	}
+	if header1.CorrelationID != 1 {
+		t.Errorf("first correlationID = %d, want 1", header1.CorrelationID)
+	}
+
+	// Return buffer to pool
+	srv.putBuffer(bufPtr1)
+
+	// Second request with different (shorter) data
+	normalPayload := []byte("normal")
+	headerBuf2 := make([]byte, 14)
+	binary.BigEndian.PutUint16(headerBuf2[0:2], 18)
+	binary.BigEndian.PutUint16(headerBuf2[2:4], 2)
+	binary.BigEndian.PutUint32(headerBuf2[4:8], 2)
+	binary.BigEndian.PutUint16(headerBuf2[8:10], 4)
+	copy(headerBuf2[10:14], "cli2")
+	body2 := append(headerBuf2, normalPayload...)
+
+	var buf2 bytes.Buffer
+	binary.Write(&buf2, binary.BigEndian, int32(len(body2)))
+	buf2.Write(body2)
+
+	header2, payload2, bufPtr2, err := srv.readRequest(&buf2)
+	if err != nil {
+		t.Fatalf("second readRequest failed: %v", err)
+	}
+	defer srv.putBuffer(bufPtr2)
+
+	// Verify second request got correct data
+	if !bytes.Equal(payload2, normalPayload) {
+		t.Errorf("second payload = %q, want %q", payload2, normalPayload)
+	}
+	if header2.CorrelationID != 2 {
+		t.Errorf("second correlationID = %d, want 2", header2.CorrelationID)
+	}
+
+	// Verify the underlying buffer was cleared (no sensitive data remains
+	// after the second payload ends)
+	underlyingBuf := *bufPtr2
+	// The full buffer should have been cleared by putBuffer, so anything
+	// beyond the second request's data should be zero
+	for i := len(body2); i < len(underlyingBuf); i++ {
+		if underlyingBuf[i] != 0 {
+			t.Errorf("buffer not cleared at index %d: got %d, want 0", i, underlyingBuf[i])
+			break
+		}
+	}
+}
+
+// TestBufferPool_ConcurrentReuse verifies that buffer pool handles concurrent
+// requests safely without data races or corruption.
+func TestBufferPool_ConcurrentReuse(t *testing.T) {
+	handler := &echoHandler{}
+	logger := logging.DefaultLogger()
+	logger.SetLevel(logging.LevelError)
+
+	cfg := DefaultConfig()
+	cfg.ListenAddr = "127.0.0.1:0"
+
+	srv := New(cfg, handler, logger)
+	go srv.ListenAndServe()
+	defer srv.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	const numConns = 20
+	const reqsPerConn = 10
+	var wg sync.WaitGroup
+	errChan := make(chan error, numConns*reqsPerConn)
+
+	for c := 0; c < numConns; c++ {
+		wg.Add(1)
+		go func(connID int) {
+			defer wg.Done()
+
+			conn, err := net.Dial("tcp", srv.Addr().String())
+			if err != nil {
+				errChan <- err
+				return
+			}
+			defer conn.Close()
+
+			for r := 0; r < reqsPerConn; r++ {
+				correlationID := int32(connID*1000 + r)
+				payload := []byte("payload_" + string(rune('A'+connID)) + "_" + string(rune('0'+r)))
+				request := buildKafkaRequest(18, 2, correlationID, "client", payload)
+
+				if _, err := conn.Write(request); err != nil {
+					errChan <- err
+					return
+				}
+
+				response, err := readKafkaResponse(conn)
+				if err != nil {
+					errChan <- err
+					return
+				}
+
+				gotCorrelationID := int32(binary.BigEndian.Uint32(response[:4]))
+				if gotCorrelationID != correlationID {
+					errChan <- errors.New("correlation ID mismatch")
+					return
+				}
+			}
+		}(c)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	for err := range errChan {
+		t.Errorf("concurrent test error: %v", err)
 	}
 }

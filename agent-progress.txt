@@ -1847,3 +1847,23 @@ Start with project-setup, then follow spec phases:
   - `go test ./internal/protocol/...` - all tests pass
   - `./init.sh --quick` - SUCCESS
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - pool-request-read-buffers
+
+- **Task**: pool-request-read-buffers (PASS)
+- **Summary**: Introduced sync.Pool for request read buffers to reduce per-request allocations.
+- **Changes made**:
+  - Added `bufferPool sync.Pool` field to Server struct
+  - Initialized pool in `New()` with buffers sized to MaxRequestSize
+  - Modified `readRequest()` to use pooled buffers via `getBuffer()`/`putBuffer()`
+  - `putBuffer()` clears buffer before returning to prevent data leakage
+  - Added 2 new tests: `TestBufferPool_ReuseSafety`, `TestBufferPool_ConcurrentReuse`
+- **Files modified**:
+  - `internal/server/server.go` (added buffer pool, get/put methods)
+  - `internal/server/server_test.go` (updated existing tests, added 2 new tests)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/server/... -count=1` - all tests pass
+  - `./init.sh --quick` - SUCCESS
+- **No blockers or follow-ups identified**
+

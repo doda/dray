@@ -3670,7 +3670,7 @@
     "scope": [
       "internal/server/server.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "optimize-listoffsets-index-scan",

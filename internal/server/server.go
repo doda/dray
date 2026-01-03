@@ -108,6 +108,7 @@ type Server struct {
 	requestMu    sync.Mutex
 	connID       atomic.Int64
 	certReloader *CertReloader
+	bufferPool   sync.Pool // Pool for request read buffers
 }
 
 // New creates a new Server with the given configuration and handler.
@@ -115,12 +116,21 @@ func New(cfg Config, handler Handler, logger *logging.Logger) *Server {
 	if logger == nil {
 		logger = logging.DefaultLogger()
 	}
-	return &Server{
+	s := &Server{
 		cfg:     cfg,
 		handler: handler,
 		logger:  logger,
 		conns:   make(map[net.Conn]struct{}),
 	}
+	s.bufferPool = sync.Pool{
+		New: func() any {
+			// Allocate a buffer slice. We use MaxRequestSize as the capacity
+			// to avoid reallocations for most requests.
+			buf := make([]byte, cfg.MaxRequestSize)
+			return &buf
+		},
+	}
+	return s
 }
 
 // WithMetrics sets the connection metrics for the server.
@@ -347,7 +357,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			conn.SetReadDeadline(time.Now().Add(s.cfg.ReadTimeout))
 		}
 
-		header, payload, err := s.readRequest(conn)
+		header, payload, bufPtr, err := s.readRequest(conn)
 		if err != nil {
 			if err == io.EOF || s.closed.Load() {
 				logger.Debug("connection closed")
@@ -361,6 +371,7 @@ func (s *Server) handleConn(conn net.Conn) {
 			return
 		}
 		if s.stopping.Load() || s.closed.Load() {
+			s.putBuffer(bufPtr)
 			return
 		}
 
@@ -410,6 +421,9 @@ func (s *Server) handleConn(conn net.Conn) {
 		go s.monitorConnection(conn, reqCtx, reqCancel, connMonitorDone)
 
 		response, err := s.handler.HandleRequest(reqCtx, header, payload)
+
+		// Return the pooled buffer now that handler is done with it
+		s.putBuffer(bufPtr)
 
 		// Stop monitoring and wait for goroutine to finish
 		reqCancel()
@@ -465,34 +479,57 @@ func (s *Server) handleConn(conn net.Conn) {
 }
 
 // readRequest reads a Kafka request from the connection.
-// Returns the parsed header and the payload (body after header).
-func (s *Server) readRequest(r io.Reader) (*RequestHeader, []byte, error) {
+// Returns the parsed header, payload (body after header), and the pooled buffer.
+// The caller MUST return the buffer to the pool via putBuffer() after processing.
+func (s *Server) readRequest(r io.Reader) (*RequestHeader, []byte, *[]byte, error) {
 	// Read 4-byte length prefix (big-endian)
 	var lengthBuf [4]byte
 	if _, err := io.ReadFull(r, lengthBuf[:]); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	length := int32(binary.BigEndian.Uint32(lengthBuf[:]))
 
 	if length < 0 || length > s.cfg.MaxRequestSize {
-		return nil, nil, fmt.Errorf("invalid request size: %d", length)
+		return nil, nil, nil, fmt.Errorf("invalid request size: %d", length)
 	}
 
-	// Read the full request
-	requestBuf := make([]byte, length)
+	// Get a buffer from the pool
+	bufPtr := s.getBuffer()
+	buf := *bufPtr
+
+	// Use the buffer up to the request length
+	requestBuf := buf[:length]
 	if _, err := io.ReadFull(r, requestBuf); err != nil {
-		return nil, nil, fmt.Errorf("failed to read request body: %w", err)
+		s.putBuffer(bufPtr)
+		return nil, nil, nil, fmt.Errorf("failed to read request body: %w", err)
 	}
 
 	// Parse the request header
 	header, headerLen, err := parseRequestHeader(requestBuf)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse request header: %w", err)
+		s.putBuffer(bufPtr)
+		return nil, nil, nil, fmt.Errorf("failed to parse request header: %w", err)
 	}
 
 	// Payload is everything after the header
 	payload := requestBuf[headerLen:]
-	return header, payload, nil
+	return header, payload, bufPtr, nil
+}
+
+// getBuffer retrieves a buffer from the pool.
+func (s *Server) getBuffer() *[]byte {
+	return s.bufferPool.Get().(*[]byte)
+}
+
+// putBuffer returns a buffer to the pool after clearing it.
+func (s *Server) putBuffer(bufPtr *[]byte) {
+	if bufPtr == nil {
+		return
+	}
+	// Clear the buffer to avoid leaking data between requests
+	buf := *bufPtr
+	clear(buf)
+	s.bufferPool.Put(bufPtr)
 }
 
 // parseRequestHeader parses the Kafka request header from the buffer.
