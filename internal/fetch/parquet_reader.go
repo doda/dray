@@ -17,6 +17,12 @@ import (
 // crc32cTable is the Castagnoli polynomial table for CRC32C.
 var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
+// DefaultBatchTargetSize is the target size for aggregated batches (64KB).
+const DefaultBatchTargetSize = 64 * 1024
+
+// DefaultBatchMaxRecords is the maximum records per aggregated batch.
+const DefaultBatchMaxRecords = 1000
+
 // Common errors for Parquet reading.
 var (
 	// ErrParquetNotFound is returned when the Parquet file cannot be located.
@@ -118,8 +124,12 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 		StartOffset: -1,
 	}
 
+	agg := newRecordAggregator(DefaultBatchTargetSize, DefaultBatchMaxRecords)
 	var totalBytes int64
 	var found bool
+	var batchBaseOffset int64 = -1
+	var batchBaseTimestamp int64
+
 	for _, rowGroup := range rowGroups {
 		groupReader := parquet.NewGenericRowGroupReader[ParquetRecordWithHeaders](rowGroup)
 		rows := make([]ParquetRecordWithHeaders, 256)
@@ -132,21 +142,41 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 						continue
 					}
 
-					batch := buildKafkaRecordBatch(rec)
-					if maxBytes > 0 && totalBytes+int64(len(batch)) > maxBytes && len(result.Batches) > 0 {
-						groupReader.Close()
-						result.TotalBytes = totalBytes
-						return result, nil
-					}
-
-					result.Batches = append(result.Batches, batch)
-					totalBytes += int64(len(batch))
-					found = true
-
+					// Track first record's offset for the result
 					if result.StartOffset < 0 {
 						result.StartOffset = rec.Offset
 					}
 					result.EndOffset = rec.Offset + 1
+
+					// Track batch base values for delta calculation
+					if batchBaseOffset < 0 {
+						batchBaseOffset = rec.Offset
+						batchBaseTimestamp = rec.Timestamp
+					}
+
+					offsetDelta := int32(rec.Offset - batchBaseOffset)
+					timestampDelta := rec.Timestamp - batchBaseTimestamp
+
+					shouldFlush := agg.add(rec, offsetDelta, timestampDelta)
+					found = true
+
+					if shouldFlush {
+						batch := agg.flush()
+						batchSize := int64(len(batch))
+
+						// Check maxBytes limit before adding batch
+						if maxBytes > 0 && totalBytes+batchSize > maxBytes && len(result.Batches) > 0 {
+							groupReader.Close()
+							result.TotalBytes = totalBytes
+							return result, nil
+						}
+
+						result.Batches = append(result.Batches, batch)
+						totalBytes += batchSize
+
+						// Reset base values for next batch
+						batchBaseOffset = -1
+					}
 				}
 			}
 			if err == io.EOF {
@@ -163,12 +193,204 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 		}
 	}
 
+	// Flush any remaining records in the aggregator
+	if agg.count() > 0 {
+		batch := agg.flush()
+		batchSize := int64(len(batch))
+
+		// Check maxBytes limit for final batch
+		if maxBytes > 0 && totalBytes+batchSize > maxBytes && len(result.Batches) > 0 {
+			result.TotalBytes = totalBytes
+			return result, nil
+		}
+
+		result.Batches = append(result.Batches, batch)
+		totalBytes += batchSize
+	}
+
 	if !found {
 		return nil, ErrOffsetNotInParquet
 	}
 
 	result.TotalBytes = totalBytes
 	return result, nil
+}
+
+// recordAggregator accumulates Parquet records and emits aggregated Kafka batches.
+type recordAggregator struct {
+	records        []ParquetRecordWithHeaders
+	recordBytes    [][]byte
+	currentSize    int
+	targetSize     int
+	maxRecords     int
+	firstOffset    int64
+	firstTimestamp int64
+	maxTimestamp   int64
+}
+
+// newRecordAggregator creates a new record aggregator with the given limits.
+func newRecordAggregator(targetSize, maxRecords int) *recordAggregator {
+	return &recordAggregator{
+		records:     make([]ParquetRecordWithHeaders, 0, maxRecords),
+		recordBytes: make([][]byte, 0, maxRecords),
+		targetSize:  targetSize,
+		maxRecords:  maxRecords,
+	}
+}
+
+// add adds a record to the aggregator. Returns true if a batch should be flushed.
+func (a *recordAggregator) add(rec ParquetRecordWithHeaders, offsetDelta int32, timestampDelta int64) bool {
+	// Build the individual record bytes with proper deltas
+	recBytes := buildKafkaRecordWithDeltas(rec, offsetDelta, timestampDelta)
+
+	// Track first record metadata
+	if len(a.records) == 0 {
+		a.firstOffset = rec.Offset
+		a.firstTimestamp = rec.Timestamp
+		a.maxTimestamp = rec.Timestamp
+	}
+	if rec.Timestamp > a.maxTimestamp {
+		a.maxTimestamp = rec.Timestamp
+	}
+
+	a.records = append(a.records, rec)
+	a.recordBytes = append(a.recordBytes, recBytes)
+	a.currentSize += len(recBytes)
+
+	// Return true if we should flush (size or count limit reached)
+	return a.currentSize >= a.targetSize || len(a.records) >= a.maxRecords
+}
+
+// count returns the number of buffered records.
+func (a *recordAggregator) count() int {
+	return len(a.records)
+}
+
+// flush builds and returns a Kafka batch from the buffered records, then resets the aggregator.
+func (a *recordAggregator) flush() []byte {
+	if len(a.records) == 0 {
+		return nil
+	}
+
+	batch := a.buildBatch()
+	a.reset()
+	return batch
+}
+
+// reset clears the aggregator state.
+func (a *recordAggregator) reset() {
+	a.records = a.records[:0]
+	a.recordBytes = a.recordBytes[:0]
+	a.currentSize = 0
+	a.firstOffset = 0
+	a.firstTimestamp = 0
+	a.maxTimestamp = 0
+}
+
+// buildBatch constructs a Kafka record batch from the aggregated records.
+func (a *recordAggregator) buildBatch() []byte {
+	if len(a.records) == 0 {
+		return nil
+	}
+
+	// Concatenate all record bytes
+	var recordsLen int
+	for _, rb := range a.recordBytes {
+		recordsLen += len(rb)
+	}
+
+	// Use attributes from first record (they should be consistent within a batch)
+	attributes := int16(a.records[0].Attributes) &^ 0x07 // clear compression bits
+
+	// Use producer info from first record if available
+	producerID := int64(-1)
+	producerEpoch := int16(-1)
+	baseSequence := int32(-1)
+	if a.records[0].ProducerID != nil {
+		producerID = *a.records[0].ProducerID
+	}
+	if a.records[0].ProducerEpoch != nil {
+		producerEpoch = int16(*a.records[0].ProducerEpoch)
+	}
+	if a.records[0].BaseSequence != nil {
+		baseSequence = *a.records[0].BaseSequence
+	}
+
+	lastOffsetDelta := int32(len(a.records) - 1)
+
+	// Calculate batch length
+	batchLength := 4 + 1 + 4 + 2 + 4 + 8 + 8 + 8 + 2 + 4 + 4 + recordsLen
+	totalSize := 8 + 4 + batchLength
+
+	batch := make([]byte, totalSize)
+	offset := 0
+
+	// baseOffset (will be patched later, use 0)
+	binary.BigEndian.PutUint64(batch[offset:], 0)
+	offset += 8
+
+	// batchLength
+	binary.BigEndian.PutUint32(batch[offset:], uint32(batchLength))
+	offset += 4
+
+	// partitionLeaderEpoch (0 = unknown)
+	binary.BigEndian.PutUint32(batch[offset:], 0)
+	offset += 4
+
+	// magic = 2 (record batch format)
+	batch[offset] = 2
+	offset += 1
+
+	// crc placeholder
+	crcOffset := offset
+	offset += 4
+
+	// Start of CRC region
+	crcStart := offset
+
+	// attributes
+	binary.BigEndian.PutUint16(batch[offset:], uint16(attributes))
+	offset += 2
+
+	// lastOffsetDelta
+	binary.BigEndian.PutUint32(batch[offset:], uint32(lastOffsetDelta))
+	offset += 4
+
+	// firstTimestamp
+	binary.BigEndian.PutUint64(batch[offset:], uint64(a.firstTimestamp))
+	offset += 8
+
+	// maxTimestamp
+	binary.BigEndian.PutUint64(batch[offset:], uint64(a.maxTimestamp))
+	offset += 8
+
+	// producerId
+	binary.BigEndian.PutUint64(batch[offset:], uint64(producerID))
+	offset += 8
+
+	// producerEpoch
+	binary.BigEndian.PutUint16(batch[offset:], uint16(producerEpoch))
+	offset += 2
+
+	// firstSequence
+	binary.BigEndian.PutUint32(batch[offset:], uint32(baseSequence))
+	offset += 4
+
+	// recordCount
+	binary.BigEndian.PutUint32(batch[offset:], uint32(len(a.records)))
+	offset += 4
+
+	// Copy all records
+	for _, rb := range a.recordBytes {
+		copy(batch[offset:], rb)
+		offset += len(rb)
+	}
+
+	// Calculate CRC32C
+	crc := crc32c(batch[crcStart:])
+	binary.BigEndian.PutUint32(batch[crcOffset:], crc)
+
+	return batch
 }
 
 // buildKafkaRecordBatch constructs an uncompressed Kafka record batch (v2 format)
@@ -286,6 +508,7 @@ func buildKafkaRecordBatch(rec ParquetRecordWithHeaders) []byte {
 }
 
 // buildKafkaRecord builds a single Kafka record in the v2 format.
+// This is used for single-record batches where offsetDelta and timestampDelta are 0.
 //
 // Record format:
 // - length (varint)
@@ -299,17 +522,23 @@ func buildKafkaRecordBatch(rec ParquetRecordWithHeaders) []byte {
 // - headerCount (varint)
 // - headers...
 func buildKafkaRecord(rec ParquetRecordWithHeaders) []byte {
+	return buildKafkaRecordWithDeltas(rec, 0, 0)
+}
+
+// buildKafkaRecordWithDeltas builds a Kafka record with specified offset and timestamp deltas.
+// This is used for multi-record batches where records have increasing deltas.
+func buildKafkaRecordWithDeltas(rec ParquetRecordWithHeaders, offsetDelta int32, timestampDelta int64) []byte {
 	// Build the record body first (without length prefix)
 	var body []byte
 
 	// attributes (1 byte, 0)
 	body = append(body, 0)
 
-	// timestampDelta (varint, 0 for single record in batch)
-	body = appendVarint(body, 0)
+	// timestampDelta (varint)
+	body = appendVarint(body, timestampDelta)
 
-	// offsetDelta (varint, 0 for single record in batch)
-	body = appendVarint(body, 0)
+	// offsetDelta (varint)
+	body = appendVarint(body, int64(offsetDelta))
 
 	// keyLength (varint, -1 for null)
 	if rec.Key == nil {

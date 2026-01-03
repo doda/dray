@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"testing"
 
 	"github.com/parquet-go/parquet-go"
@@ -100,7 +101,7 @@ func TestParquetReader_ReadBatches(t *testing.T) {
 			},
 			fetchOffset:    0,
 			maxBytes:       0,
-			expectBatches:  3,
+			expectBatches:  1, // Records are aggregated into a single batch
 			expectStartOff: 0,
 			expectEndOff:   3,
 		},
@@ -119,7 +120,7 @@ func TestParquetReader_ReadBatches(t *testing.T) {
 			},
 			fetchOffset:    1,
 			maxBytes:       0,
-			expectBatches:  2,
+			expectBatches:  1, // Records are aggregated into a single batch
 			expectStartOff: 1,
 			expectEndOff:   3,
 		},
@@ -239,10 +240,22 @@ func TestParquetReader_ReadBatches(t *testing.T) {
 }
 
 func TestParquetReader_MaxBytesLimit(t *testing.T) {
-	records := []ParquetRecordWithHeaders{
-		{Partition: 0, Offset: 0, Timestamp: 1000, Key: []byte("k1"), Value: []byte("v1")},
-		{Partition: 0, Offset: 1, Timestamp: 1001, Key: []byte("k2"), Value: []byte("v2")},
-		{Partition: 0, Offset: 2, Timestamp: 1002, Key: []byte("k3"), Value: []byte("v3")},
+	// Create enough records to produce multiple batches when aggregated
+	// Each batch targets ~64KB, so we need records with large values
+	const recordCount = 100
+	records := make([]ParquetRecordWithHeaders, recordCount)
+	largeValue := make([]byte, 2000) // 2KB value per record = 200KB total
+	for i := 0; i < len(largeValue); i++ {
+		largeValue[i] = byte(i % 256)
+	}
+	for i := 0; i < recordCount; i++ {
+		records[i] = ParquetRecordWithHeaders{
+			Partition: 0,
+			Offset:    int64(i),
+			Timestamp: 1000 + int64(i),
+			Key:       []byte("k"),
+			Value:     largeValue,
+		}
 	}
 
 	store := newMockStore()
@@ -253,7 +266,7 @@ func TestParquetReader_MaxBytesLimit(t *testing.T) {
 		FileType:    index.FileTypeParquet,
 		ParquetPath: "test.parquet",
 		StartOffset: 0,
-		EndOffset:   3,
+		EndOffset:   int64(recordCount),
 	}
 
 	reader := NewParquetReader(store)
@@ -270,7 +283,7 @@ func TestParquetReader_MaxBytesLimit(t *testing.T) {
 
 	singleBatchSize := int64(len(result1.Batches[0]))
 
-	// Now limit to just over one batch size
+	// Now limit to just over one batch size - should get just 1 batch
 	result2, err := reader.ReadBatches(context.Background(), entry, 0, singleBatchSize+1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -280,6 +293,10 @@ func TestParquetReader_MaxBytesLimit(t *testing.T) {
 	if len(result2.Batches) >= len(result1.Batches) {
 		t.Errorf("maxBytes limit did not reduce batch count: got %d, expected less than %d",
 			len(result2.Batches), len(result1.Batches))
+	}
+
+	if len(result2.Batches) == 0 {
+		t.Error("expected at least one batch")
 	}
 }
 
@@ -631,6 +648,144 @@ func TestParquetReader_ReconstructedBatches_CanBeParsed(t *testing.T) {
 	if patchedOffset != 100 {
 		t.Errorf("expected patched offset 100, got %d", patchedOffset)
 	}
+}
+
+func TestParquetReader_BatchAggregation_PreservesOffsetsAndOrdering(t *testing.T) {
+	// This test verifies that batch aggregation correctly handles:
+	// 1. Multiple records are aggregated into fewer batches
+	// 2. Record offsets and timestamps are preserved via deltas
+	// 3. Batch boundaries are correct (lastOffsetDelta, recordCount)
+	// 4. CRC is valid for aggregated batches
+
+	const recordCount = 50
+	records := make([]ParquetRecordWithHeaders, recordCount)
+	for i := 0; i < recordCount; i++ {
+		records[i] = ParquetRecordWithHeaders{
+			Partition: 0,
+			Offset:    int64(100 + i), // Start at offset 100
+			Timestamp: 1000 + int64(i*10),
+			Key:       []byte(fmt.Sprintf("key-%d", i)),
+			Value:     []byte(fmt.Sprintf("value-%d", i)),
+		}
+	}
+
+	store := newMockStore()
+	parquetData := createParquetFile(t, records)
+	store.objects["test.parquet"] = parquetData
+
+	entry := &index.IndexEntry{
+		FileType:    index.FileTypeParquet,
+		ParquetPath: "test.parquet",
+		StartOffset: 100,
+		EndOffset:   int64(100 + recordCount),
+	}
+
+	reader := NewParquetReader(store)
+	result, err := reader.ReadBatches(context.Background(), entry, 100, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify we got aggregated batches (fewer than records)
+	if len(result.Batches) >= recordCount {
+		t.Errorf("expected fewer batches than records (aggregation), got %d batches for %d records",
+			len(result.Batches), recordCount)
+	}
+	if len(result.Batches) == 0 {
+		t.Fatal("expected at least one batch")
+	}
+
+	t.Logf("Aggregated %d records into %d batches", recordCount, len(result.Batches))
+
+	// Verify offsets
+	if result.StartOffset != 100 {
+		t.Errorf("expected start offset 100, got %d", result.StartOffset)
+	}
+	if result.EndOffset != int64(100+recordCount) {
+		t.Errorf("expected end offset %d, got %d", 100+recordCount, result.EndOffset)
+	}
+
+	// Verify total record count across batches
+	var totalRecords int32
+	for i, batch := range result.Batches {
+		// Verify CRC
+		if err := VerifyCRC(batch); err != nil {
+			t.Errorf("batch %d: CRC verification failed: %v", i, err)
+		}
+
+		rc := GetRecordCount(batch)
+		if rc <= 0 {
+			t.Errorf("batch %d: invalid record count %d", i, rc)
+		}
+		totalRecords += rc
+
+		lastDelta := GetLastOffsetDelta(batch)
+		if lastDelta != rc-1 {
+			t.Errorf("batch %d: lastOffsetDelta %d != recordCount-1 %d", i, lastDelta, rc-1)
+		}
+
+		t.Logf("Batch %d: %d records, lastOffsetDelta=%d", i, rc, lastDelta)
+	}
+
+	if totalRecords != int32(recordCount) {
+		t.Errorf("total record count mismatch: got %d, expected %d", totalRecords, recordCount)
+	}
+
+	// Verify offset deltas are sequential within each batch using full validation
+	for i, batch := range result.Batches {
+		if err := ValidateOffsetDeltas(batch); err != nil {
+			t.Errorf("batch %d: offset delta validation failed: %v", i, err)
+		}
+	}
+}
+
+func TestParquetReader_BatchAggregation_RespectsMaxRecords(t *testing.T) {
+	// Test that batch aggregation respects the max records limit
+	const recordCount = 2500 // More than DefaultBatchMaxRecords (1000)
+
+	records := make([]ParquetRecordWithHeaders, recordCount)
+	for i := 0; i < recordCount; i++ {
+		records[i] = ParquetRecordWithHeaders{
+			Partition: 0,
+			Offset:    int64(i),
+			Timestamp: 1000 + int64(i),
+			Key:       []byte("k"),
+			Value:     []byte("v"),
+		}
+	}
+
+	store := newMockStore()
+	parquetData := createParquetFile(t, records)
+	store.objects["test.parquet"] = parquetData
+
+	entry := &index.IndexEntry{
+		FileType:    index.FileTypeParquet,
+		ParquetPath: "test.parquet",
+		StartOffset: 0,
+		EndOffset:   int64(recordCount),
+	}
+
+	reader := NewParquetReader(store)
+	result, err := reader.ReadBatches(context.Background(), entry, 0, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With 2500 records and max 1000 per batch, we need at least 3 batches
+	if len(result.Batches) < 3 {
+		t.Errorf("expected at least 3 batches for %d records with max 1000/batch, got %d",
+			recordCount, len(result.Batches))
+	}
+
+	// Verify no batch exceeds max records
+	for i, batch := range result.Batches {
+		rc := GetRecordCount(batch)
+		if rc > DefaultBatchMaxRecords {
+			t.Errorf("batch %d: record count %d exceeds max %d", i, rc, DefaultBatchMaxRecords)
+		}
+	}
+
+	t.Logf("Aggregated %d records into %d batches", recordCount, len(result.Batches))
 }
 
 func TestParquetReader_HeaderOrderPreserved(t *testing.T) {
