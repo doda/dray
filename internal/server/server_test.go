@@ -856,3 +856,96 @@ func readKafkaResponse(r io.Reader) ([]byte, error) {
 	}
 	return response, nil
 }
+
+// longPollHandler blocks until context is cancelled, simulating a long-poll fetch.
+type longPollHandler struct {
+	started chan struct{}
+	done    chan struct{}
+	ctxErr  error
+}
+
+func (h *longPollHandler) HandleRequest(ctx context.Context, header *RequestHeader, payload []byte) ([]byte, error) {
+	select {
+	case <-h.started:
+	default:
+		close(h.started)
+	}
+
+	// Wait for context cancellation (simulating a long-poll fetch)
+	<-ctx.Done()
+	h.ctxErr = ctx.Err()
+	close(h.done)
+
+	resp := make([]byte, 4)
+	binary.BigEndian.PutUint32(resp[:4], uint32(header.CorrelationID))
+	return resp, nil
+}
+
+// TestServer_LongPollExitsOnConnectionClose tests that handlers with long-running
+// operations (like long-poll fetch) get their context cancelled when the connection closes.
+func TestServer_LongPollExitsOnConnectionClose(t *testing.T) {
+	handler := &longPollHandler{
+		started: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	logger := logging.DefaultLogger()
+	logger.SetLevel(logging.LevelError)
+
+	cfg := DefaultConfig()
+	cfg.ListenAddr = "127.0.0.1:0"
+
+	srv := New(cfg, handler, logger)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.ListenAndServe()
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Connect to server
+	conn, err := net.Dial("tcp", srv.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to connect: %v", err)
+	}
+
+	// Send a request
+	request := buildKafkaRequest(18, 0, 12345, "test-client", []byte("hello"))
+	if _, err := conn.Write(request); err != nil {
+		t.Fatalf("failed to write request: %v", err)
+	}
+
+	// Wait for handler to start processing
+	select {
+	case <-handler.started:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+
+	// Close connection while handler is blocked (simulating client disconnect)
+	conn.Close()
+
+	// Handler should exit shortly after connection close
+	select {
+	case <-handler.done:
+		// Good, handler exited
+	case <-time.After(time.Second):
+		t.Fatal("handler did not exit after connection close")
+	}
+
+	// Verify the handler got context.Canceled error
+	if handler.ctxErr != context.Canceled {
+		t.Errorf("expected context.Canceled, got %v", handler.ctxErr)
+	}
+
+	// Clean up
+	srv.Close()
+
+	select {
+	case err := <-errCh:
+		if err != ErrServerClosed {
+			t.Errorf("expected ErrServerClosed, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Error("server didn't stop in time")
+	}
+}

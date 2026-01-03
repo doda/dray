@@ -3628,7 +3628,7 @@
       "internal/server",
       "internal/protocol"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "reduce-fetch-per-partition-logging",
