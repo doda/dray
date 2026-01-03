@@ -895,3 +895,375 @@ func TestFileStats(t *testing.T) {
 		t.Errorf("expected RecordCount=3, got %d", result.Stats.RecordCount)
 	}
 }
+
+// --- Streaming Converter Tests ---
+
+func TestStreamingConvertWALFromBytes_Simple(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+	walData := buildTestWAL([][]byte{batch}, 123)
+
+	cfg := DefaultStreamingConvertConfig()
+	result, err := StreamingConvertWALFromBytes(walData, 0, 0, cfg)
+	if err != nil {
+		t.Fatalf("StreamingConvertWALFromBytes failed: %v", err)
+	}
+
+	if result.RecordCount != 1 {
+		t.Errorf("expected RecordCount=1, got %d", result.RecordCount)
+	}
+
+	reader, err := NewReader(result.ParquetData)
+	if err != nil {
+		t.Fatalf("NewReader failed: %v", err)
+	}
+	defer reader.Close()
+
+	readRecords, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if len(readRecords) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(readRecords))
+	}
+
+	if !bytes.Equal(readRecords[0].Key, []byte("key1")) {
+		t.Errorf("key mismatch")
+	}
+	if !bytes.Equal(readRecords[0].Value, []byte("value1")) {
+		t.Errorf("value mismatch")
+	}
+}
+
+func TestStreamingConvertWALFromBytes_MatchesNonStreaming(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("k1"), value: []byte("v1"), timestampDelta: 0},
+		{key: []byte("k2"), value: []byte("v2"), timestampDelta: 100},
+		{key: []byte("k3"), value: []byte("v3"), timestampDelta: 200},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+	walData := buildTestWAL([][]byte{batch}, 123)
+
+	// Non-streaming result
+	nonStreamingResult, err := ConvertWALToParquet(walData, 5, 100)
+	if err != nil {
+		t.Fatalf("ConvertWALToParquet failed: %v", err)
+	}
+
+	// Streaming result
+	cfg := DefaultStreamingConvertConfig()
+	streamingResult, err := StreamingConvertWALFromBytes(walData, 5, 100, cfg)
+	if err != nil {
+		t.Fatalf("StreamingConvertWALFromBytes failed: %v", err)
+	}
+
+	// Compare record counts
+	if nonStreamingResult.RecordCount != streamingResult.RecordCount {
+		t.Errorf("RecordCount mismatch: non-streaming=%d, streaming=%d",
+			nonStreamingResult.RecordCount, streamingResult.RecordCount)
+	}
+
+	// Compare stats
+	if nonStreamingResult.Stats.MinOffset != streamingResult.Stats.MinOffset {
+		t.Errorf("MinOffset mismatch: %d vs %d",
+			nonStreamingResult.Stats.MinOffset, streamingResult.Stats.MinOffset)
+	}
+	if nonStreamingResult.Stats.MaxOffset != streamingResult.Stats.MaxOffset {
+		t.Errorf("MaxOffset mismatch: %d vs %d",
+			nonStreamingResult.Stats.MaxOffset, streamingResult.Stats.MaxOffset)
+	}
+	if nonStreamingResult.Stats.MinTimestamp != streamingResult.Stats.MinTimestamp {
+		t.Errorf("MinTimestamp mismatch: %d vs %d",
+			nonStreamingResult.Stats.MinTimestamp, streamingResult.Stats.MinTimestamp)
+	}
+	if nonStreamingResult.Stats.MaxTimestamp != streamingResult.Stats.MaxTimestamp {
+		t.Errorf("MaxTimestamp mismatch: %d vs %d",
+			nonStreamingResult.Stats.MaxTimestamp, streamingResult.Stats.MaxTimestamp)
+	}
+
+	// Read both Parquet files and compare records
+	nsReader, err := NewReader(nonStreamingResult.ParquetData)
+	if err != nil {
+		t.Fatalf("NewReader (non-streaming) failed: %v", err)
+	}
+	defer nsReader.Close()
+
+	sReader, err := NewReader(streamingResult.ParquetData)
+	if err != nil {
+		t.Fatalf("NewReader (streaming) failed: %v", err)
+	}
+	defer sReader.Close()
+
+	nsRecords, err := nsReader.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll (non-streaming) failed: %v", err)
+	}
+
+	sRecords, err := sReader.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll (streaming) failed: %v", err)
+	}
+
+	if len(nsRecords) != len(sRecords) {
+		t.Fatalf("Record count mismatch: %d vs %d", len(nsRecords), len(sRecords))
+	}
+
+	for i := range nsRecords {
+		if nsRecords[i].Offset != sRecords[i].Offset {
+			t.Errorf("Record %d offset mismatch: %d vs %d", i, nsRecords[i].Offset, sRecords[i].Offset)
+		}
+		if nsRecords[i].Timestamp != sRecords[i].Timestamp {
+			t.Errorf("Record %d timestamp mismatch: %d vs %d", i, nsRecords[i].Timestamp, sRecords[i].Timestamp)
+		}
+		if !bytes.Equal(nsRecords[i].Key, sRecords[i].Key) {
+			t.Errorf("Record %d key mismatch", i)
+		}
+		if !bytes.Equal(nsRecords[i].Value, sRecords[i].Value) {
+			t.Errorf("Record %d value mismatch", i)
+		}
+	}
+}
+
+func TestStreamingConvertWALFromBytes_MultipleBatches(t *testing.T) {
+	records1 := []testRecord{
+		{key: []byte("batch1-k1"), value: []byte("batch1-v1"), timestampDelta: 0},
+		{key: []byte("batch1-k2"), value: []byte("batch1-v2"), timestampDelta: 10},
+	}
+	batch1 := buildTestRecordBatch(records1, 1000, 0)
+
+	records2 := []testRecord{
+		{key: []byte("batch2-k1"), value: []byte("batch2-v1"), timestampDelta: 0},
+		{key: []byte("batch2-k2"), value: []byte("batch2-v2"), timestampDelta: 10},
+		{key: []byte("batch2-k3"), value: []byte("batch2-v3"), timestampDelta: 20},
+	}
+	batch2 := buildTestRecordBatch(records2, 2000, 2)
+
+	walData := buildTestWAL([][]byte{batch1, batch2}, 123)
+
+	cfg := DefaultStreamingConvertConfig()
+	result, err := StreamingConvertWALFromBytes(walData, 0, 0, cfg)
+	if err != nil {
+		t.Fatalf("StreamingConvertWALFromBytes failed: %v", err)
+	}
+
+	if result.RecordCount != 5 {
+		t.Errorf("expected RecordCount=5, got %d", result.RecordCount)
+	}
+
+	reader, err := NewReader(result.ParquetData)
+	if err != nil {
+		t.Fatalf("NewReader failed: %v", err)
+	}
+	defer reader.Close()
+
+	readRecords, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	for i, rec := range readRecords {
+		if rec.Offset != int64(i) {
+			t.Errorf("record %d: expected offset %d, got %d", i, i, rec.Offset)
+		}
+	}
+}
+
+func TestStreamingConvertWALFromBytes_SmallBatchSize(t *testing.T) {
+	// Create many records to test batch flushing
+	var records []testRecord
+	for i := 0; i < 50; i++ {
+		records = append(records, testRecord{
+			key:            []byte("key" + string(rune(i))),
+			value:          []byte("value" + string(rune(i))),
+			timestampDelta: int64(i * 10),
+		})
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+	walData := buildTestWAL([][]byte{batch}, 123)
+
+	// Use small batch size to force multiple flushes
+	cfg := StreamingConvertConfig{BatchSize: 5}
+	result, err := StreamingConvertWALFromBytes(walData, 0, 0, cfg)
+	if err != nil {
+		t.Fatalf("StreamingConvertWALFromBytes failed: %v", err)
+	}
+
+	if result.RecordCount != 50 {
+		t.Errorf("expected RecordCount=50, got %d", result.RecordCount)
+	}
+
+	reader, err := NewReader(result.ParquetData)
+	if err != nil {
+		t.Fatalf("NewReader failed: %v", err)
+	}
+	defer reader.Close()
+
+	readRecords, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if len(readRecords) != 50 {
+		t.Fatalf("expected 50 records, got %d", len(readRecords))
+	}
+}
+
+func TestStreamingConvertWALFromBytes_EmptyWAL(t *testing.T) {
+	walObj := wal.NewWAL(uuid.New(), 0, 1000)
+	data, _ := wal.EncodeToBytes(walObj)
+
+	cfg := DefaultStreamingConvertConfig()
+	_, err := StreamingConvertWALFromBytes(data, 0, 0, cfg)
+	if err == nil {
+		t.Error("expected error for empty WAL")
+	}
+}
+
+func TestStreamingConvertWALFromBytes_Compression(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("gzip-key"), value: []byte("gzip-value"), timestampDelta: 0},
+	}
+	batch := buildCompressedTestRecordBatch(records, 1000, 0, compressionGzip)
+	walData := buildTestWAL([][]byte{batch}, 123)
+
+	cfg := DefaultStreamingConvertConfig()
+	result, err := StreamingConvertWALFromBytes(walData, 0, 0, cfg)
+	if err != nil {
+		t.Fatalf("StreamingConvertWALFromBytes with gzip failed: %v", err)
+	}
+
+	if result.RecordCount != 1 {
+		t.Errorf("expected RecordCount=1, got %d", result.RecordCount)
+	}
+
+	reader, err := NewReader(result.ParquetData)
+	if err != nil {
+		t.Fatalf("NewReader failed: %v", err)
+	}
+	defer reader.Close()
+
+	readRecords, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if !bytes.Equal(readRecords[0].Key, []byte("gzip-key")) {
+		t.Errorf("key mismatch after gzip decompression")
+	}
+}
+
+func TestStreamingConvertWALFromBytes_LargeWAL_BoundedMemory(t *testing.T) {
+	// Create a large WAL with many records to verify streaming behavior
+	// Each record has a 1KB value to make the WAL reasonably large
+	const numBatches = 20
+	const recordsPerBatch = 100
+	const valueSize = 1024
+
+	var allBatches [][]byte
+	baseOffset := int64(0)
+	for b := 0; b < numBatches; b++ {
+		var records []testRecord
+		for i := 0; i < recordsPerBatch; i++ {
+			value := make([]byte, valueSize)
+			for j := range value {
+				value[j] = byte((b*recordsPerBatch + i + j) % 256)
+			}
+			records = append(records, testRecord{
+				key:            []byte("key"),
+				value:          value,
+				timestampDelta: int64(i),
+			})
+		}
+		batch := buildTestRecordBatch(records, int64(1000+b*1000), baseOffset)
+		allBatches = append(allBatches, batch)
+		baseOffset += int64(recordsPerBatch)
+	}
+
+	walData := buildTestWAL(allBatches, 123)
+	t.Logf("Created WAL with %d bytes, %d batches, %d total records",
+		len(walData), numBatches, numBatches*recordsPerBatch)
+
+	// Use a small batch size to ensure records are flushed frequently
+	cfg := StreamingConvertConfig{BatchSize: 50}
+	result, err := StreamingConvertWALFromBytes(walData, 0, 0, cfg)
+	if err != nil {
+		t.Fatalf("StreamingConvertWALFromBytes failed: %v", err)
+	}
+
+	expectedRecords := int64(numBatches * recordsPerBatch)
+	if result.RecordCount != expectedRecords {
+		t.Errorf("expected RecordCount=%d, got %d", expectedRecords, result.RecordCount)
+	}
+
+	// Verify stats
+	if result.Stats.MinOffset != 0 {
+		t.Errorf("expected MinOffset=0, got %d", result.Stats.MinOffset)
+	}
+	if result.Stats.MaxOffset != expectedRecords-1 {
+		t.Errorf("expected MaxOffset=%d, got %d", expectedRecords-1, result.Stats.MaxOffset)
+	}
+
+	// Verify we can read back all records
+	reader, err := NewReader(result.ParquetData)
+	if err != nil {
+		t.Fatalf("NewReader failed: %v", err)
+	}
+	defer reader.Close()
+
+	if reader.NumRows() != expectedRecords {
+		t.Errorf("expected %d rows in Parquet, got %d", expectedRecords, reader.NumRows())
+	}
+
+	t.Logf("Streaming conversion successful: %d records, Parquet size: %d bytes",
+		result.RecordCount, len(result.ParquetData))
+}
+
+func TestStreamingConvertWALFromBytes_WithHeaders(t *testing.T) {
+	records := []testRecord{
+		{
+			key:            []byte("key"),
+			value:          []byte("value"),
+			timestampDelta: 0,
+			headers: []testHeader{
+				{key: "h1", value: []byte("v1")},
+				{key: "h2", value: []byte("v2")},
+			},
+		},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+	walData := buildTestWAL([][]byte{batch}, 123)
+
+	cfg := DefaultStreamingConvertConfig()
+	result, err := StreamingConvertWALFromBytes(walData, 0, 0, cfg)
+	if err != nil {
+		t.Fatalf("StreamingConvertWALFromBytes failed: %v", err)
+	}
+
+	reader, err := NewReader(result.ParquetData)
+	if err != nil {
+		t.Fatalf("NewReader failed: %v", err)
+	}
+	defer reader.Close()
+
+	readRecords, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if len(readRecords[0].Headers) != 2 {
+		t.Fatalf("expected 2 headers, got %d", len(readRecords[0].Headers))
+	}
+	if readRecords[0].Headers[0].Key != "h1" {
+		t.Errorf("header 0 key mismatch")
+	}
+}
+
+func TestDefaultStreamingConvertConfig(t *testing.T) {
+	cfg := DefaultStreamingConvertConfig()
+	if cfg.BatchSize != 1000 {
+		t.Errorf("expected default BatchSize=1000, got %d", cfg.BatchSize)
+	}
+}
