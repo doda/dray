@@ -3945,7 +3945,7 @@
       "Verify record_crc column when implemented",
       "Run integration tests and fix any failures"
     ],
-    "completed": false,
+    "completed": true,
     "depends_on": [
       "parquet-schema-add-record-crc"
     ],
