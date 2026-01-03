@@ -2390,3 +2390,30 @@ Start with project-setup, then follow spec phases:
   - State is recoverable (not terminal) - compactors can resume from it
   - Can transition from WAL_GC_READY to DONE or FAILED
 - **No blockers or follow-ups identified**
+
+---
+## 2026-01-03: Task integration-test-parquet-schema-roundtrip - PASS
+- **Task**: Add integration test verifying Parquet schema matches spec and data round-trips correctly
+- **Implementation**:
+  - Created comprehensive integration test file `tests/integration/parquet_schema_roundtrip_test.go`
+  - Implemented 6 test functions covering all spec requirements
+- **Tests added**:
+  - `TestParquetSchemaRoundtrip` - End-to-end: produce, compact, fetch, verify data consistency
+  - `TestParquetSchemaColumns` - Verifies all 11 columns per SPEC 5.3 are present
+  - `TestParquetHeadersPreserveOrderAndDuplicates` - Confirms list type preserves order and duplicates
+  - `TestParquetRecordCRC` - Validates record_crc column is correctly computed (CRC32C)
+  - `TestParquetNullableFields` - Tests nullable key/value/record_crc handling
+  - `TestParquetTimestampType` - Verifies timestamp stored with millisecond precision
+- **Key files changed**:
+  - `tests/integration/parquet_schema_roundtrip_test.go` (new file, ~1100 lines)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./tests/integration/... -run TestParquet -v` - all 6 new tests pass
+  - `go test ./...` - full test suite passes
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - Headers verified as list<struct<key:string, value:binary>> not map (per SPEC 5.3)
+  - Timestamp column correctly named "timestamp" (not "timestamp_ms")
+  - record_crc uses CRC32C (Castagnoli) computed over key+value+headers
+  - Tests use parquet-go's Schema().Fields() API for nested type verification
+- **No blockers or follow-ups identified**
