@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
+	"strings"
 	"testing"
 
 	"github.com/golang/snappy"
@@ -1265,5 +1267,265 @@ func TestDefaultStreamingConvertConfig(t *testing.T) {
 	cfg := DefaultStreamingConvertConfig()
 	if cfg.BatchSize != 1000 {
 		t.Errorf("expected default BatchSize=1000, got %d", cfg.BatchSize)
+	}
+}
+
+// --- CRC Validation Tests ---
+
+func TestValidateBatchCRC_ValidBatch(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+
+	err := validateBatchCRC(batch)
+	if err != nil {
+		t.Errorf("validateBatchCRC failed for valid batch: %v", err)
+	}
+}
+
+func TestValidateBatchCRC_CorruptedCRC(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+
+	// Corrupt the CRC field (bytes 17-20)
+	batch[17] ^= 0xFF
+	batch[18] ^= 0xFF
+
+	err := validateBatchCRC(batch)
+	if err == nil {
+		t.Error("expected CRC validation error for corrupted CRC")
+	}
+	if !errors.Is(err, ErrBatchCRCMismatch) {
+		t.Errorf("expected ErrBatchCRCMismatch, got: %v", err)
+	}
+}
+
+func TestValidateBatchCRC_CorruptedData(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+
+	// Corrupt the data section (after the header)
+	if len(batch) > 65 {
+		batch[65] ^= 0xFF // Corrupt a data byte
+	}
+
+	err := validateBatchCRC(batch)
+	if err == nil {
+		t.Error("expected CRC validation error for corrupted data")
+	}
+	if !errors.Is(err, ErrBatchCRCMismatch) {
+		t.Errorf("expected ErrBatchCRCMismatch, got: %v", err)
+	}
+}
+
+func TestValidateBatchCRC_BatchTooSmall(t *testing.T) {
+	// Batch smaller than minimum size for CRC validation
+	batch := make([]byte, 20)
+	err := validateBatchCRC(batch)
+	if err == nil {
+		t.Error("expected error for batch too small")
+	}
+}
+
+func TestValidateBatchCRC_InvalidMagic(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+
+	// Change magic byte to invalid value
+	batch[16] = 1 // Change from 2 to 1
+
+	err := validateBatchCRC(batch)
+	if err == nil {
+		t.Error("expected error for invalid magic byte")
+	}
+	if !strings.Contains(err.Error(), "unsupported magic byte") {
+		t.Errorf("expected 'unsupported magic byte' error, got: %v", err)
+	}
+}
+
+func TestExtractRecordsFromBatch_CRCValidation(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+
+	// Valid batch should work
+	extractedRecords, err := extractRecordsFromBatch(batch, 0, 0)
+	if err != nil {
+		t.Fatalf("extractRecordsFromBatch failed for valid batch: %v", err)
+	}
+	if len(extractedRecords) != 1 {
+		t.Errorf("expected 1 record, got %d", len(extractedRecords))
+	}
+}
+
+func TestExtractRecordsFromBatch_CorruptedBatchFailsExtraction(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+
+	// Corrupt the CRC
+	batch[17] ^= 0xFF
+
+	_, err := extractRecordsFromBatch(batch, 0, 0)
+	if err == nil {
+		t.Error("expected error for corrupted batch")
+	}
+	if !strings.Contains(err.Error(), "CRC validation failed") {
+		t.Errorf("expected 'CRC validation failed' error, got: %v", err)
+	}
+}
+
+func TestConvertWALToParquet_CorruptedBatchFailsCompaction(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+
+	// Corrupt the batch data after the CRC field
+	if len(batch) > 30 {
+		batch[30] ^= 0xFF
+	}
+
+	walData := buildTestWAL([][]byte{batch}, 123)
+
+	_, err := ConvertWALToParquet(walData, 0, 0)
+	if err == nil {
+		t.Error("expected compaction to fail with corrupted batch")
+	}
+	if !strings.Contains(err.Error(), "CRC") {
+		t.Errorf("expected error message to mention CRC, got: %v", err)
+	}
+}
+
+func TestConvertWALToParquet_CorruptedCRCFieldFailsCompaction(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+
+	// Corrupt the CRC field directly
+	batch[17] = 0x00
+	batch[18] = 0x00
+	batch[19] = 0x00
+	batch[20] = 0x00
+
+	walData := buildTestWAL([][]byte{batch}, 123)
+
+	_, err := ConvertWALToParquet(walData, 0, 0)
+	if err == nil {
+		t.Error("expected compaction to fail with corrupted CRC field")
+	}
+	if !strings.Contains(err.Error(), "CRC") {
+		t.Errorf("expected error message to mention CRC, got: %v", err)
+	}
+}
+
+func TestStreamingConvertWALFromBytes_CorruptedBatchFailsCompaction(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+
+	// Corrupt the batch
+	batch[25] ^= 0xFF
+
+	walData := buildTestWAL([][]byte{batch}, 123)
+
+	cfg := DefaultStreamingConvertConfig()
+	_, err := StreamingConvertWALFromBytes(walData, 0, 0, cfg)
+	if err == nil {
+		t.Error("expected streaming compaction to fail with corrupted batch")
+	}
+	if !strings.Contains(err.Error(), "CRC") {
+		t.Errorf("expected error message to mention CRC, got: %v", err)
+	}
+}
+
+func TestValidateBatchCRC_CompressedBatch(t *testing.T) {
+	// Verify CRC validation works with compressed batches
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+		{key: []byte("key2"), value: []byte("value2"), timestampDelta: 100},
+	}
+
+	compressionTypes := []int{compressionGzip, compressionSnappy, compressionLz4, compressionZstd}
+	for _, ct := range compressionTypes {
+		batch := buildCompressedTestRecordBatch(records, 1000, 0, ct)
+
+		// Valid compressed batch should pass CRC validation
+		err := validateBatchCRC(batch)
+		if err != nil {
+			t.Errorf("CRC validation failed for compression type %d: %v", ct, err)
+		}
+
+		// Corrupted compressed batch should fail
+		corruptedBatch := make([]byte, len(batch))
+		copy(corruptedBatch, batch)
+		if len(corruptedBatch) > 30 {
+			corruptedBatch[30] ^= 0xFF
+		}
+
+		err = validateBatchCRC(corruptedBatch)
+		if err == nil {
+			t.Errorf("expected CRC error for corrupted compression type %d batch", ct)
+		}
+	}
+}
+
+func TestConvertWALToParquet_CorruptedCompressedBatchFailsCompaction(t *testing.T) {
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+	}
+
+	compressionTypes := []int{compressionGzip, compressionSnappy, compressionLz4, compressionZstd}
+	for _, ct := range compressionTypes {
+		batch := buildCompressedTestRecordBatch(records, 1000, 0, ct)
+
+		// Corrupt the compressed data
+		if len(batch) > 65 {
+			batch[65] ^= 0xFF
+		}
+
+		walData := buildTestWAL([][]byte{batch}, 123)
+
+		_, err := ConvertWALToParquet(walData, 0, 0)
+		if err == nil {
+			t.Errorf("expected compaction to fail with corrupted compressed batch (type %d)", ct)
+		}
+	}
+}
+
+func TestConvertWALToParquet_MultipleBatches_OneCorrupted(t *testing.T) {
+	// Create two valid batches
+	records1 := []testRecord{
+		{key: []byte("batch1-k1"), value: []byte("batch1-v1"), timestampDelta: 0},
+	}
+	batch1 := buildTestRecordBatch(records1, 1000, 0)
+
+	records2 := []testRecord{
+		{key: []byte("batch2-k1"), value: []byte("batch2-v1"), timestampDelta: 0},
+	}
+	batch2 := buildTestRecordBatch(records2, 2000, 1)
+
+	// Corrupt the second batch
+	batch2[25] ^= 0xFF
+
+	walData := buildTestWAL([][]byte{batch1, batch2}, 123)
+
+	_, err := ConvertWALToParquet(walData, 0, 0)
+	if err == nil {
+		t.Error("expected compaction to fail when one batch is corrupted")
+	}
+	if !strings.Contains(err.Error(), "CRC") {
+		t.Errorf("expected error message to mention CRC, got: %v", err)
 	}
 }

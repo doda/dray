@@ -3857,6 +3857,6 @@
     "scope": [
       "internal/compaction/worker/converter.go"
     ],
-    "completed": false
+    "completed": true
   }
 ]

@@ -2219,3 +2219,36 @@ Start with project-setup, then follow spec phases:
   - SwapFromJob queries [SourceStartOffset+1, SourceEndOffset+1) to get only relevant entries
   - Tests verify that with 1000 entries, only a small bounded number of results are scanned
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - validate-batch-crc-in-compaction
+
+- **Task**: validate-batch-crc-in-compaction (PASS)
+- **Summary**: Added CRC32C validation for Kafka record batches during WAL-to-Parquet conversion.
+- **Changes made**:
+  - Added `crc32cTable` (Castagnoli polynomial table) for CRC32C computation
+  - Added `ErrBatchCRCMismatch` error type for CRC validation failures
+  - Added `validateBatchCRC()` function that validates batch magic byte and CRC checksum
+  - Updated `extractRecordsFromBatch()` to validate CRC before processing records
+  - Added 12 new unit tests for CRC validation covering:
+    - Valid batch CRC validation
+    - Corrupted CRC field detection
+    - Corrupted data detection
+    - Batch too small handling
+    - Invalid magic byte handling
+    - Corrupted compressed batches (gzip, snappy, lz4, zstd)
+    - Multiple batches with one corrupted
+    - Streaming conversion with corrupted batches
+- **Files modified**:
+  - `internal/compaction/worker/converter.go` (added CRC validation)
+  - `internal/compaction/worker/converter_test.go` (added 12 CRC tests)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/compaction/...` - all 100 tests pass
+  - `go test ./...` - all project tests pass
+  - `./init.sh` - SUCCESS
+- **Technical details**:
+  - CRC32C (Castagnoli) polynomial matches Kafka's wire format
+  - CRC is stored at bytes 17-20, computed over bytes 21 to end
+  - Validation happens before decompression, catching corruption early
+  - Error messages include stored and computed CRC values for debugging
+- **No blockers or follow-ups identified**
