@@ -171,6 +171,26 @@ func (h *FetchHandler) Handle(ctx context.Context, version int16, req *kmsg.Fetc
 		resp.Topics = append(resp.Topics, topicResp)
 	}
 
+	// Aggregate request-level log (avoids per-partition info logging)
+	var totalPartitions, errorPartitions int
+	var totalBytes int64
+	for _, topic := range resp.Topics {
+		for _, part := range topic.Partitions {
+			totalPartitions++
+			if part.ErrorCode != errNoError {
+				errorPartitions++
+			}
+			totalBytes += int64(len(part.RecordBatches))
+		}
+	}
+	logging.FromCtx(ctx).Infof("fetch complete", map[string]any{
+		"topics":          len(req.Topics),
+		"partitions":      totalPartitions,
+		"errorPartitions": errorPartitions,
+		"totalBytes":      totalBytes,
+		"durationMs":      time.Since(startTime).Milliseconds(),
+	})
+
 	return resp
 }
 
@@ -180,7 +200,7 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 	partResp := kmsg.NewFetchResponseTopicPartition()
 	partResp.Partition = partReq.Partition
 
-	logging.FromCtx(ctx).Infof("processPartition: topic=%s partition=%d fetchOffset=%d", map[string]any{
+	logging.FromCtx(ctx).Debugf("processPartition: topic=%s partition=%d fetchOffset=%d", map[string]any{
 		"topic":       topicName,
 		"partition":   partReq.Partition,
 		"fetchOffset": partReq.FetchOffset,
@@ -294,7 +314,7 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 		return h.buildPartitionError(version, partReq.Partition, errUnknownTopicOrPartitionErr, hwm, earliestOffset)
 	}
 
-	logging.FromCtx(ctx).Infof("fetch result", map[string]any{
+	logging.FromCtx(ctx).Debugf("fetch result", map[string]any{
 		"streamID":        streamID,
 		"fetchOffset":     fetchOffset,
 		"hwm":             fetchResp.HighWatermark,
@@ -336,7 +356,7 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 		partResp.RecordBatches = []byte{}
 	}
 
-	logging.FromCtx(ctx).Infof("response built", map[string]any{
+	logging.FromCtx(ctx).Debugf("response built", map[string]any{
 		"recordBatchesLen": len(partResp.RecordBatches),
 		"hwm":              partResp.HighWatermark,
 		"errorCode":        partResp.ErrorCode,
