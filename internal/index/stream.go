@@ -37,8 +37,10 @@ type StreamMeta struct {
 
 // StreamManager handles stream creation and management.
 type StreamManager struct {
-	store             metadata.MetadataStore
+	store            metadata.MetadataStore
 	timestampScanner TimestampScanner
+	hwmCache         *HWMCache
+	indexCache       *IndexCache
 }
 
 // NewStreamManager creates a new StreamManager with the given metadata store.
@@ -50,6 +52,18 @@ func NewStreamManager(store metadata.MetadataStore) *StreamManager {
 // when batch index data is unavailable.
 func (sm *StreamManager) SetTimestampScanner(scanner TimestampScanner) {
 	sm.timestampScanner = scanner
+}
+
+// SetHWMCache configures the HWM cache for faster high watermark lookups.
+// When set, GetHWM will use the cache to avoid metadata store hits.
+func (sm *StreamManager) SetHWMCache(cache *HWMCache) {
+	sm.hwmCache = cache
+}
+
+// SetIndexCache configures the index cache for faster offset lookups.
+// When set, LookupOffset will use cached entries when available.
+func (sm *StreamManager) SetIndexCache(cache *IndexCache) {
+	sm.indexCache = cache
 }
 
 // CreateStream creates a new stream with a generated UUID.
@@ -180,7 +194,14 @@ func (sm *StreamManager) GetStreamMeta(ctx context.Context, streamID string) (*S
 
 // GetHWM retrieves the high watermark for a stream.
 // The HWM is the log end offset (exclusive upper bound of committed offsets).
+// If an HWMCache is configured, it uses the cache to avoid metadata store hits.
 func (sm *StreamManager) GetHWM(ctx context.Context, streamID string) (int64, metadata.Version, error) {
+	// Use cache if available
+	if sm.hwmCache != nil {
+		return sm.hwmCache.Get(ctx, streamID)
+	}
+
+	// Fall back to direct store access
 	hwmKey := keys.HwmKeyPath(streamID)
 	result, err := sm.store.Get(ctx, hwmKey)
 	if err != nil {
