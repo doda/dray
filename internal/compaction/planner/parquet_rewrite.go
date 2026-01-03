@@ -47,7 +47,8 @@ type ParquetRewriteResult struct {
 }
 
 // ParquetRewritePlanner selects small Parquet files for rewrite compaction.
-// TODO: integrate planner selection into the compaction loop.
+// The planner is invoked by the compaction Scheduler to identify files eligible
+// for merging into larger files.
 type ParquetRewritePlanner struct {
 	cfg     ParquetRewriteConfig
 	streams StreamQuerier
