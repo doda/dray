@@ -439,6 +439,10 @@ type TimestampScanner interface {
 //   - Use Parquet file stats / index entry min/max timestamps if available
 //   - Else fallback to WAL batchIndex min/max timestamps
 //
+// This implementation avoids full index scans by using bounded range queries.
+// For monotonic timestamps (the common case), it performs O(log N) List calls.
+// For non-monotonic timestamps, it uses paginated iteration.
+//
 // Returns:
 //   - TimestampLookupResult with Found=true and Offset/Timestamp populated if found
 //   - TimestampLookupResult with Found=false if no record >= timestamp exists
@@ -459,18 +463,17 @@ func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID s
 		}, nil
 	}
 
-	// List all index entries for the stream
-	// Use full-depth keys for Oxia hierarchical key compatibility
+	endKey := keys.OffsetIndexEndKey(streamID)
+
+	// Quick path: Load first entry to check if timestamp is before all entries
 	startKey, err := keys.OffsetIndexStartKey(streamID, 0)
 	if err != nil {
 		return nil, err
 	}
-	endKey := keys.OffsetIndexEndKey(streamID)
-	kvs, err := sm.store.List(ctx, startKey, endKey, 0)
+	kvs, err := sm.store.List(ctx, startKey, endKey, 1)
 	if err != nil {
 		return nil, err
 	}
-
 	if len(kvs) == 0 {
 		return &TimestampLookupResult{
 			Offset:    -1,
@@ -479,19 +482,109 @@ func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID s
 		}, nil
 	}
 
-	// Parse all entries
-	entries := make([]IndexEntry, 0, len(kvs))
-	for _, kv := range kvs {
-		var entry IndexEntry
-		if err := json.Unmarshal(kv.Value, &entry); err != nil {
-			return nil, err
-		}
-		entries = append(entries, entry)
+	var firstEntry IndexEntry
+	if err := json.Unmarshal(kvs[0].Value, &firstEntry); err != nil {
+		return nil, err
 	}
 
-	candidateIdx := findEntryByTimestamp(entries, timestamp)
-	if candidateIdx == -1 {
-		// No entry has MaxTimestamp >= requested timestamp
+	// If timestamp <= first entry's max, first entry is our candidate
+	if firstEntry.MaxTimestampMs >= timestamp {
+		return sm.resolveTimestampEntry(ctx, &firstEntry, timestamp)
+	}
+
+	// Quick path: Load last entry to check if timestamp is after all entries
+	// Use HWM as upper bound to get the last entry
+	lastStartKey, err := keys.OffsetIndexStartKey(streamID, hwm)
+	if err != nil {
+		return nil, err
+	}
+	lastKvs, err := sm.store.List(ctx, lastStartKey, endKey, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(lastKvs) == 0 {
+		// No entry at HWM, try loading from near the end
+		// This shouldn't happen with a valid HWM but handle gracefully
+		return sm.lookupTimestampPaginated(ctx, streamID, timestamp)
+	}
+
+	var lastEntry IndexEntry
+	if err := json.Unmarshal(lastKvs[0].Value, &lastEntry); err != nil {
+		return nil, err
+	}
+
+	// Check for monotonic timestamps - if last.Max >= first.Max, likely monotonic
+	// For monotonic case, use binary search with bounded loading
+	if lastEntry.MaxTimestampMs >= firstEntry.MaxTimestampMs {
+		// If timestamp > last entry's max in monotonic case, no matching offset exists
+		if lastEntry.MaxTimestampMs < timestamp {
+			return &TimestampLookupResult{
+				Offset:    -1,
+				Timestamp: -1,
+				Found:     false,
+			}, nil
+		}
+		return sm.lookupTimestampBinarySearch(ctx, streamID, timestamp, firstEntry.EndOffset, lastEntry.EndOffset)
+	}
+
+	// Non-monotonic timestamps: use paginated iteration
+	// Note: For non-monotonic case, we cannot short-circuit based on last entry's max
+	// since earlier entries might have higher max timestamps
+	return sm.lookupTimestampPaginated(ctx, streamID, timestamp)
+}
+
+// lookupTimestampBinarySearch finds the entry containing the timestamp using binary search.
+// It uses offset bounds to narrow down the search, loading O(log N) entries.
+func (sm *StreamManager) lookupTimestampBinarySearch(ctx context.Context, streamID string, timestamp int64, loOffset, hiOffset int64) (*TimestampLookupResult, error) {
+	endKey := keys.OffsetIndexEndKey(streamID)
+
+	for loOffset < hiOffset {
+		midOffset := (loOffset + hiOffset) / 2
+
+		// Load entry at or after midOffset
+		startKey, err := keys.OffsetIndexStartKey(streamID, midOffset)
+		if err != nil {
+			return nil, err
+		}
+		kvs, err := sm.store.List(ctx, startKey, endKey, 1)
+		if err != nil {
+			return nil, err
+		}
+		if len(kvs) == 0 {
+			// No entries found, narrow to lower half
+			hiOffset = midOffset
+			continue
+		}
+
+		var entry IndexEntry
+		if err := json.Unmarshal(kvs[0].Value, &entry); err != nil {
+			return nil, err
+		}
+
+		if entry.MaxTimestampMs >= timestamp {
+			// This entry or an earlier one contains the timestamp
+			if entry.StartOffset == loOffset || entry.EndOffset <= loOffset+1 {
+				// This is the first entry in range, it's our candidate
+				return sm.resolveTimestampEntry(ctx, &entry, timestamp)
+			}
+			// Could be an earlier entry, narrow search
+			hiOffset = entry.EndOffset
+		} else {
+			// Timestamp is after this entry, search in later entries
+			loOffset = entry.EndOffset
+		}
+	}
+
+	// Load the entry at loOffset to get the final candidate
+	startKey, err := keys.OffsetIndexStartKey(streamID, loOffset)
+	if err != nil {
+		return nil, err
+	}
+	kvs, err := sm.store.List(ctx, startKey, endKey, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(kvs) == 0 {
 		return &TimestampLookupResult{
 			Offset:    -1,
 			Timestamp: -1,
@@ -499,9 +592,69 @@ func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID s
 		}, nil
 	}
 
-	// We found a candidate entry. Now we need to find the exact offset.
-	entry := entries[candidateIdx]
+	var entry IndexEntry
+	if err := json.Unmarshal(kvs[0].Value, &entry); err != nil {
+		return nil, err
+	}
 
+	if entry.MaxTimestampMs >= timestamp {
+		return sm.resolveTimestampEntry(ctx, &entry, timestamp)
+	}
+
+	return &TimestampLookupResult{
+		Offset:    -1,
+		Timestamp: -1,
+		Found:     false,
+	}, nil
+}
+
+// lookupTimestampPaginated handles non-monotonic timestamp cases with paginated iteration.
+// It loads entries in batches to avoid loading everything at once.
+const timestampLookupPageSize = 100
+
+func (sm *StreamManager) lookupTimestampPaginated(ctx context.Context, streamID string, timestamp int64) (*TimestampLookupResult, error) {
+	endKey := keys.OffsetIndexEndKey(streamID)
+	var lastEndOffset int64 = 0
+
+	for {
+		startKey, err := keys.OffsetIndexStartKey(streamID, lastEndOffset)
+		if err != nil {
+			return nil, err
+		}
+		kvs, err := sm.store.List(ctx, startKey, endKey, timestampLookupPageSize)
+		if err != nil {
+			return nil, err
+		}
+		if len(kvs) == 0 {
+			break
+		}
+
+		for _, kv := range kvs {
+			var entry IndexEntry
+			if err := json.Unmarshal(kv.Value, &entry); err != nil {
+				return nil, err
+			}
+
+			if entry.MaxTimestampMs >= timestamp {
+				return sm.resolveTimestampEntry(ctx, &entry, timestamp)
+			}
+			lastEndOffset = entry.EndOffset
+		}
+
+		if len(kvs) < timestampLookupPageSize {
+			break
+		}
+	}
+
+	return &TimestampLookupResult{
+		Offset:    -1,
+		Timestamp: -1,
+		Found:     false,
+	}, nil
+}
+
+// resolveTimestampEntry finds the exact offset within an entry that matches the timestamp.
+func (sm *StreamManager) resolveTimestampEntry(ctx context.Context, entry *IndexEntry, timestamp int64) (*TimestampLookupResult, error) {
 	// If the entry's MinTimestamp is already >= requested, return start offset
 	if entry.MinTimestampMs >= timestamp {
 		return &TimestampLookupResult{
@@ -514,11 +667,10 @@ func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID s
 	// The timestamp is within this entry's range. Try to narrow down using batchIndex.
 	if len(entry.BatchIndex) > 0 {
 		if batch, ok := findBatchByTimestamp(entry.BatchIndex, timestamp); ok {
-			// Return the start of this batch
 			offset := entry.StartOffset + int64(batch.BatchStartOffsetDelta)
 			ts := batch.MinTimestampMs
 			if ts < timestamp {
-				ts = batch.MaxTimestampMs // Best estimate
+				ts = batch.MaxTimestampMs
 			}
 			return &TimestampLookupResult{
 				Offset:    offset,
@@ -529,7 +681,7 @@ func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID s
 	}
 
 	if sm.timestampScanner != nil {
-		offset, ts, found, err := sm.timestampScanner.ScanOffsetByTimestamp(ctx, &entry, timestamp)
+		offset, ts, found, err := sm.timestampScanner.ScanOffsetByTimestamp(ctx, entry, timestamp)
 		if err != nil {
 			return nil, err
 		}
@@ -542,7 +694,7 @@ func (sm *StreamManager) LookupOffsetByTimestamp(ctx context.Context, streamID s
 		}
 	}
 
-	// Fallback: return start of entry if no batchIndex scanner available
+	// Fallback: return start of entry if no batchIndex or scanner available
 	return &TimestampLookupResult{
 		Offset:    entry.StartOffset,
 		Timestamp: entry.MinTimestampMs,
