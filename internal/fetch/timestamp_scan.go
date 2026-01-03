@@ -165,7 +165,7 @@ func (r *ParquetReader) FindOffsetByTimestamp(ctx context.Context, entry *index.
 // selectRowGroupsByTimestamp selects row groups that could contain records with timestamp >= target.
 // It uses the min/max timestamp column stats to prune row groups.
 func selectRowGroupsByTimestamp(file *parquet.File, timestamp int64) []parquet.RowGroup {
-	timestampColumn, ok := file.Schema().Lookup("timestamp_ms")
+	timestampColumn, ok := file.Schema().Lookup("timestamp")
 	rowGroups := file.RowGroups()
 	if !ok {
 		return rowGroups

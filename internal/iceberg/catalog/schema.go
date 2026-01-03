@@ -10,7 +10,7 @@ import (
 const (
 	FieldIDPartition     = 1
 	FieldIDOffset        = 2
-	FieldIDTimestampMs   = 3
+	FieldIDTimestamp     = 3
 	FieldIDKey           = 4
 	FieldIDValue         = 5
 	FieldIDHeaders       = 6
@@ -64,11 +64,11 @@ func DefaultSchema() *iceberg.Schema {
 			Doc:      "Kafka offset",
 		},
 		iceberg.NestedField{
-			ID:       FieldIDTimestampMs,
-			Name:     "timestamp_ms",
+			ID:       FieldIDTimestamp,
+			Name:     "timestamp",
 			Type:     iceberg.PrimitiveTypes.TimestampTz,
 			Required: true,
-			Doc:      "Record timestamp in milliseconds (UTC)",
+			Doc:      "Kafka record timestamp",
 		},
 		iceberg.NestedField{
 			ID:       FieldIDKey,

@@ -601,19 +601,19 @@ func DefaultDataFileStats(partition int32, minOffset, maxOffset, minTs, maxTs in
 
 	return &DataFileStats{
 		LowerBounds: map[int32][]byte{
-			FieldIDPartition:   partitionBound,
-			FieldIDOffset:      lowerOffset,
-			FieldIDTimestampMs: lowerTs,
+			FieldIDPartition: partitionBound,
+			FieldIDOffset:    lowerOffset,
+			FieldIDTimestamp: lowerTs,
 		},
 		UpperBounds: map[int32][]byte{
-			FieldIDPartition:   partitionBound,
-			FieldIDOffset:      upperOffset,
-			FieldIDTimestampMs: upperTs,
+			FieldIDPartition: partitionBound,
+			FieldIDOffset:    upperOffset,
+			FieldIDTimestamp: upperTs,
 		},
 		ValueCounts: map[int32]int64{
-			FieldIDPartition:   recordCount,
-			FieldIDOffset:      recordCount,
-			FieldIDTimestampMs: recordCount,
+			FieldIDPartition: recordCount,
+			FieldIDOffset:    recordCount,
+			FieldIDTimestamp: recordCount,
 		},
 	}
 }

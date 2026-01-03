@@ -2303,3 +2303,37 @@ Start with project-setup, then follow spec phases:
   - RecordCRC is optional (pointer type) per spec requirement
   - Iceberg schema field ID 14 chosen to not conflict with existing IDs
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - parquet-schema-rename-timestamp-column
+
+- **Task**: parquet-schema-rename-timestamp-column (PASS)
+- **Summary**: Renamed Parquet timestamp column from timestamp_ms to timestamp per SPEC.md section 5.3.
+- **Changes made**:
+  - Renamed `FieldIDTimestampMs` to `FieldIDTimestamp` in Iceberg schema constants
+  - Updated column name from `timestamp_ms` to `timestamp` in DefaultSchema()
+  - Updated parquet struct tags in compaction/worker/parquet.go and fetch/parquet_reader.go
+  - Updated timestamp_scan.go to lookup "timestamp" instead of "timestamp_ms"
+  - Updated appender.go to use FieldIDTimestamp for DataFile stats
+  - Updated all tests to use new column name
+- **Files modified**:
+  - `internal/iceberg/catalog/schema.go` (renamed constant and column name)
+  - `internal/iceberg/catalog/appender.go` (updated field ID references)
+  - `internal/iceberg/catalog/datafile_test.go` (updated test references)
+  - `internal/compaction/worker/parquet.go` (updated parquet struct tag)
+  - `internal/compaction/worker/parquet_test.go` (updated test assertions)
+  - `internal/fetch/parquet_reader.go` (updated parquet struct tags)
+  - `internal/fetch/timestamp_scan.go` (updated schema lookup)
+  - `internal/protocol/create_topics_test.go` (updated expected schema fields)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/iceberg/catalog/...` - all 31 tests pass
+  - `go test ./internal/compaction/worker/...` - all 72 tests pass
+  - `go test ./internal/fetch/...` - all fetch tests pass
+  - `go test ./internal/...` - all internal tests pass
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - SPEC.md section 5.3 defines column as "timestamp" (not "timestamp_ms")
+  - Field ID 3 unchanged (preserves Iceberg compatibility)
+  - Parquet type remains timestamp(millisecond) - only name changed
+  - WAL MinTimestampMs/MaxTimestampMs fields unchanged (per SPEC 5.2.2)
+- **No blockers or follow-ups identified**
