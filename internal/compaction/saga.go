@@ -9,13 +9,14 @@
 //
 // State machine:
 //
-//	CREATED -> PARQUET_WRITTEN -> ICEBERG_COMMITTED -> INDEX_SWAPPED -> DONE
+//	CREATED -> PARQUET_WRITTEN -> ICEBERG_COMMITTED -> INDEX_SWAPPED -> WAL_GC_READY -> DONE
 //
 // Recovery:
 //   - CREATED: Restart from the beginning (re-read WAL, re-write Parquet)
 //   - PARQUET_WRITTEN: Resume at Iceberg commit (Parquet file exists)
 //   - ICEBERG_COMMITTED: Resume at index swap (Iceberg table updated)
-//   - INDEX_SWAPPED: Resume at marking done (index updated)
+//   - INDEX_SWAPPED: Resume at WAL GC scheduling (index updated)
+//   - WAL_GC_READY: Resume at marking done (WAL GC scheduled)
 //   - DONE: Job complete, cleanup
 package compaction
 
@@ -51,6 +52,11 @@ const (
 	// JobStateIndexSwapped indicates the offset index has been swapped from
 	// WAL entries to the Parquet entry. WAL refcounts may be decremented.
 	JobStateIndexSwapped JobState = "INDEX_SWAPPED"
+
+	// JobStateWALGCReady indicates the index has been swapped and WAL objects
+	// are eligible for garbage collection per SPEC 11.6. This state exists
+	// to allow WAL GC to be scheduled before marking the job complete.
+	JobStateWALGCReady JobState = "WAL_GC_READY"
 
 	// JobStateDone indicates the compaction job is complete.
 	// The job record can be cleaned up after a grace period.
@@ -186,7 +192,7 @@ func (j *Job) IsTerminal() bool {
 // IsRecoverable returns true if the job can be recovered and resumed.
 func (j *Job) IsRecoverable() bool {
 	switch j.State {
-	case JobStateCreated, JobStateParquetWritten, JobStateIcebergCommitted, JobStateIndexSwapped:
+	case JobStateCreated, JobStateParquetWritten, JobStateIcebergCommitted, JobStateIndexSwapped, JobStateWALGCReady:
 		return true
 	default:
 		return false
@@ -198,7 +204,8 @@ var validTransitions = map[JobState][]JobState{
 	JobStateCreated:          {JobStateParquetWritten, JobStateFailed},
 	JobStateParquetWritten:   {JobStateIcebergCommitted, JobStateFailed},
 	JobStateIcebergCommitted: {JobStateIndexSwapped, JobStateFailed},
-	JobStateIndexSwapped:     {JobStateDone, JobStateFailed},
+	JobStateIndexSwapped:     {JobStateWALGCReady, JobStateFailed},
+	JobStateWALGCReady:       {JobStateDone, JobStateFailed},
 	JobStateDone:             {}, // Terminal state
 	JobStateFailed:           {}, // Terminal state
 }
@@ -468,6 +475,12 @@ func (sm *SagaManager) MarkIndexSwappedWithGC(ctx context.Context, streamID, job
 		}
 		return nil
 	})
+}
+
+// MarkWALGCReady transitions a job to WAL_GC_READY state per SPEC 11.6.
+// This indicates that WAL objects are eligible for garbage collection.
+func (sm *SagaManager) MarkWALGCReady(ctx context.Context, streamID, jobID string) (*Job, error) {
+	return sm.TransitionState(ctx, streamID, jobID, JobStateWALGCReady, nil)
 }
 
 // MarkDone transitions a job to DONE state.

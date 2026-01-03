@@ -33,6 +33,7 @@ func TestJobState_IsTerminal(t *testing.T) {
 		{JobStateParquetWritten, false},
 		{JobStateIcebergCommitted, false},
 		{JobStateIndexSwapped, false},
+		{JobStateWALGCReady, false},
 		{JobStateDone, true},
 		{JobStateFailed, true},
 	}
@@ -56,6 +57,7 @@ func TestJobState_IsRecoverable(t *testing.T) {
 		{JobStateParquetWritten, true},
 		{JobStateIcebergCommitted, true},
 		{JobStateIndexSwapped, true},
+		{JobStateWALGCReady, true},
 		{JobStateDone, false},
 		{JobStateFailed, false},
 	}
@@ -76,28 +78,32 @@ func TestJobState_CanTransitionTo(t *testing.T) {
 		to    JobState
 		valid bool
 	}{
-		// Valid forward transitions
+		// Valid forward transitions (per SPEC 11.6)
 		{JobStateCreated, JobStateParquetWritten, true},
 		{JobStateParquetWritten, JobStateIcebergCommitted, true},
 		{JobStateIcebergCommitted, JobStateIndexSwapped, true},
-		{JobStateIndexSwapped, JobStateDone, true},
+		{JobStateIndexSwapped, JobStateWALGCReady, true},
+		{JobStateWALGCReady, JobStateDone, true},
 
 		// Valid failure transitions
 		{JobStateCreated, JobStateFailed, true},
 		{JobStateParquetWritten, JobStateFailed, true},
 		{JobStateIcebergCommitted, JobStateFailed, true},
 		{JobStateIndexSwapped, JobStateFailed, true},
+		{JobStateWALGCReady, JobStateFailed, true},
 
 		// Invalid backward transitions
 		{JobStateParquetWritten, JobStateCreated, false},
 		{JobStateIcebergCommitted, JobStateParquetWritten, false},
 		{JobStateIndexSwapped, JobStateIcebergCommitted, false},
-		{JobStateDone, JobStateIndexSwapped, false},
+		{JobStateWALGCReady, JobStateIndexSwapped, false},
+		{JobStateDone, JobStateWALGCReady, false},
 
 		// Invalid skip transitions
 		{JobStateCreated, JobStateIcebergCommitted, false},
 		{JobStateCreated, JobStateIndexSwapped, false},
 		{JobStateCreated, JobStateDone, false},
+		{JobStateIndexSwapped, JobStateDone, false}, // Must go through WAL_GC_READY
 
 		// Terminal states cannot transition
 		{JobStateDone, JobStateCreated, false},
@@ -369,6 +375,15 @@ func TestSagaManager_FullLifecycle(t *testing.T) {
 		t.Errorf("expected 2 WAL objects, got %d", len(job.WALObjectsToDecrement))
 	}
 
+	// -> WAL_GC_READY (per SPEC 11.6)
+	job, err = sm.MarkWALGCReady(ctx, "stream-1", "job-full")
+	if err != nil {
+		t.Fatalf("MarkWALGCReady failed: %v", err)
+	}
+	if job.State != JobStateWALGCReady {
+		t.Errorf("expected WAL_GC_READY, got %s", job.State)
+	}
+
 	// -> DONE
 	job, err = sm.MarkDone(ctx, "stream-1", "job-full")
 	if err != nil {
@@ -416,6 +431,11 @@ func TestSagaManager_MarkDone_SchedulesParquetGC(t *testing.T) {
 		t.Fatalf("MarkIndexSwappedWithGC failed: %v", err)
 	}
 
+	_, err = sm.MarkWALGCReady(ctx, "stream-iceberg", job.JobID)
+	if err != nil {
+		t.Fatalf("MarkWALGCReady failed: %v", err)
+	}
+
 	_, err = sm.MarkDone(ctx, "stream-iceberg", job.JobID)
 	if err != nil {
 		t.Fatalf("MarkDone failed: %v", err)
@@ -444,6 +464,7 @@ func TestSagaManager_FailureTransition(t *testing.T) {
 		JobStateParquetWritten,
 		JobStateIcebergCommitted,
 		JobStateIndexSwapped,
+		JobStateWALGCReady,
 	}
 
 	for _, state := range states {
@@ -467,6 +488,11 @@ func TestSagaManager_FailureTransition(t *testing.T) {
 				_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-fail", "/p", 1, 1, 0, 0)
 				_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", "job-fail", 1)
 				_, err = sm.MarkIndexSwapped(ctx, "stream-1", "job-fail", nil)
+			case JobStateWALGCReady:
+				_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-fail", "/p", 1, 1, 0, 0)
+				_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", "job-fail", 1)
+				_, _ = sm.MarkIndexSwapped(ctx, "stream-1", "job-fail", nil)
+				_, err = sm.MarkWALGCReady(ctx, "stream-1", "job-fail")
 			}
 			if err != nil {
 				t.Fatalf("advance to state failed: %v", err)
@@ -515,6 +541,7 @@ func TestSagaManager_ListJobs(t *testing.T) {
 	_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-3", "/p", 1, 1, 0, 0)
 	_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", "job-3", 1)
 	_, _ = sm.MarkIndexSwapped(ctx, "stream-1", "job-3", nil)
+	_, _ = sm.MarkWALGCReady(ctx, "stream-1", "job-3")
 	_, err = sm.MarkDone(ctx, "stream-1", "job-3")
 	if err != nil {
 		t.Fatalf("MarkDone failed: %v", err)
@@ -589,6 +616,7 @@ func TestSagaManager_CleanupCompletedJobs(t *testing.T) {
 		_, _ = sm.MarkParquetWritten(ctx, "stream-1", jobID, "/p", 1, 1, 0, 0)
 		_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", jobID, 1)
 		_, _ = sm.MarkIndexSwapped(ctx, "stream-1", jobID, nil)
+		_, _ = sm.MarkWALGCReady(ctx, "stream-1", jobID)
 		_, _ = sm.MarkDone(ctx, "stream-1", jobID)
 	}
 
@@ -665,6 +693,7 @@ func TestSagaManager_ResumeJob(t *testing.T) {
 		_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-done", "/p", 1, 1, 0, 0)
 		_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", "job-done", 1)
 		_, _ = sm.MarkIndexSwapped(ctx, "stream-1", "job-done", nil)
+		_, _ = sm.MarkWALGCReady(ctx, "stream-1", "job-done")
 		_, _ = sm.MarkDone(ctx, "stream-1", "job-done")
 
 		_, err := sm.ResumeJob(ctx, "stream-1", "job-done")
@@ -788,6 +817,18 @@ func TestSagaManager_RecoveryFromEachState(t *testing.T) {
 			},
 			expectedState: JobStateIndexSwapped,
 		},
+		{
+			name: "recover from WAL_GC_READY",
+			setupFn: func(sm *SagaManager, ctx context.Context) error {
+				_, _ = sm.CreateJob(ctx, "stream-1", WithJobID("job-recover"))
+				_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-recover", "/p", 1, 1, 0, 0)
+				_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", "job-recover", 123)
+				_, _ = sm.MarkIndexSwapped(ctx, "stream-1", "job-recover", []string{"wal-1"})
+				_, err := sm.MarkWALGCReady(ctx, "stream-1", "job-recover")
+				return err
+			},
+			expectedState: JobStateWALGCReady,
+		},
 	}
 
 	for _, tt := range states {
@@ -859,7 +900,8 @@ func TestJobStatePreservation(t *testing.T) {
 	// Transition through states and verify fields are preserved
 	_, _ = sm.MarkParquetWritten(ctx, "stream-1", "job-fields", "/bucket/data.parquet", 25000, 400, 0, 0)
 	_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", "job-fields", 999)
-	job, _ := sm.MarkIndexSwapped(ctx, "stream-1", "job-fields", []string{"wal-a", "wal-b", "wal-c"})
+	_, _ = sm.MarkIndexSwapped(ctx, "stream-1", "job-fields", []string{"wal-a", "wal-b", "wal-c"})
+	job, _ := sm.MarkWALGCReady(ctx, "stream-1", "job-fields")
 
 	// Verify all fields are preserved
 	if job.StreamID != "stream-1" {
@@ -901,6 +943,99 @@ func TestJobState_CanTransitionTo_IcebergCommit(t *testing.T) {
 	}
 	if job.CanTransitionTo(JobStateIndexSwapped) {
 		t.Error("PARQUET_WRITTEN should not transition to INDEX_SWAPPED directly")
+	}
+}
+
+// TestMarkWALGCReady verifies the new WAL_GC_READY state transition per SPEC 11.6.
+func TestMarkWALGCReady(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMockStore()
+	sm := NewSagaManager(meta, "compactor-test")
+
+	streamID := "stream-wal-gc"
+
+	// Create and progress job to INDEX_SWAPPED
+	job, err := sm.CreateJob(ctx, streamID)
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	_, err = sm.MarkParquetWritten(ctx, streamID, job.JobID, "/p", 1, 1, 0, 0)
+	if err != nil {
+		t.Fatalf("MarkParquetWritten failed: %v", err)
+	}
+	_, err = sm.MarkIcebergCommitted(ctx, streamID, job.JobID, 123)
+	if err != nil {
+		t.Fatalf("MarkIcebergCommitted failed: %v", err)
+	}
+	_, err = sm.MarkIndexSwapped(ctx, streamID, job.JobID, []string{"wal-1"})
+	if err != nil {
+		t.Fatalf("MarkIndexSwapped failed: %v", err)
+	}
+
+	// Transition to WAL_GC_READY
+	job, err = sm.MarkWALGCReady(ctx, streamID, job.JobID)
+	if err != nil {
+		t.Fatalf("MarkWALGCReady failed: %v", err)
+	}
+
+	// Verify state
+	if job.State != JobStateWALGCReady {
+		t.Errorf("expected WAL_GC_READY, got %s", job.State)
+	}
+
+	// Verify job is still recoverable
+	if !job.IsRecoverable() {
+		t.Error("job in WAL_GC_READY should be recoverable")
+	}
+
+	// Verify job is not terminal
+	if job.IsTerminal() {
+		t.Error("job in WAL_GC_READY should not be terminal")
+	}
+
+	// Verify we can still transition to DONE
+	job, err = sm.MarkDone(ctx, streamID, job.JobID)
+	if err != nil {
+		t.Fatalf("MarkDone failed: %v", err)
+	}
+	if job.State != JobStateDone {
+		t.Errorf("expected DONE, got %s", job.State)
+	}
+}
+
+// TestMarkWALGCReady_CannotSkip verifies that INDEX_SWAPPED cannot skip to DONE.
+func TestMarkWALGCReady_CannotSkip(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMockStore()
+	sm := NewSagaManager(meta, "compactor-test")
+
+	streamID := "stream-wal-gc-skip"
+
+	// Create and progress job to INDEX_SWAPPED
+	job, err := sm.CreateJob(ctx, streamID)
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	_, err = sm.MarkParquetWritten(ctx, streamID, job.JobID, "/p", 1, 1, 0, 0)
+	if err != nil {
+		t.Fatalf("MarkParquetWritten failed: %v", err)
+	}
+	_, err = sm.MarkIcebergCommitted(ctx, streamID, job.JobID, 123)
+	if err != nil {
+		t.Fatalf("MarkIcebergCommitted failed: %v", err)
+	}
+	_, err = sm.MarkIndexSwapped(ctx, streamID, job.JobID, []string{"wal-1"})
+	if err != nil {
+		t.Fatalf("MarkIndexSwapped failed: %v", err)
+	}
+
+	// Try to skip WAL_GC_READY and go directly to DONE - should fail
+	_, err = sm.MarkDone(ctx, streamID, job.JobID)
+	if err == nil {
+		t.Error("expected error when skipping WAL_GC_READY, got nil")
+	}
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("expected ErrInvalidTransition, got %v", err)
 	}
 }
 

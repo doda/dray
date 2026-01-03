@@ -172,6 +172,12 @@ func TestCrashRecovery_AfterParquetWritten(t *testing.T) {
 		t.Fatalf("failed to mark index swapped: %v", err)
 	}
 
+	// Transition to WAL_GC_READY (per SPEC 11.6)
+	recoveredJob, err = sagaManager2.MarkWALGCReady(ctx, streamID, recoveredJob.JobID)
+	if err != nil {
+		t.Fatalf("failed to mark WAL GC ready: %v", err)
+	}
+
 	// Final state: DONE
 	recoveredJob, err = sagaManager2.MarkDone(ctx, streamID, recoveredJob.JobID)
 	if err != nil {
@@ -345,6 +351,12 @@ func TestCrashRecovery_AfterIcebergCommitted(t *testing.T) {
 		t.Fatalf("failed to mark index swapped: %v", err)
 	}
 
+	// Transition to WAL_GC_READY (per SPEC 11.6)
+	recoveredJob, err = sagaManager2.MarkWALGCReady(ctx, streamID, recoveredJob.JobID)
+	if err != nil {
+		t.Fatalf("failed to mark WAL GC ready: %v", err)
+	}
+
 	recoveredJob, err = sagaManager2.MarkDone(ctx, streamID, recoveredJob.JobID)
 	if err != nil {
 		t.Fatalf("failed to mark done: %v", err)
@@ -505,7 +517,13 @@ func TestCrashRecovery_AfterIndexSwapped(t *testing.T) {
 		t.Fatalf("failed to resume job: %v", err)
 	}
 
-	// Continue from INDEX_SWAPPED: just mark done
+	// Continue from INDEX_SWAPPED: transition to WAL_GC_READY first (per SPEC 11.6)
+	recoveredJob, err = sagaManager2.MarkWALGCReady(ctx, streamID, recoveredJob.JobID)
+	if err != nil {
+		t.Fatalf("failed to mark WAL GC ready: %v", err)
+	}
+
+	// Then mark done
 	recoveredJob, err = sagaManager2.MarkDone(ctx, streamID, recoveredJob.JobID)
 	if err != nil {
 		t.Fatalf("failed to mark done: %v", err)
@@ -684,6 +702,19 @@ func TestCrashRecovery_NoDataLossOrDuplication(t *testing.T) {
 	}
 	t.Log("Verified no data loss at INDEX_SWAPPED state")
 
+	// Transition to WAL_GC_READY (per SPEC 11.6)
+	job, err = sagaManager.MarkWALGCReady(ctx, streamID, job.JobID)
+	if err != nil {
+		t.Fatalf("failed to mark WAL GC ready: %v", err)
+	}
+
+	// Data should still be accessible
+	records = fetchAllRecords(t, fetchHandler, ctx, "no-dup-topic", 0, 0)
+	if len(records) != totalRecords {
+		t.Fatalf("data loss at WAL_GC_READY: expected %d records, got %d", totalRecords, len(records))
+	}
+	t.Log("Verified no data loss at WAL_GC_READY state")
+
 	job, err = sagaManager.MarkDone(ctx, streamID, job.JobID)
 	if err != nil {
 		t.Fatalf("failed to mark done: %v", err)
@@ -776,6 +807,12 @@ func TestCrashRecovery_IdempotentStateTransitions(t *testing.T) {
 		t.Fatalf("failed to mark index swapped: %v", err)
 	}
 
+	// Continue to WAL_GC_READY (per SPEC 11.6)
+	job, err = sagaManager.MarkWALGCReady(ctx, streamID, job.JobID)
+	if err != nil {
+		t.Fatalf("failed to mark WAL GC ready: %v", err)
+	}
+
 	// Continue to DONE
 	job, err = sagaManager.MarkDone(ctx, streamID, job.JobID)
 	if err != nil {
@@ -827,6 +864,7 @@ func TestCrashRecovery_MultipleJobsRecovery(t *testing.T) {
 	job4, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job4.JobID, "/p", 1000, 50, 0, 0)
 	job4, _ = sagaManager1.MarkIcebergCommitted(ctx, streamID, job4.JobID, 222)
 	job4, _ = sagaManager1.MarkIndexSwapped(ctx, streamID, job4.JobID, nil)
+	job4, _ = sagaManager1.MarkWALGCReady(ctx, streamID, job4.JobID)
 	job4, _ = sagaManager1.MarkDone(ctx, streamID, job4.JobID)
 	// job4 is DONE (terminal)
 
@@ -886,9 +924,11 @@ func TestCrashRecovery_MultipleJobsRecovery(t *testing.T) {
 		case compaction.JobStateParquetWritten:
 			_, _ = sagaManager2.MarkIcebergCommitted(ctx, streamID, j.JobID, 333)
 			_, _ = sagaManager2.MarkIndexSwapped(ctx, streamID, j.JobID, nil)
+			_, _ = sagaManager2.MarkWALGCReady(ctx, streamID, j.JobID)
 			_, _ = sagaManager2.MarkDone(ctx, streamID, j.JobID)
 		case compaction.JobStateIcebergCommitted:
 			_, _ = sagaManager2.MarkIndexSwapped(ctx, streamID, j.JobID, nil)
+			_, _ = sagaManager2.MarkWALGCReady(ctx, streamID, j.JobID)
 			_, _ = sagaManager2.MarkDone(ctx, streamID, j.JobID)
 		}
 	}
