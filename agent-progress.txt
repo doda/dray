@@ -1731,3 +1731,20 @@ Start with project-setup, then follow spec phases:
   - `go test ./internal/auth/... -count=1` - all 61 tests pass (3 new)
   - `./init.sh --quick` - SUCCESS
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - metrics-server-log-serve-error
+
+- **Task**: metrics-server-log-serve-error (PASS)
+- **Summary**: Added structured logging for metrics server Serve errors with proper shutdown error filtering.
+- **Changes made**:
+  - Added `log/slog` import and structured error logging via `slog.Error()` in Start() goroutine
+  - Added `isExpectedShutdownError()` helper that filters `http.ErrServerClosed` and `net.ErrClosed`
+  - Added 2 new tests: `TestServer_ServeErrorLogging` and `TestServer_isExpectedShutdownError`
+- **Files modified**:
+  - `internal/metrics/server.go` (added logging + helper function)
+  - `internal/metrics/server_test.go` (added 2 tests)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/metrics/... -count=1` - all 94 tests pass (2 new)
+  - `./init.sh --quick` - SUCCESS
+- **No blockers or follow-ups identified**

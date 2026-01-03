@@ -3583,7 +3583,7 @@
     "scope": [
       "internal/metrics"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "compaction-metrics-log-scan-errors",

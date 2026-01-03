@@ -1,7 +1,11 @@
 package metrics
 
 import (
+	"bytes"
+	"errors"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -257,5 +261,84 @@ func TestServerWithFetchMetrics(t *testing.T) {
 	}
 	if !strings.Contains(bodyStr, `source="none"`) {
 		t.Error("expected source=none label in metrics output")
+	}
+}
+
+func TestServer_ServeErrorLogging(t *testing.T) {
+	// Set up logging capture
+	var logBuf bytes.Buffer
+	var logMu sync.Mutex
+	handler := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	// Create a server and start it
+	s := NewServer(":0")
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Give server time to start
+	time.Sleep(10 * time.Millisecond)
+
+	// Close the server gracefully - should NOT log an error
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Give goroutine time to process the shutdown
+	time.Sleep(20 * time.Millisecond)
+
+	logMu.Lock()
+	logOutput := logBuf.String()
+	logMu.Unlock()
+
+	// Verify no error was logged for graceful shutdown
+	if strings.Contains(logOutput, "metrics server error") {
+		t.Errorf("unexpected error log for graceful shutdown: %s", logOutput)
+	}
+}
+
+func TestServer_isExpectedShutdownError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "http.ErrServerClosed",
+			err:      http.ErrServerClosed,
+			expected: true,
+		},
+		{
+			name:     "net.ErrClosed",
+			err:      net.ErrClosed,
+			expected: true,
+		},
+		{
+			name:     "wrapped http.ErrServerClosed",
+			err:      errors.Join(errors.New("outer"), http.ErrServerClosed),
+			expected: true,
+		},
+		{
+			name:     "random error",
+			err:      errors.New("connection refused"),
+			expected: false,
+		},
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isExpectedShutdownError(tc.err)
+			if got != tc.expected {
+				t.Errorf("isExpectedShutdownError(%v) = %v, want %v", tc.err, got, tc.expected)
+			}
+		})
 	}
 }
