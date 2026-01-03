@@ -1895,3 +1895,34 @@ Start with project-setup, then follow spec phases:
   - Monotonicity check: if lastEntry.Max >= firstEntry.Max, use binary search
   - Non-monotonic case cannot short-circuit on last entry (middle entries may have higher max)
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - wire-index-hwm-caches-into-read-paths
+
+- **Task**: wire-index-hwm-caches-into-read-paths (PASS)
+- **Summary**: Wired IndexCache and HWMCache into LookupOffset and GetHWM read paths to avoid direct metadata store hits per request.
+- **Changes made**:
+  - Added `hwmCache` and `indexCache` fields to `StreamManager` struct
+  - Added `SetHWMCache()` and `SetIndexCache()` methods for cache configuration
+  - Modified `GetHWM()` to use HWMCache when available (returns cached value on hit)
+  - Modified `LookupOffset()` to use IndexCache's `GetEntriesInRange()` for cache hits
+  - LookupOffset populates cache on store fetch for subsequent lookups
+  - Added 6 new tests for cache integration:
+    - `TestLookupOffset_WithIndexCacheHit` - verifies no List calls after warm-up
+    - `TestGetHWM_WithHWMCacheHit` - verifies no Get calls after warm-up
+    - `TestLookupOffset_IndexCacheInvalidation` - verifies cache updates on notification
+    - `TestGetHWM_HWMCacheInvalidation` - verifies cache updates on notification
+    - `TestLookupOffset_WithoutCache` - verifies fallback works without cache
+    - `TestGetHWM_WithoutCache` - verifies fallback works without cache
+  - Added `countingStore` test helper with notification support for tracking cache behavior
+- **Files modified**:
+  - `internal/index/stream.go` (added cache fields, setters, modified GetHWM)
+  - `internal/index/entry.go` (modified LookupOffset to use cache)
+  - `internal/index/entry_test.go` (added 6 new tests, countingStore helper)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/index/... -run "TestLookupOffset_With|TestGetHWM_With"` - all 4 tests pass
+  - `go test ./internal/index/... -run "Invalidation"` - all 4 tests pass
+  - `go test ./internal/index/...` - all tests pass
+  - `go test ./internal/protocol/...` - all tests pass
+  - `./init.sh --quick` - SUCCESS
+- **No blockers or follow-ups identified**

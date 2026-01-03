@@ -3699,7 +3699,7 @@
     "scope": [
       "internal/index"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "add-backoff-to-index-watchers",

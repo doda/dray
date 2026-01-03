@@ -296,6 +296,7 @@ var ErrOffsetBeyondHWM = errors.New("index: offset beyond high watermark")
 //   - Error if the stream doesn't exist or on other failures
 //
 // This supports both WAL and Parquet entry types transparently.
+// If an IndexCache is configured, it first checks the cache for matching entries.
 func (sm *StreamManager) LookupOffset(ctx context.Context, streamID string, fetchOffset int64) (*LookupResult, error) {
 	// First, get the current HWM to check if the offset is beyond it
 	hwm, _, err := sm.GetHWM(ctx, streamID)
@@ -315,6 +316,23 @@ func (sm *StreamManager) LookupOffset(ctx context.Context, streamID string, fetc
 	// Handle negative offset (shouldn't happen but be defensive)
 	if fetchOffset < 0 {
 		fetchOffset = 0
+	}
+
+	// Try index cache first if available
+	if sm.indexCache != nil {
+		cached := sm.indexCache.GetEntriesInRange(streamID, fetchOffset, 1)
+		if len(cached) > 0 {
+			entry := &cached[0].Entry
+			// Verify the entry actually contains our offset
+			if fetchOffset >= entry.StartOffset && fetchOffset < entry.EndOffset {
+				return &LookupResult{
+					Entry: entry,
+					Found: true,
+					HWM:   hwm,
+				}, nil
+			}
+		}
+		// Cache miss or entry doesn't cover offset - fall through to store lookup
 	}
 
 	// Build the start and end keys for the range query.
@@ -355,6 +373,11 @@ func (sm *StreamManager) LookupOffset(ctx context.Context, streamID string, fetc
 	var entry IndexEntry
 	if err := json.Unmarshal(kvs[0].Value, &entry); err != nil {
 		return nil, err
+	}
+
+	// Populate cache with fetched entry for future lookups
+	if sm.indexCache != nil {
+		sm.indexCache.Put(streamID, kvs[0].Key, &entry, kvs[0].Version)
 	}
 
 	// Verify the entry actually contains our offset

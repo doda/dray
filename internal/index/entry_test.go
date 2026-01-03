@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -2746,4 +2747,446 @@ func readVarint(data []byte) (int64, int) {
 
 	v := int64((uv >> 1) ^ -(uv & 1))
 	return v, bytesRead
+}
+
+// countingStore wraps indexTestStore to track Get and List call counts.
+type countingStore struct {
+	*indexTestStore
+	getCalls      int32
+	listCalls     int32
+	notifyChan    chan metadata.Notification
+	notifyActive  bool
+	notifyClosed  bool
+	mu            sync.Mutex
+}
+
+func newCountingStore() *countingStore {
+	return &countingStore{
+		indexTestStore: newIndexTestStore(),
+		notifyChan:     make(chan metadata.Notification, 100),
+	}
+}
+
+func (c *countingStore) Get(ctx context.Context, key string) (metadata.GetResult, error) {
+	atomic.AddInt32(&c.getCalls, 1)
+	return c.indexTestStore.Get(ctx, key)
+}
+
+func (c *countingStore) List(ctx context.Context, startKey, endKey string, limit int) ([]metadata.KV, error) {
+	atomic.AddInt32(&c.listCalls, 1)
+	return c.indexTestStore.List(ctx, startKey, endKey, limit)
+}
+
+func (c *countingStore) Notifications(ctx context.Context) (metadata.NotificationStream, error) {
+	c.mu.Lock()
+	c.notifyChan = make(chan metadata.Notification, 100)
+	c.notifyActive = true
+	c.notifyClosed = false
+	ch := c.notifyChan
+	c.mu.Unlock()
+	return &countingNotificationStream{
+		ctx: ctx,
+		ch:  ch,
+	}, nil
+}
+
+func (c *countingStore) SimulateNotification(n metadata.Notification) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.notifyActive && !c.notifyClosed && c.notifyChan != nil {
+		select {
+		case c.notifyChan <- n:
+		default:
+		}
+	}
+}
+
+type countingNotificationStream struct {
+	ctx context.Context
+	ch  <-chan metadata.Notification
+}
+
+func (s *countingNotificationStream) Next(ctx context.Context) (metadata.Notification, error) {
+	select {
+	case <-ctx.Done():
+		return metadata.Notification{}, ctx.Err()
+	case n, ok := <-s.ch:
+		if !ok {
+			return metadata.Notification{}, metadata.ErrStoreClosed
+		}
+		return n, nil
+	}
+}
+
+func (s *countingNotificationStream) Close() error {
+	return nil
+}
+
+// TestLookupOffset_WithIndexCacheHit verifies that LookupOffset uses the IndexCache
+// and avoids metadata store hits after cache warm-up.
+func TestLookupOffset_WithIndexCacheHit(t *testing.T) {
+	store := newCountingStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	// Create stream
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Append some index entries
+	for i := 0; i < 3; i++ {
+		_, err := sm.AppendIndexEntry(ctx, AppendRequest{
+			StreamID:       streamID,
+			RecordCount:    100,
+			ChunkSizeBytes: 4096,
+			CreatedAtMs:    time.Now().UnixMilli(),
+			WalID:          uuid.New().String(),
+			WalPath:        fmt.Sprintf("s3://bucket/wal/%d.wo", i),
+			ChunkOffset:    0,
+			ChunkLength:    4096,
+		})
+		if err != nil {
+			t.Fatalf("AppendIndexEntry %d failed: %v", i, err)
+		}
+	}
+
+	// Create and configure index cache
+	cache := NewIndexCache(store, DefaultIndexCacheConfig())
+	defer cache.Close()
+	sm.SetIndexCache(cache)
+
+	// Reset counters after setup
+	atomic.StoreInt32(&store.listCalls, 0)
+
+	// First lookup - cache miss, should hit store
+	result, err := sm.LookupOffset(ctx, streamID, 50)
+	if err != nil {
+		t.Fatalf("First LookupOffset failed: %v", err)
+	}
+	if !result.Found {
+		t.Fatal("First LookupOffset should find entry")
+	}
+	if result.Entry.StartOffset != 0 || result.Entry.EndOffset != 100 {
+		t.Errorf("First lookup got [%d, %d), want [0, 100)", result.Entry.StartOffset, result.Entry.EndOffset)
+	}
+
+	listCallsAfterFirst := atomic.LoadInt32(&store.listCalls)
+	if listCallsAfterFirst == 0 {
+		t.Error("First lookup should have made a List call (cache miss)")
+	}
+
+	// Second lookup for same offset - should be cache hit, no additional store calls
+	result, err = sm.LookupOffset(ctx, streamID, 50)
+	if err != nil {
+		t.Fatalf("Second LookupOffset failed: %v", err)
+	}
+	if !result.Found {
+		t.Fatal("Second LookupOffset should find entry")
+	}
+
+	listCallsAfterSecond := atomic.LoadInt32(&store.listCalls)
+	if listCallsAfterSecond != listCallsAfterFirst {
+		t.Errorf("Second lookup should use cache, but made %d additional List calls",
+			listCallsAfterSecond-listCallsAfterFirst)
+	}
+
+	// Third lookup for different offset in same entry - still cache hit
+	result, err = sm.LookupOffset(ctx, streamID, 75)
+	if err != nil {
+		t.Fatalf("Third LookupOffset failed: %v", err)
+	}
+	if !result.Found {
+		t.Fatal("Third LookupOffset should find entry")
+	}
+
+	listCallsAfterThird := atomic.LoadInt32(&store.listCalls)
+	if listCallsAfterThird != listCallsAfterFirst {
+		t.Errorf("Third lookup should use cache, but made %d additional List calls",
+			listCallsAfterThird-listCallsAfterFirst)
+	}
+}
+
+// TestGetHWM_WithHWMCacheHit verifies that GetHWM uses the HWMCache
+// and avoids metadata store hits after cache warm-up.
+func TestGetHWM_WithHWMCacheHit(t *testing.T) {
+	store := newCountingStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	// Create stream
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Create and configure HWM cache
+	cache := NewHWMCache(store)
+	defer cache.Close()
+	sm.SetHWMCache(cache)
+
+	// Wait for notification watcher to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Reset counters after setup
+	atomic.StoreInt32(&store.getCalls, 0)
+
+	// First GetHWM - cache miss, should hit store
+	hwm, version, err := sm.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("First GetHWM failed: %v", err)
+	}
+	if hwm != 0 {
+		t.Errorf("First GetHWM = %d, want 0", hwm)
+	}
+	if version == 0 {
+		t.Error("First GetHWM version should not be 0")
+	}
+
+	getCallsAfterFirst := atomic.LoadInt32(&store.getCalls)
+	if getCallsAfterFirst == 0 {
+		t.Error("First GetHWM should have made a Get call (cache miss)")
+	}
+
+	// Second GetHWM - should be cache hit, no additional store calls
+	hwm2, version2, err := sm.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("Second GetHWM failed: %v", err)
+	}
+	if hwm2 != hwm || version2 != version {
+		t.Errorf("Second GetHWM = (%d, %d), want (%d, %d)", hwm2, version2, hwm, version)
+	}
+
+	getCallsAfterSecond := atomic.LoadInt32(&store.getCalls)
+	if getCallsAfterSecond != getCallsAfterFirst {
+		t.Errorf("Second GetHWM should use cache, but made %d additional Get calls",
+			getCallsAfterSecond-getCallsAfterFirst)
+	}
+
+	// Third GetHWM - still cache hit
+	_, _, err = sm.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("Third GetHWM failed: %v", err)
+	}
+
+	getCallsAfterThird := atomic.LoadInt32(&store.getCalls)
+	if getCallsAfterThird != getCallsAfterFirst {
+		t.Errorf("Third GetHWM should use cache, but made %d additional Get calls",
+			getCallsAfterThird-getCallsAfterFirst)
+	}
+}
+
+// TestLookupOffset_IndexCacheInvalidation verifies that LookupOffset respects
+// cache invalidation on notifications.
+func TestLookupOffset_IndexCacheInvalidation(t *testing.T) {
+	store := newCountingStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	// Create stream
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Append an index entry
+	now := time.Now().UnixMilli()
+	result, err := sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    100,
+		ChunkSizeBytes: 4096,
+		CreatedAtMs:    now,
+		WalID:          "original-wal",
+		WalPath:        "s3://bucket/wal/original.wo",
+		ChunkOffset:    0,
+		ChunkLength:    4096,
+	})
+	if err != nil {
+		t.Fatalf("AppendIndexEntry failed: %v", err)
+	}
+
+	// Create and configure index cache
+	cache := NewIndexCache(store, DefaultIndexCacheConfig())
+	defer cache.Close()
+	sm.SetIndexCache(cache)
+
+	// Wait for notification watcher to start
+	time.Sleep(50 * time.Millisecond)
+
+	// First lookup - populates cache
+	lookupResult, err := sm.LookupOffset(ctx, streamID, 50)
+	if err != nil {
+		t.Fatalf("First LookupOffset failed: %v", err)
+	}
+	if lookupResult.Entry.WalID != "original-wal" {
+		t.Errorf("First lookup WalID = %s, want original-wal", lookupResult.Entry.WalID)
+	}
+
+	// Simulate notification with updated entry (different WalID)
+	updatedEntry := IndexEntry{
+		StreamID:       streamID,
+		StartOffset:    0,
+		EndOffset:      100,
+		CumulativeSize: 4096,
+		FileType:       FileTypeWAL,
+		WalID:          "updated-wal",
+		WalPath:        "s3://bucket/wal/updated.wo",
+		ChunkOffset:    0,
+		ChunkLength:    4096,
+	}
+	updatedBytes, _ := json.Marshal(updatedEntry)
+
+	store.SimulateNotification(metadata.Notification{
+		Key:     result.IndexKey,
+		Value:   updatedBytes,
+		Version: 10,
+		Deleted: false,
+	})
+
+	// Wait for notification to be processed
+	time.Sleep(100 * time.Millisecond)
+
+	// Cache should be updated with new entry
+	cached, version, ok := cache.Get(streamID, result.IndexKey)
+	if !ok {
+		t.Fatal("Cache should have updated entry")
+	}
+	if version != 10 {
+		t.Errorf("Cached version = %d, want 10", version)
+	}
+	if cached.WalID != "updated-wal" {
+		t.Errorf("Cached WalID = %s, want updated-wal", cached.WalID)
+	}
+}
+
+// TestGetHWM_HWMCacheInvalidation verifies that GetHWM respects
+// cache invalidation on notifications.
+func TestGetHWM_HWMCacheInvalidation(t *testing.T) {
+	store := newCountingStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	// Create stream
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Create and configure HWM cache
+	cache := NewHWMCache(store)
+	defer cache.Close()
+	sm.SetHWMCache(cache)
+
+	// Wait for notification watcher to start
+	time.Sleep(50 * time.Millisecond)
+
+	// First GetHWM - populates cache
+	hwm, _, err := sm.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("First GetHWM failed: %v", err)
+	}
+	if hwm != 0 {
+		t.Errorf("First GetHWM = %d, want 0", hwm)
+	}
+
+	// Simulate notification with updated HWM
+	hwmKey := keys.HwmKeyPath(streamID)
+	updatedHWMBytes := EncodeHWM(500)
+
+	store.SimulateNotification(metadata.Notification{
+		Key:     hwmKey,
+		Value:   updatedHWMBytes,
+		Version: 10,
+		Deleted: false,
+	})
+
+	// Wait for notification to be processed
+	time.Sleep(100 * time.Millisecond)
+
+	// Cache should be updated with new HWM
+	cachedHWM, version, ok := cache.GetIfCached(streamID)
+	if !ok {
+		t.Fatal("Cache should have updated HWM")
+	}
+	if version != 10 {
+		t.Errorf("Cached version = %d, want 10", version)
+	}
+	if cachedHWM != 500 {
+		t.Errorf("Cached HWM = %d, want 500", cachedHWM)
+	}
+
+	// GetHWM should return cached value
+	hwm2, _, err := sm.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("Second GetHWM failed: %v", err)
+	}
+	if hwm2 != 500 {
+		t.Errorf("Second GetHWM = %d, want 500", hwm2)
+	}
+}
+
+// TestLookupOffset_WithoutCache verifies LookupOffset still works when no cache is configured.
+func TestLookupOffset_WithoutCache(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	// Create stream
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// Append an index entry
+	_, err = sm.AppendIndexEntry(ctx, AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    100,
+		ChunkSizeBytes: 4096,
+		CreatedAtMs:    time.Now().UnixMilli(),
+		WalID:          "test-wal",
+		WalPath:        "s3://bucket/wal/test.wo",
+		ChunkOffset:    0,
+		ChunkLength:    4096,
+	})
+	if err != nil {
+		t.Fatalf("AppendIndexEntry failed: %v", err)
+	}
+
+	// LookupOffset without cache configured
+	result, err := sm.LookupOffset(ctx, streamID, 50)
+	if err != nil {
+		t.Fatalf("LookupOffset failed: %v", err)
+	}
+	if !result.Found {
+		t.Fatal("LookupOffset should find entry")
+	}
+	if result.Entry.WalID != "test-wal" {
+		t.Errorf("Entry WalID = %s, want test-wal", result.Entry.WalID)
+	}
+}
+
+// TestGetHWM_WithoutCache verifies GetHWM still works when no cache is configured.
+func TestGetHWM_WithoutCache(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	// Create stream
+	streamID, err := sm.CreateStream(ctx, "test-topic", 0)
+	if err != nil {
+		t.Fatalf("CreateStream failed: %v", err)
+	}
+
+	// GetHWM without cache configured
+	hwm, version, err := sm.GetHWM(ctx, streamID)
+	if err != nil {
+		t.Fatalf("GetHWM failed: %v", err)
+	}
+	if hwm != 0 {
+		t.Errorf("GetHWM = %d, want 0", hwm)
+	}
+	if version == 0 {
+		t.Error("GetHWM version should not be 0")
+	}
 }
