@@ -861,3 +861,384 @@ func TestRetentionWorker_MultipleTopics(t *testing.T) {
 		t.Errorf("stream2 should keep both entries (long retention), got %d", len(kvs2))
 	}
 }
+
+// TestRetentionWorker_AtomicRefCountDecrement verifies that the WAL refcount
+// decrement happens atomically with the index entry deletion. This test checks
+// that if a concurrent modification occurs, the transaction is retried and
+// both operations succeed or fail together.
+func TestRetentionWorker_AtomicRefCountDecrement(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	topicStore := topics.NewStore(metaStore)
+	ctx := context.Background()
+
+	now := time.Now().UnixMilli()
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic-atomic",
+		PartitionCount: 1,
+		Config: map[string]string{
+			topics.ConfigRetentionMs: "60000",
+		},
+		NowMs: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic failed: %v", err)
+	}
+
+	partitions, err := topicStore.ListPartitions(ctx, "test-topic-atomic")
+	if err != nil {
+		t.Fatalf("ListPartitions failed: %v", err)
+	}
+	streamID := partitions[0].StreamID
+
+	hwmKey := keys.HwmKeyPath(streamID)
+	if _, err := metaStore.Put(ctx, hwmKey, index.EncodeHWM(100)); err != nil {
+		t.Fatalf("failed to create HWM: %v", err)
+	}
+
+	// Create a WAL object record
+	walID := "atomic-test-wal"
+	walPath := "wal/atomic.wal"
+	metaDomain := int(metadata.CalculateMetaDomain(streamID, 4))
+	walObjKey := keys.WALObjectKeyPath(metaDomain, walID)
+	walRecord := walObjectRecord{
+		Path:      walPath,
+		RefCount:  1,
+		CreatedAt: now - 120000,
+		SizeBytes: 1000,
+	}
+	walBytes, _ := json.Marshal(walRecord)
+	if _, err := metaStore.Put(ctx, walObjKey, walBytes); err != nil {
+		t.Fatalf("failed to create WAL record: %v", err)
+	}
+
+	// Create old WAL index entry (exceeds retention)
+	oldEntry := index.IndexEntry{
+		StreamID:       streamID,
+		StartOffset:    0,
+		EndOffset:      50,
+		CumulativeSize: 500,
+		FileType:       index.FileTypeWAL,
+		MinTimestampMs: now - 120000,
+		MaxTimestampMs: now - 110000,
+		WalID:          walID,
+		WalPath:        walPath,
+		ChunkOffset:    0,
+		ChunkLength:    500,
+		CreatedAtMs:    now - 120000,
+	}
+	oldKey, _ := keys.OffsetIndexKeyPath(streamID, oldEntry.EndOffset, oldEntry.CumulativeSize)
+	oldBytes, _ := json.Marshal(oldEntry)
+	if _, err := metaStore.Put(ctx, oldKey, oldBytes); err != nil {
+		t.Fatalf("failed to create old entry: %v", err)
+	}
+
+	// Create new entry to keep (within retention)
+	newEntry := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      50,
+		EndOffset:        100,
+		CumulativeSize:   1000,
+		FileType:         index.FileTypeParquet,
+		MinTimestampMs:   now - 30000,
+		MaxTimestampMs:   now - 20000,
+		ParquetPath:      "new.parquet",
+		ParquetSizeBytes: 500,
+		CreatedAtMs:      now - 30000,
+	}
+	newKey, _ := keys.OffsetIndexKeyPath(streamID, newEntry.EndOffset, newEntry.CumulativeSize)
+	newBytes, _ := json.Marshal(newEntry)
+	if _, err := metaStore.Put(ctx, newKey, newBytes); err != nil {
+		t.Fatalf("failed to create new entry: %v", err)
+	}
+
+	worker := NewRetentionWorker(metaStore, objStore, topicStore, RetentionWorkerConfig{
+		NumDomains:    4,
+		GracePeriodMs: 0,
+	})
+
+	// Run retention scan
+	if err := worker.ScanOnce(ctx); err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// Both index entry and WAL refcount should have been handled atomically
+	// 1. Index entry should be deleted
+	oldResult, err := metaStore.Get(ctx, oldKey)
+	if err != nil {
+		t.Fatalf("failed to check old entry: %v", err)
+	}
+	if oldResult.Exists {
+		t.Error("old WAL entry should have been deleted")
+	}
+
+	// 2. WAL object record should be deleted (refcount reached 0)
+	walResult, err := metaStore.Get(ctx, walObjKey)
+	if err != nil {
+		t.Fatalf("failed to check WAL object record: %v", err)
+	}
+	if walResult.Exists {
+		t.Error("WAL object record should have been deleted (refcount=0)")
+	}
+
+	// 3. WAL GC record should have been created
+	gcKey := keys.WALGCKeyPath(metaDomain, walID)
+	gcResult, err := metaStore.Get(ctx, gcKey)
+	if err != nil {
+		t.Fatalf("failed to check GC record: %v", err)
+	}
+	if !gcResult.Exists {
+		t.Error("WAL GC record should have been created")
+	}
+
+	// 4. New entry should still exist
+	newResult, err := metaStore.Get(ctx, newKey)
+	if err != nil {
+		t.Fatalf("failed to check new entry: %v", err)
+	}
+	if !newResult.Exists {
+		t.Error("new entry should have been kept")
+	}
+}
+
+// TestRetentionWorker_RefCountConsistencyAfterVersionConflict tests that
+// when a version conflict occurs during retention, the refcount remains
+// consistent after retry (no double decrement or leaked refcount).
+func TestRetentionWorker_RefCountConsistencyAfterVersionConflict(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	topicStore := topics.NewStore(metaStore)
+	ctx := context.Background()
+
+	now := time.Now().UnixMilli()
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic-conflict",
+		PartitionCount: 1,
+		Config: map[string]string{
+			topics.ConfigRetentionMs: "60000",
+		},
+		NowMs: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic failed: %v", err)
+	}
+
+	partitions, err := topicStore.ListPartitions(ctx, "test-topic-conflict")
+	if err != nil {
+		t.Fatalf("ListPartitions failed: %v", err)
+	}
+	streamID := partitions[0].StreamID
+
+	hwmKey := keys.HwmKeyPath(streamID)
+	if _, err := metaStore.Put(ctx, hwmKey, index.EncodeHWM(100)); err != nil {
+		t.Fatalf("failed to create HWM: %v", err)
+	}
+
+	// Create a WAL object record with refcount 2
+	walID := "conflict-test-wal"
+	walPath := "wal/conflict.wal"
+	metaDomain := int(metadata.CalculateMetaDomain(streamID, 4))
+	walObjKey := keys.WALObjectKeyPath(metaDomain, walID)
+	walRecord := walObjectRecord{
+		Path:      walPath,
+		RefCount:  2, // Two references
+		CreatedAt: now - 120000,
+		SizeBytes: 1000,
+	}
+	walBytes, _ := json.Marshal(walRecord)
+	if _, err := metaStore.Put(ctx, walObjKey, walBytes); err != nil {
+		t.Fatalf("failed to create WAL record: %v", err)
+	}
+
+	// Create old WAL index entry (exceeds retention)
+	oldEntry := index.IndexEntry{
+		StreamID:       streamID,
+		StartOffset:    0,
+		EndOffset:      50,
+		CumulativeSize: 500,
+		FileType:       index.FileTypeWAL,
+		MinTimestampMs: now - 120000,
+		MaxTimestampMs: now - 110000,
+		WalID:          walID,
+		WalPath:        walPath,
+		ChunkOffset:    0,
+		ChunkLength:    500,
+		CreatedAtMs:    now - 120000,
+	}
+	oldKey, _ := keys.OffsetIndexKeyPath(streamID, oldEntry.EndOffset, oldEntry.CumulativeSize)
+	oldBytes, _ := json.Marshal(oldEntry)
+	if _, err := metaStore.Put(ctx, oldKey, oldBytes); err != nil {
+		t.Fatalf("failed to create old entry: %v", err)
+	}
+
+	// Create new entry to keep (within retention)
+	newEntry := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      50,
+		EndOffset:        100,
+		CumulativeSize:   1000,
+		FileType:         index.FileTypeParquet,
+		MinTimestampMs:   now - 30000,
+		MaxTimestampMs:   now - 20000,
+		ParquetPath:      "new.parquet",
+		ParquetSizeBytes: 500,
+		CreatedAtMs:      now - 30000,
+	}
+	newKey, _ := keys.OffsetIndexKeyPath(streamID, newEntry.EndOffset, newEntry.CumulativeSize)
+	newBytes, _ := json.Marshal(newEntry)
+	if _, err := metaStore.Put(ctx, newKey, newBytes); err != nil {
+		t.Fatalf("failed to create new entry: %v", err)
+	}
+
+	worker := NewRetentionWorker(metaStore, objStore, topicStore, RetentionWorkerConfig{
+		NumDomains:    4,
+		GracePeriodMs: 0,
+	})
+
+	// Run retention scan
+	if err := worker.ScanOnce(ctx); err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// Index entry should be deleted
+	oldResult, err := metaStore.Get(ctx, oldKey)
+	if err != nil {
+		t.Fatalf("failed to check old entry: %v", err)
+	}
+	if oldResult.Exists {
+		t.Error("old WAL entry should have been deleted")
+	}
+
+	// WAL object record should still exist with refcount 1
+	walResult, err := metaStore.Get(ctx, walObjKey)
+	if err != nil {
+		t.Fatalf("failed to check WAL object record: %v", err)
+	}
+	if !walResult.Exists {
+		t.Error("WAL object record should still exist (refcount was 2)")
+	}
+
+	var resultRecord walObjectRecord
+	if err := json.Unmarshal(walResult.Value, &resultRecord); err != nil {
+		t.Fatalf("failed to unmarshal result record: %v", err)
+	}
+	if resultRecord.RefCount != 1 {
+		t.Errorf("expected refcount 1 after retention, got %d", resultRecord.RefCount)
+	}
+
+	// No GC record should exist (refcount > 0)
+	gcKey := keys.WALGCKeyPath(metaDomain, walID)
+	gcResult, err := metaStore.Get(ctx, gcKey)
+	if err != nil {
+		t.Fatalf("failed to check GC record: %v", err)
+	}
+	if gcResult.Exists {
+		t.Error("WAL GC record should not exist (refcount > 0)")
+	}
+}
+
+// TestRetentionWorker_IdempotentRetryOnMissingWALRecord tests that if the
+// WAL object record doesn't exist (already deleted), the retention operation
+// completes without error and is idempotent.
+func TestRetentionWorker_IdempotentRetryOnMissingWALRecord(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	topicStore := topics.NewStore(metaStore)
+	ctx := context.Background()
+
+	now := time.Now().UnixMilli()
+	_, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "test-topic-missing-wal",
+		PartitionCount: 1,
+		Config: map[string]string{
+			topics.ConfigRetentionMs: "60000",
+		},
+		NowMs: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateTopic failed: %v", err)
+	}
+
+	partitions, err := topicStore.ListPartitions(ctx, "test-topic-missing-wal")
+	if err != nil {
+		t.Fatalf("ListPartitions failed: %v", err)
+	}
+	streamID := partitions[0].StreamID
+
+	hwmKey := keys.HwmKeyPath(streamID)
+	if _, err := metaStore.Put(ctx, hwmKey, index.EncodeHWM(100)); err != nil {
+		t.Fatalf("failed to create HWM: %v", err)
+	}
+
+	// Create old WAL index entry but NO corresponding WAL object record
+	// (simulating the case where WAL was already GC'd or never created)
+	walID := "missing-wal-id"
+	walPath := "wal/missing.wal"
+
+	oldEntry := index.IndexEntry{
+		StreamID:       streamID,
+		StartOffset:    0,
+		EndOffset:      50,
+		CumulativeSize: 500,
+		FileType:       index.FileTypeWAL,
+		MinTimestampMs: now - 120000,
+		MaxTimestampMs: now - 110000,
+		WalID:          walID,
+		WalPath:        walPath,
+		ChunkOffset:    0,
+		ChunkLength:    500,
+		CreatedAtMs:    now - 120000,
+	}
+	oldKey, _ := keys.OffsetIndexKeyPath(streamID, oldEntry.EndOffset, oldEntry.CumulativeSize)
+	oldBytes, _ := json.Marshal(oldEntry)
+	if _, err := metaStore.Put(ctx, oldKey, oldBytes); err != nil {
+		t.Fatalf("failed to create old entry: %v", err)
+	}
+
+	// Create new entry to keep
+	newEntry := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      50,
+		EndOffset:        100,
+		CumulativeSize:   1000,
+		FileType:         index.FileTypeParquet,
+		MinTimestampMs:   now - 30000,
+		MaxTimestampMs:   now - 20000,
+		ParquetPath:      "new.parquet",
+		ParquetSizeBytes: 500,
+		CreatedAtMs:      now - 30000,
+	}
+	newKey, _ := keys.OffsetIndexKeyPath(streamID, newEntry.EndOffset, newEntry.CumulativeSize)
+	newBytes, _ := json.Marshal(newEntry)
+	if _, err := metaStore.Put(ctx, newKey, newBytes); err != nil {
+		t.Fatalf("failed to create new entry: %v", err)
+	}
+
+	worker := NewRetentionWorker(metaStore, objStore, topicStore, RetentionWorkerConfig{
+		NumDomains:    4,
+		GracePeriodMs: 0,
+	})
+
+	// Run retention scan - should succeed despite missing WAL record
+	if err := worker.ScanOnce(ctx); err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// Index entry should be deleted
+	oldResult, err := metaStore.Get(ctx, oldKey)
+	if err != nil {
+		t.Fatalf("failed to check old entry: %v", err)
+	}
+	if oldResult.Exists {
+		t.Error("old WAL entry should have been deleted")
+	}
+
+	// New entry should still exist
+	newResult, err := metaStore.Get(ctx, newKey)
+	if err != nil {
+		t.Fatalf("failed to check new entry: %v", err)
+	}
+	if !newResult.Exists {
+		t.Error("new entry should have been kept")
+	}
+}

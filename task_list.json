@@ -3538,7 +3538,7 @@
     "scope": [
       "internal/gc"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "wal-gc-pagination",
