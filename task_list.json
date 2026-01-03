@@ -3742,7 +3742,7 @@
     "scope": [
       "internal/wal/decoder.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "wal-writer-streaming-upload",

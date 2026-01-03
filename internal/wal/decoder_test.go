@@ -874,3 +874,519 @@ func TestDecodeEmptyWALWithoutFooter(t *testing.T) {
 		t.Errorf("len(Chunks) = %d, want 0", len(decoded.Chunks))
 	}
 }
+
+// --- Streaming Decoder Tests ---
+
+func TestStreamingDecoderEmpty(t *testing.T) {
+	walID := uuid.MustParse("12345678-1234-1234-1234-123456789abc")
+	wal := NewWAL(walID, 42, 1703686800000)
+
+	data, err := EncodeToBytes(wal)
+	if err != nil {
+		t.Fatalf("EncodeToBytes failed: %v", err)
+	}
+
+	reader := NewBytesRangeReader(data)
+	sd, err := NewStreamingDecoder(reader)
+	if err != nil {
+		t.Fatalf("NewStreamingDecoder failed: %v", err)
+	}
+
+	header := sd.Header()
+	if header.WalID != walID {
+		t.Errorf("WalID = %v, want %v", header.WalID, walID)
+	}
+	if header.MetaDomain != 42 {
+		t.Errorf("MetaDomain = %d, want 42", header.MetaDomain)
+	}
+	if sd.ChunkCount() != 0 {
+		t.Errorf("ChunkCount = %d, want 0", sd.ChunkCount())
+	}
+}
+
+func TestStreamingDecoderSingleChunk(t *testing.T) {
+	walID := uuid.MustParse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+	wal := NewWAL(walID, 1, 1700000000000)
+
+	batchData := []byte("test kafka batch data")
+	wal.AddChunk(Chunk{
+		StreamID:       100,
+		Batches:        []BatchEntry{{Data: batchData}},
+		RecordCount:    5,
+		MinTimestampMs: 1700000000000,
+		MaxTimestampMs: 1700000001000,
+	})
+
+	data, err := EncodeToBytes(wal)
+	if err != nil {
+		t.Fatalf("EncodeToBytes failed: %v", err)
+	}
+
+	reader := NewBytesRangeReader(data)
+	sd, err := NewStreamingDecoder(reader)
+	if err != nil {
+		t.Fatalf("NewStreamingDecoder failed: %v", err)
+	}
+
+	if sd.ChunkCount() != 1 {
+		t.Fatalf("ChunkCount = %d, want 1", sd.ChunkCount())
+	}
+
+	// Verify chunk index entry
+	entry := sd.ChunkIndex(0)
+	if entry == nil {
+		t.Fatal("ChunkIndex(0) returned nil")
+	}
+	if entry.StreamID != 100 {
+		t.Errorf("StreamID = %d, want 100", entry.StreamID)
+	}
+	if entry.RecordCount != 5 {
+		t.Errorf("RecordCount = %d, want 5", entry.RecordCount)
+	}
+
+	// Read chunk
+	chunk, err := sd.ReadChunk(0)
+	if err != nil {
+		t.Fatalf("ReadChunk(0) failed: %v", err)
+	}
+	if chunk.StreamID != 100 {
+		t.Errorf("chunk.StreamID = %d, want 100", chunk.StreamID)
+	}
+	if len(chunk.Batches) != 1 {
+		t.Fatalf("len(Batches) = %d, want 1", len(chunk.Batches))
+	}
+	if !bytes.Equal(chunk.Batches[0].Data, batchData) {
+		t.Errorf("batch data = %q, want %q", chunk.Batches[0].Data, batchData)
+	}
+}
+
+func TestStreamingDecoderMultipleChunks(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 5, 1700000000000)
+
+	wal.AddChunk(Chunk{
+		StreamID:       300,
+		Batches:        []BatchEntry{{Data: []byte("third")}},
+		RecordCount:    3,
+		MinTimestampMs: 3000,
+		MaxTimestampMs: 3000,
+	})
+	wal.AddChunk(Chunk{
+		StreamID:       100,
+		Batches:        []BatchEntry{{Data: []byte("first")}},
+		RecordCount:    1,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 1000,
+	})
+	wal.AddChunk(Chunk{
+		StreamID:       200,
+		Batches:        []BatchEntry{{Data: []byte("second")}},
+		RecordCount:    2,
+		MinTimestampMs: 2000,
+		MaxTimestampMs: 2000,
+	})
+
+	data, err := EncodeToBytes(wal)
+	if err != nil {
+		t.Fatalf("EncodeToBytes failed: %v", err)
+	}
+
+	reader := NewBytesRangeReader(data)
+	sd, err := NewStreamingDecoder(reader)
+	if err != nil {
+		t.Fatalf("NewStreamingDecoder failed: %v", err)
+	}
+
+	if sd.ChunkCount() != 3 {
+		t.Fatalf("ChunkCount = %d, want 3", sd.ChunkCount())
+	}
+
+	// Chunks should be sorted by StreamID in index
+	expectedOrder := []struct {
+		streamID    uint64
+		data        string
+		recordCount uint32
+	}{
+		{100, "first", 1},
+		{200, "second", 2},
+		{300, "third", 3},
+	}
+
+	for i, exp := range expectedOrder {
+		entry := sd.ChunkIndex(i)
+		if entry.StreamID != exp.streamID {
+			t.Errorf("entry[%d].StreamID = %d, want %d", i, entry.StreamID, exp.streamID)
+		}
+		if entry.RecordCount != exp.recordCount {
+			t.Errorf("entry[%d].RecordCount = %d, want %d", i, entry.RecordCount, exp.recordCount)
+		}
+
+		chunk, err := sd.ReadChunk(i)
+		if err != nil {
+			t.Fatalf("ReadChunk(%d) failed: %v", i, err)
+		}
+		if string(chunk.Batches[0].Data) != exp.data {
+			t.Errorf("chunk[%d].Batches[0].Data = %q, want %q", i, string(chunk.Batches[0].Data), exp.data)
+		}
+	}
+}
+
+func TestStreamingDecoderReadChunkRaw(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 1, 1700000000000)
+
+	batch1 := []byte("batch one")
+	batch2 := []byte("batch two")
+	wal.AddChunk(Chunk{
+		StreamID:       1,
+		Batches:        []BatchEntry{{Data: batch1}, {Data: batch2}},
+		RecordCount:    10,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 2000,
+	})
+
+	data, err := EncodeToBytes(wal)
+	if err != nil {
+		t.Fatalf("EncodeToBytes failed: %v", err)
+	}
+
+	reader := NewBytesRangeReader(data)
+	sd, err := NewStreamingDecoder(reader)
+	if err != nil {
+		t.Fatalf("NewStreamingDecoder failed: %v", err)
+	}
+
+	rawChunk, err := sd.ReadChunkRaw(0)
+	if err != nil {
+		t.Fatalf("ReadChunkRaw(0) failed: %v", err)
+	}
+
+	// Verify raw data length matches expected: 4 + len(batch1) + 4 + len(batch2)
+	expectedLen := 4 + len(batch1) + 4 + len(batch2)
+	if len(rawChunk) != expectedLen {
+		t.Errorf("raw chunk length = %d, want %d", len(rawChunk), expectedLen)
+	}
+
+	// Verify first batch length prefix
+	batch1Len := binary.BigEndian.Uint32(rawChunk[0:4])
+	if batch1Len != uint32(len(batch1)) {
+		t.Errorf("batch1 length prefix = %d, want %d", batch1Len, len(batch1))
+	}
+}
+
+func TestStreamingDecoderDecodeAll(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 7, 1700000000000)
+
+	for i := 0; i < 5; i++ {
+		wal.AddChunk(Chunk{
+			StreamID:       uint64(i + 1),
+			Batches:        []BatchEntry{{Data: []byte{byte(i)}}},
+			RecordCount:    uint32(i + 1),
+			MinTimestampMs: int64(i * 1000),
+			MaxTimestampMs: int64(i * 1000),
+		})
+	}
+
+	data, err := EncodeToBytes(wal)
+	if err != nil {
+		t.Fatalf("EncodeToBytes failed: %v", err)
+	}
+
+	// Compare DecodeFromBytes and StreamingDecoder.DecodeAll
+	fullDecoded, err := DecodeFromBytes(data)
+	if err != nil {
+		t.Fatalf("DecodeFromBytes failed: %v", err)
+	}
+
+	reader := NewBytesRangeReader(data)
+	sd, err := NewStreamingDecoder(reader)
+	if err != nil {
+		t.Fatalf("NewStreamingDecoder failed: %v", err)
+	}
+
+	streamDecoded, err := sd.DecodeAll()
+	if err != nil {
+		t.Fatalf("DecodeAll failed: %v", err)
+	}
+
+	if fullDecoded.WalID != streamDecoded.WalID {
+		t.Errorf("WalID mismatch")
+	}
+	if fullDecoded.MetaDomain != streamDecoded.MetaDomain {
+		t.Errorf("MetaDomain mismatch")
+	}
+	if len(fullDecoded.Chunks) != len(streamDecoded.Chunks) {
+		t.Fatalf("Chunk count mismatch: %d vs %d", len(fullDecoded.Chunks), len(streamDecoded.Chunks))
+	}
+
+	for i, fc := range fullDecoded.Chunks {
+		sc := streamDecoded.Chunks[i]
+		if fc.StreamID != sc.StreamID {
+			t.Errorf("chunk[%d].StreamID mismatch", i)
+		}
+		if fc.RecordCount != sc.RecordCount {
+			t.Errorf("chunk[%d].RecordCount mismatch", i)
+		}
+		if len(fc.Batches) != len(sc.Batches) {
+			t.Errorf("chunk[%d].Batches length mismatch", i)
+		}
+		for j := range fc.Batches {
+			if !bytes.Equal(fc.Batches[j].Data, sc.Batches[j].Data) {
+				t.Errorf("chunk[%d].Batches[%d].Data mismatch", i, j)
+			}
+		}
+	}
+}
+
+func TestStreamingDecoderChunkIndexOutOfBounds(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 1, 1700000000000)
+	wal.AddChunk(Chunk{
+		StreamID:       1,
+		Batches:        []BatchEntry{{Data: []byte("data")}},
+		RecordCount:    1,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 1000,
+	})
+
+	data, err := EncodeToBytes(wal)
+	if err != nil {
+		t.Fatalf("EncodeToBytes failed: %v", err)
+	}
+
+	reader := NewBytesRangeReader(data)
+	sd, err := NewStreamingDecoder(reader)
+	if err != nil {
+		t.Fatalf("NewStreamingDecoder failed: %v", err)
+	}
+
+	// Out of bounds access should return nil for ChunkIndex
+	if sd.ChunkIndex(-1) != nil {
+		t.Error("ChunkIndex(-1) should return nil")
+	}
+	if sd.ChunkIndex(1) != nil {
+		t.Error("ChunkIndex(1) should return nil for 1-chunk WAL")
+	}
+
+	// Out of bounds ReadChunk should error
+	_, err = sd.ReadChunk(-1)
+	if err == nil {
+		t.Error("ReadChunk(-1) should error")
+	}
+	_, err = sd.ReadChunk(1)
+	if err == nil {
+		t.Error("ReadChunk(1) should error for 1-chunk WAL")
+	}
+}
+
+func TestStreamingDecoderChunkEntries(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 1, 1700000000000)
+
+	for i := 0; i < 3; i++ {
+		wal.AddChunk(Chunk{
+			StreamID:       uint64((i + 1) * 100),
+			Batches:        []BatchEntry{{Data: []byte{byte(i)}}},
+			RecordCount:    uint32(i + 1),
+			MinTimestampMs: int64(i * 1000),
+			MaxTimestampMs: int64(i * 2000),
+		})
+	}
+
+	data, err := EncodeToBytes(wal)
+	if err != nil {
+		t.Fatalf("EncodeToBytes failed: %v", err)
+	}
+
+	reader := NewBytesRangeReader(data)
+	sd, err := NewStreamingDecoder(reader)
+	if err != nil {
+		t.Fatalf("NewStreamingDecoder failed: %v", err)
+	}
+
+	entries := sd.ChunkEntries()
+	if len(entries) != 3 {
+		t.Fatalf("len(ChunkEntries) = %d, want 3", len(entries))
+	}
+
+	// Verify entries are copies, not references
+	entries[0].StreamID = 999
+	originalEntry := sd.ChunkIndex(0)
+	if originalEntry.StreamID == 999 {
+		t.Error("ChunkEntries should return a copy, not a reference")
+	}
+}
+
+// trackingRangeReader tracks bytes read for verifying bounded memory usage.
+type trackingRangeReader struct {
+	data        []byte
+	bytesRead   int64
+	readCalls   int
+	maxSingleRead int64
+}
+
+func (r *trackingRangeReader) ReadRange(start, end int64) ([]byte, error) {
+	if start < 0 || start >= int64(len(r.data)) {
+		return nil, errors.New("invalid start")
+	}
+	if end >= int64(len(r.data)) {
+		end = int64(len(r.data)) - 1
+	}
+	if end < start {
+		return nil, errors.New("invalid range")
+	}
+	size := end - start + 1
+	r.bytesRead += size
+	r.readCalls++
+	if size > r.maxSingleRead {
+		r.maxSingleRead = size
+	}
+	result := make([]byte, size)
+	copy(result, r.data[start:end+1])
+	return result, nil
+}
+
+func TestStreamingDecoderBoundedMemoryUsage(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 1, 1700000000000)
+
+	// Create a WAL with 100 chunks, each with 10KB payload
+	numChunks := 100
+	payloadSize := 10 * 1024 // 10KB per chunk
+	totalPayloadSize := numChunks * payloadSize
+
+	for i := 0; i < numChunks; i++ {
+		payload := make([]byte, payloadSize)
+		for j := range payload {
+			payload[j] = byte(i + j)
+		}
+		wal.AddChunk(Chunk{
+			StreamID:       uint64(i + 1),
+			Batches:        []BatchEntry{{Data: payload}},
+			RecordCount:    uint32(i + 1),
+			MinTimestampMs: int64(i * 1000),
+			MaxTimestampMs: int64(i * 1000),
+		})
+	}
+
+	data, err := EncodeToBytes(wal)
+	if err != nil {
+		t.Fatalf("EncodeToBytes failed: %v", err)
+	}
+
+	// Total WAL size should be > 1MB (100 chunks * 10KB = 1MB payload + overhead)
+	if len(data) < 100*1024 {
+		t.Fatalf("WAL too small for test: %d bytes (expected >100KB)", len(data))
+	}
+	t.Logf("WAL size: %d bytes (%d chunks, %d bytes payload each)", len(data), numChunks, payloadSize)
+
+	reader := &trackingRangeReader{data: data}
+
+	// Create streaming decoder - should only read header + index
+	sd, err := NewStreamingDecoder(reader)
+	if err != nil {
+		t.Fatalf("NewStreamingDecoder failed: %v", err)
+	}
+
+	// After initialization, should have read:
+	// - Header: 49 bytes
+	// - Chunk index: numChunks * 44 bytes = 4400 bytes
+	// Total: ~4.5KB, NOT the full 1MB+ of chunk data
+	expectedInitBytes := int64(HeaderSize) + int64(numChunks*ChunkIndexEntrySize)
+	if reader.bytesRead != expectedInitBytes {
+		t.Errorf("Init bytes read = %d, want %d", reader.bytesRead, expectedInitBytes)
+	}
+	t.Logf("After init: read %d bytes (%.2f%% of WAL)", reader.bytesRead, float64(reader.bytesRead)*100/float64(len(data)))
+
+	// Verify we can access chunk metadata without reading chunk data
+	for i := 0; i < numChunks; i++ {
+		entry := sd.ChunkIndex(i)
+		if entry == nil {
+			t.Fatalf("ChunkIndex(%d) returned nil", i)
+		}
+		if entry.StreamID != uint64(i+1) {
+			t.Errorf("ChunkIndex(%d).StreamID = %d, want %d", i, entry.StreamID, i+1)
+		}
+	}
+
+	// Bytes read should still be the same - no chunk data read yet
+	if reader.bytesRead != expectedInitBytes {
+		t.Errorf("After metadata access: bytes read = %d, want %d", reader.bytesRead, expectedInitBytes)
+	}
+
+	// Now read only 3 specific chunks (0, 50, 99)
+	chunksToRead := []int{0, 50, 99}
+	expectedChunkBytes := int64(0)
+	for _, i := range chunksToRead {
+		entry := sd.ChunkIndex(i)
+		expectedChunkBytes += int64(entry.ChunkLength)
+
+		chunk, err := sd.ReadChunk(i)
+		if err != nil {
+			t.Fatalf("ReadChunk(%d) failed: %v", i, err)
+		}
+		if chunk.StreamID != uint64(i+1) {
+			t.Errorf("chunk[%d].StreamID = %d, want %d", i, chunk.StreamID, i+1)
+		}
+	}
+
+	// Verify we only read the chunks we asked for
+	totalExpectedBytes := expectedInitBytes + expectedChunkBytes
+	if reader.bytesRead != totalExpectedBytes {
+		t.Errorf("After reading 3 chunks: bytes read = %d, want %d", reader.bytesRead, totalExpectedBytes)
+	}
+
+	// Critical check: we should NOT have read anywhere close to the full payload
+	if reader.bytesRead > int64(totalPayloadSize/2) {
+		t.Errorf("Read too many bytes (%d) - streaming not working properly", reader.bytesRead)
+	}
+
+	t.Logf("Final: read %d bytes (%.2f%% of WAL) for header+index+3chunks",
+		reader.bytesRead, float64(reader.bytesRead)*100/float64(len(data)))
+	t.Logf("Maximum single read: %d bytes", reader.maxSingleRead)
+}
+
+func TestBytesRangeReaderEdgeCases(t *testing.T) {
+	data := []byte("0123456789")
+	reader := NewBytesRangeReader(data)
+
+	// Valid reads
+	result, err := reader.ReadRange(0, 4)
+	if err != nil {
+		t.Fatalf("ReadRange(0,4) failed: %v", err)
+	}
+	if string(result) != "01234" {
+		t.Errorf("ReadRange(0,4) = %q, want '01234'", result)
+	}
+
+	// Read to end
+	result, err = reader.ReadRange(5, 100) // end beyond length
+	if err != nil {
+		t.Fatalf("ReadRange(5,100) failed: %v", err)
+	}
+	if string(result) != "56789" {
+		t.Errorf("ReadRange(5,100) = %q, want '56789'", result)
+	}
+
+	// Single byte
+	result, err = reader.ReadRange(3, 3)
+	if err != nil {
+		t.Fatalf("ReadRange(3,3) failed: %v", err)
+	}
+	if string(result) != "3" {
+		t.Errorf("ReadRange(3,3) = %q, want '3'", result)
+	}
+
+	// Invalid start
+	_, err = reader.ReadRange(-1, 5)
+	if err == nil {
+		t.Error("ReadRange(-1,5) should error")
+	}
+
+	// Start beyond data
+	_, err = reader.ReadRange(100, 105)
+	if err == nil {
+		t.Error("ReadRange(100,105) should error")
+	}
+}

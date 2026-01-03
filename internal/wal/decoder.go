@@ -341,3 +341,202 @@ func GetWALID(data []byte) (uuid.UUID, error) {
 	}
 	return header.WalID, nil
 }
+
+// RangeReader provides byte-range read access to WAL data.
+// This interface allows streaming decoding without loading the entire WAL into memory.
+type RangeReader interface {
+	// ReadRange reads bytes from the specified byte range [start, end] inclusive.
+	// Returns the data and any error. If end is beyond the data length, returns
+	// available data up to the end.
+	ReadRange(start, end int64) ([]byte, error)
+}
+
+// StreamingDecoder provides memory-efficient WAL decoding by reading only the
+// header and chunk index on initialization. Individual chunks can be read on demand.
+type StreamingDecoder struct {
+	reader  RangeReader
+	header  *Header
+	entries []ChunkIndexEntry
+}
+
+// NewStreamingDecoder creates a streaming decoder from a RangeReader.
+// It reads only the header and chunk index (not chunk bodies) on creation.
+// The memory footprint is O(HeaderSize + ChunkCount * ChunkIndexEntrySize).
+func NewStreamingDecoder(reader RangeReader) (*StreamingDecoder, error) {
+	// Read header
+	headerData, err := reader.ReadRange(0, int64(HeaderSize-1))
+	if err != nil {
+		return nil, fmt.Errorf("reading header: %w", err)
+	}
+	if len(headerData) < HeaderSize {
+		return nil, ErrTruncatedHeader
+	}
+
+	header, err := parseHeader(headerData)
+	if err != nil {
+		return nil, err
+	}
+
+	// Read chunk index if there are chunks
+	var entries []ChunkIndexEntry
+	if header.ChunkCount > 0 {
+		indexSize := int64(header.ChunkCount) * int64(ChunkIndexEntrySize)
+		indexStart := int64(header.ChunkIndexOffset)
+		indexEnd := indexStart + indexSize - 1
+
+		indexData, err := reader.ReadRange(indexStart, indexEnd)
+		if err != nil {
+			return nil, fmt.Errorf("reading chunk index: %w", err)
+		}
+		if int64(len(indexData)) < indexSize {
+			return nil, ErrTruncatedIndex
+		}
+
+		entries = make([]ChunkIndexEntry, header.ChunkCount)
+		for i := uint32(0); i < header.ChunkCount; i++ {
+			entryStart := int(i) * ChunkIndexEntrySize
+			entry, err := parseChunkIndexEntry(indexData[entryStart : entryStart+ChunkIndexEntrySize])
+			if err != nil {
+				return nil, fmt.Errorf("parsing chunk index entry %d: %w", i, err)
+			}
+			entries[i] = *entry
+		}
+	}
+
+	return &StreamingDecoder{
+		reader:  reader,
+		header:  header,
+		entries: entries,
+	}, nil
+}
+
+// Header returns the WAL header.
+func (d *StreamingDecoder) Header() *Header {
+	return d.header
+}
+
+// ChunkCount returns the number of chunks in the WAL.
+func (d *StreamingDecoder) ChunkCount() int {
+	return len(d.entries)
+}
+
+// ChunkIndex returns the chunk index entry at the given position.
+// Returns nil if the index is out of bounds.
+func (d *StreamingDecoder) ChunkIndex(i int) *ChunkIndexEntry {
+	if i < 0 || i >= len(d.entries) {
+		return nil
+	}
+	entry := d.entries[i]
+	return &entry
+}
+
+// ChunkEntries returns all chunk index entries.
+func (d *StreamingDecoder) ChunkEntries() []ChunkIndexEntry {
+	result := make([]ChunkIndexEntry, len(d.entries))
+	copy(result, d.entries)
+	return result
+}
+
+// ReadChunk reads and parses a single chunk by index, returning the parsed Chunk.
+// This is the only method that reads chunk body data.
+func (d *StreamingDecoder) ReadChunk(i int) (*Chunk, error) {
+	if i < 0 || i >= len(d.entries) {
+		return nil, fmt.Errorf("chunk index %d out of bounds (0-%d)", i, len(d.entries)-1)
+	}
+
+	entry := d.entries[i]
+	chunkStart := int64(entry.ChunkOffset)
+	chunkEnd := chunkStart + int64(entry.ChunkLength) - 1
+
+	chunkData, err := d.reader.ReadRange(chunkStart, chunkEnd)
+	if err != nil {
+		return nil, fmt.Errorf("reading chunk %d data: %w", i, err)
+	}
+	if len(chunkData) != int(entry.ChunkLength) {
+		return nil, fmt.Errorf("%w: expected %d bytes, got %d", ErrTruncatedChunk, entry.ChunkLength, len(chunkData))
+	}
+
+	batches, err := parseBatches(chunkData, entry.BatchCount)
+	if err != nil {
+		return nil, fmt.Errorf("parsing chunk %d batches: %w", i, err)
+	}
+
+	return &Chunk{
+		StreamID:       entry.StreamID,
+		Batches:        batches,
+		RecordCount:    entry.RecordCount,
+		MinTimestampMs: entry.MinTimestampMs,
+		MaxTimestampMs: entry.MaxTimestampMs,
+	}, nil
+}
+
+// ReadChunkRaw reads raw chunk body bytes without parsing batches.
+// Useful when chunk data needs to be forwarded without modification.
+func (d *StreamingDecoder) ReadChunkRaw(i int) ([]byte, error) {
+	if i < 0 || i >= len(d.entries) {
+		return nil, fmt.Errorf("chunk index %d out of bounds (0-%d)", i, len(d.entries)-1)
+	}
+
+	entry := d.entries[i]
+	chunkStart := int64(entry.ChunkOffset)
+	chunkEnd := chunkStart + int64(entry.ChunkLength) - 1
+
+	chunkData, err := d.reader.ReadRange(chunkStart, chunkEnd)
+	if err != nil {
+		return nil, fmt.Errorf("reading chunk %d data: %w", i, err)
+	}
+	if len(chunkData) != int(entry.ChunkLength) {
+		return nil, fmt.Errorf("%w: expected %d bytes, got %d", ErrTruncatedChunk, entry.ChunkLength, len(chunkData))
+	}
+
+	return chunkData, nil
+}
+
+// DecodeAll reads all chunks and returns a complete WAL object.
+// This loads all chunk data into memory, similar to DecodeFromBytes.
+func (d *StreamingDecoder) DecodeAll() (*WAL, error) {
+	chunks := make([]Chunk, len(d.entries))
+	for i := range d.entries {
+		chunk, err := d.ReadChunk(i)
+		if err != nil {
+			return nil, err
+		}
+		chunks[i] = *chunk
+	}
+
+	return &WAL{
+		WalID:           d.header.WalID,
+		MetaDomain:      d.header.MetaDomain,
+		CreatedAtUnixMs: d.header.CreatedAtUnixMs,
+		Chunks:          chunks,
+	}, nil
+}
+
+// BytesRangeReader wraps a byte slice to implement RangeReader.
+type BytesRangeReader struct {
+	data []byte
+}
+
+// NewBytesRangeReader creates a RangeReader from a byte slice.
+func NewBytesRangeReader(data []byte) *BytesRangeReader {
+	return &BytesRangeReader{data: data}
+}
+
+// ReadRange implements RangeReader for a byte slice.
+func (r *BytesRangeReader) ReadRange(start, end int64) ([]byte, error) {
+	if start < 0 {
+		return nil, fmt.Errorf("invalid start offset %d", start)
+	}
+	if start >= int64(len(r.data)) {
+		return nil, io.EOF
+	}
+	if end >= int64(len(r.data)) {
+		end = int64(len(r.data)) - 1
+	}
+	if end < start {
+		return nil, fmt.Errorf("invalid range: end %d < start %d", end, start)
+	}
+	result := make([]byte, end-start+1)
+	copy(result, r.data[start:end+1])
+	return result, nil
+}

@@ -1977,3 +1977,37 @@ Start with project-setup, then follow spec phases:
   - `go test ./...` - all project tests pass
   - `./init.sh --quick` - SUCCESS
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - streaming-wal-decoder
+
+- **Task**: streaming-wal-decoder (PASS)
+- **Summary**: Implemented streaming WAL decoder that reads header + index first, then streams chunk bodies on demand.
+- **Changes made**:
+  - Added `RangeReader` interface for byte-range read access to WAL data
+  - Added `StreamingDecoder` struct that reads only header + chunk index on init
+  - Added `Header()`, `ChunkCount()`, `ChunkIndex()`, `ChunkEntries()` for metadata access
+  - Added `ReadChunk()` to read and parse individual chunks on demand
+  - Added `ReadChunkRaw()` to get raw chunk bytes without batch parsing
+  - Added `DecodeAll()` for full decode when needed (matches DecodeFromBytes behavior)
+  - Added `BytesRangeReader` to wrap byte slices for in-memory testing
+  - Added 10 tests: empty, single chunk, multiple chunks, raw read, decode all, out of bounds, entries copy
+  - Added `TestStreamingDecoderBoundedMemoryUsage` - key test verifying memory stays bounded:
+    - 1MB WAL with 100 chunks (10KB each)
+    - Init reads only 4449 bytes (0.43% of WAL) for header + index
+    - Reading 3 chunks reads only 35181 bytes (3.42% of WAL)
+  - Added `TestBytesRangeReaderEdgeCases` for edge case coverage
+- **Files modified**:
+  - `internal/wal/decoder.go` (added RangeReader interface, StreamingDecoder, BytesRangeReader)
+  - `internal/wal/decoder_test.go` (added 10 streaming decoder tests including bounded memory test)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/wal/... -run Streaming` - all 10 tests pass
+  - `go test ./internal/wal/...` - all 107 WAL tests pass
+  - `go test ./internal/compaction/...` - all compaction tests pass
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - StreamingDecoder memory footprint: O(HeaderSize + ChunkCount * ChunkIndexEntrySize) = O(49 + N*44)
+  - For a 100-chunk WAL, init uses ~4.5KB vs ~1MB for full decode
+  - RangeReader interface allows easy integration with objectstore.Store.GetRange
+  - Compaction worker already uses range reads; new decoder enables consistent pattern
+- **No blockers or follow-ups identified**
