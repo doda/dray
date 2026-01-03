@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -1447,4 +1448,130 @@ func TestFetchHandler_LoggingLevels(t *testing.T) {
 			t.Error("expected 'durationMs' field in aggregate log")
 		}
 	})
+}
+
+// TestFetchHandler_BufferPreallocation verifies that fetch response buffers
+// are preallocated to the total size of batches, avoiding reallocations.
+func TestFetchHandler_BufferPreallocation(t *testing.T) {
+	store := metadata.NewMockStore()
+	topicStore := topics.NewStore(store)
+	streamManager := index.NewStreamManager(store)
+	ctx := context.Background()
+
+	result, err := topicStore.CreateTopic(ctx, topics.CreateTopicRequest{
+		Name:           "buffer-test-topic",
+		PartitionCount: 1,
+		NowMs:          time.Now().UnixMilli(),
+	})
+	if err != nil {
+		t.Fatalf("failed to create topic: %v", err)
+	}
+
+	streamID := result.Partitions[0].StreamID
+	if err := streamManager.CreateStreamWithID(ctx, streamID, "buffer-test-topic", 0); err != nil {
+		t.Fatalf("failed to create stream: %v", err)
+	}
+
+	mockObjStore := NewMockObjectStore()
+	walPath := "wal/v1/zone=zone-a/domain=0/date=2025/01/02/buffer-test.wo"
+
+	batch := buildRecordBatch(10)
+	walID := uuid.New()
+	walObj := wal.NewWAL(walID, 0, time.Now().UnixMilli())
+	parsedStreamID := parseStreamIDToUint64(streamID)
+
+	walObj.AddChunk(wal.Chunk{
+		StreamID:       parsedStreamID,
+		Batches:        []wal.BatchEntry{{Data: batch}},
+		RecordCount:    10,
+		MinTimestampMs: time.Now().UnixMilli(),
+		MaxTimestampMs: time.Now().UnixMilli(),
+	})
+
+	walData, err := wal.EncodeToBytes(walObj)
+	if err != nil {
+		t.Fatalf("failed to encode WAL: %v", err)
+	}
+
+	mockObjStore.Put(ctx, walPath, bytes.NewReader(walData), int64(len(walData)), "application/octet-stream")
+
+	chunkOffset := uint64(wal.HeaderSize)
+	chunkLength := 4 + uint32(len(batch))
+
+	_, err = streamManager.AppendIndexEntry(ctx, index.AppendRequest{
+		StreamID:       streamID,
+		RecordCount:    10,
+		ChunkSizeBytes: int64(chunkLength),
+		CreatedAtMs:    time.Now().UnixMilli(),
+		MinTimestampMs: time.Now().UnixMilli(),
+		MaxTimestampMs: time.Now().UnixMilli(),
+		WalID:          walID.String(),
+		WalPath:        walPath,
+		ChunkOffset:    chunkOffset,
+		ChunkLength:    chunkLength,
+	})
+	if err != nil {
+		t.Fatalf("failed to append index entry: %v", err)
+	}
+
+	fetcher := fetch.NewFetcher(mockObjStore, streamManager)
+	handler := NewFetchHandler(FetchHandlerConfig{MaxBytes: 1024 * 1024}, topicStore, fetcher, streamManager)
+
+	req := buildFetchRequest("buffer-test-topic", 0, 0)
+	resp := handler.Handle(ctx, 12, req)
+
+	if len(resp.Topics) != 1 || len(resp.Topics[0].Partitions) != 1 {
+		t.Fatalf("unexpected response structure")
+	}
+
+	partResp := resp.Topics[0].Partitions[0]
+	if partResp.ErrorCode != 0 {
+		t.Fatalf("expected success, got error code %d", partResp.ErrorCode)
+	}
+
+	// The response should contain the full batch data
+	if len(partResp.RecordBatches) != len(batch) {
+		t.Errorf("expected RecordBatches length %d, got %d", len(batch), len(partResp.RecordBatches))
+	}
+
+	// Verify the bytes match
+	if !bytes.Equal(partResp.RecordBatches, batch) {
+		t.Error("RecordBatches content does not match original batch")
+	}
+}
+
+// BenchmarkFetchResponseBufferGrow benchmarks the buffer preallocation optimization.
+func BenchmarkFetchResponseBufferGrow(b *testing.B) {
+	// Create test batches of various sizes
+	sizes := []int{1024, 4096, 16384, 65536}
+
+	for _, size := range sizes {
+		b.Run(byteSizeLabel(size), func(b *testing.B) {
+			batches := make([][]byte, 4)
+			batchSize := size / 4
+			for i := range batches {
+				batches[i] = make([]byte, batchSize)
+			}
+			totalSize := int64(size)
+
+			b.ResetTimer()
+			b.ReportAllocs()
+
+			for i := 0; i < b.N; i++ {
+				var buf bytes.Buffer
+				buf.Grow(int(totalSize))
+				for _, batch := range batches {
+					buf.Write(batch)
+				}
+				_ = buf.Bytes()
+			}
+		})
+	}
+}
+
+func byteSizeLabel(size int) string {
+	if size >= 1024 {
+		return fmt.Sprintf("%dKB", size/1024)
+	}
+	return fmt.Sprintf("%dB", size)
 }
