@@ -2252,3 +2252,20 @@ Start with project-setup, then follow spec phases:
   - Validation happens before decompression, catching corruption early
   - Error messages include stored and computed CRC values for debugging
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - Spec Audit
+
+- **Lens**: spec
+- **Summary**: Comprehensive audit of implementation against SPEC.md
+- **Tests/Commands Run**: `./init.sh --quick` - all tests pass
+- **Areas Audited**:
+  - WAL format (§5.2.2): COMPLIANT - 49-byte header, chunk index, .wo extension, path format correct
+  - Parquet schema (§5.3): 2 minor gaps - missing record_crc column, timestamp_ms vs timestamp naming
+  - Keyspace layout (§6.3): COMPLIANT - WAL keys use /dray/v1 prefix (spec has internal inconsistency)
+  - IndexEntry schema (§6.3.3): 2 gaps - ParquetID and IcebergDataFileID fields never populated
+  - Kafka API coverage (§14): COMPLIANT - all required APIs implemented, excluded APIs rejected
+  - Consumer groups (§12): COMPLIANT - both classic and KIP-848 protocols, assignors, lease-based coordination
+  - Compaction saga (§11): 1 gap - uses DONE instead of WAL_GC_READY state
+  - Zone-aware routing (§7): COMPLIANT - zone_id parsing, filtering, RendezvousHash affinity all correct
+- **New Tasks Added**: 6 tasks for spec gaps (parquet-schema-add-record-crc, parquet-schema-rename-timestamp-column, populate-parquet-index-entry-ids, compaction-saga-add-wal-gc-ready-state, integration-test-parquet-schema-roundtrip, integration-test-compaction-saga-recovery)
+- **No blockers identified** - gaps are minor and do not affect core correctness

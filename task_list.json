@@ -3858,5 +3858,119 @@
       "internal/compaction/worker/converter.go"
     ],
     "completed": true
+  },
+  {
+    "id": "parquet-schema-add-record-crc",
+    "category": "spec-compliance",
+    "description": "Add optional record_crc column to Parquet schema per spec section 5.3",
+    "steps": [
+      "Add record_crc (int32, optional) field to Iceberg schema in internal/iceberg/catalog/schema.go",
+      "Add RecordCRC field to Parquet record struct in internal/compaction/worker/parquet.go",
+      "Add RecordCRC field to ParquetRecord struct in internal/fetch/parquet_reader.go",
+      "Populate record_crc during compaction if available from Kafka batch",
+      "Add tests validating record_crc is written and readable",
+      "Run Parquet/compaction/fetch tests and fix any failures"
+    ],
+    "completed": false,
+    "depends_on": [],
+    "scope": [
+      "internal/iceberg/catalog/schema.go",
+      "internal/compaction/worker/parquet.go",
+      "internal/fetch/parquet_reader.go"
+    ]
+  },
+  {
+    "id": "parquet-schema-rename-timestamp-column",
+    "category": "spec-compliance",
+    "description": "Rename Parquet timestamp column from timestamp_ms to timestamp per spec section 5.3",
+    "steps": [
+      "Rename FieldIDTimestampMs to FieldIDTimestamp in internal/iceberg/catalog/schema.go",
+      "Update column name from 'timestamp_ms' to 'timestamp' in schema definition",
+      "Update all references in compaction worker and fetch reader",
+      "Update tests to use new column name",
+      "Run Parquet/compaction/fetch tests and fix any failures"
+    ],
+    "completed": false,
+    "depends_on": [],
+    "scope": [
+      "internal/iceberg/catalog/schema.go",
+      "internal/compaction/worker/parquet.go",
+      "internal/fetch/parquet_reader.go"
+    ]
+  },
+  {
+    "id": "populate-parquet-index-entry-ids",
+    "category": "spec-compliance",
+    "description": "Populate ParquetID and IcebergDataFileID fields in IndexEntry per spec section 6.3.3",
+    "steps": [
+      "Generate and set ParquetID (UUID) when creating Parquet index entries in internal/compaction/swap.go",
+      "Set IcebergDataFileID when Iceberg commit succeeds in duality mode",
+      "Update SwapRequest to include ParquetID",
+      "Add tests verifying ParquetID is populated in index entries",
+      "Run compaction/index tests and fix any failures"
+    ],
+    "completed": false,
+    "depends_on": [],
+    "scope": [
+      "internal/compaction/swap.go",
+      "internal/index/entry.go"
+    ]
+  },
+  {
+    "id": "compaction-saga-add-wal-gc-ready-state",
+    "category": "spec-compliance",
+    "description": "Add WAL_GC_READY state to compaction saga per spec section 11.6",
+    "steps": [
+      "Add JobStateWALGCReady constant between INDEX_SWAPPED and DONE in internal/compaction/saga.go",
+      "Update state transition logic to go INDEX_SWAPPED -> WAL_GC_READY -> DONE",
+      "Add MarkWALGCReady method to saga manager",
+      "Update recovery logic to handle WAL_GC_READY state",
+      "Add tests for the new state transition",
+      "Run compaction tests and fix any failures"
+    ],
+    "completed": false,
+    "depends_on": [],
+    "scope": [
+      "internal/compaction/saga.go"
+    ]
+  },
+  {
+    "id": "integration-test-parquet-schema-roundtrip",
+    "category": "test",
+    "description": "Add integration test verifying Parquet schema matches spec and data round-trips correctly",
+    "steps": [
+      "Create integration test that writes Parquet via compaction and reads via fetch",
+      "Verify all columns per spec 5.3 are present and correctly typed",
+      "Verify headers are stored as ordered list preserving duplicates",
+      "Verify record_crc column when implemented",
+      "Run integration tests and fix any failures"
+    ],
+    "completed": false,
+    "depends_on": [
+      "parquet-schema-add-record-crc"
+    ],
+    "scope": [
+      "tests/integration"
+    ]
+  },
+  {
+    "id": "integration-test-compaction-saga-recovery",
+    "category": "test",
+    "description": "Add integration test for compaction saga recovery at each state including WAL_GC_READY",
+    "steps": [
+      "Create integration test that simulates crash at each saga state",
+      "Verify recovery correctly resumes from PARQUET_WRITTEN to retry Iceberg commit",
+      "Verify recovery correctly resumes from ICEBERG_COMMITTED to retry index swap",
+      "Verify recovery correctly resumes from INDEX_SWAPPED to WAL_GC_READY",
+      "Verify no data loss or duplication after recovery",
+      "Run integration tests and fix any failures"
+    ],
+    "completed": false,
+    "depends_on": [
+      "compaction-saga-add-wal-gc-ready-state"
+    ],
+    "scope": [
+      "tests/integration"
+    ]
   }
 ]
