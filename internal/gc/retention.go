@@ -5,6 +5,7 @@ package gc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -327,79 +328,137 @@ func (w *RetentionWorker) findEntriesBeyondSizeLimit(entries []indexEntryWithKey
 	return result
 }
 
-// deleteIndexEntry deletes an index entry and schedules its data for GC.
+// deleteIndexEntry deletes an index entry and schedules its data for GC atomically.
+// For WAL entries, the index deletion and refcount decrement are performed in a
+// single transaction to prevent refcount leaks if one operation fails.
 func (w *RetentionWorker) deleteIndexEntry(
 	ctx context.Context,
 	key string,
 	entry index.IndexEntry,
 	deleteAfterMs int64,
 ) error {
-	// Delete the index entry
-	if err := w.meta.Delete(ctx, key); err != nil {
-		return fmt.Errorf("delete index entry %s: %w", key, err)
+	if entry.FileType == index.FileTypeWAL {
+		return w.deleteWALIndexEntryAtomically(ctx, key, entry, deleteAfterMs)
 	}
 
-	// Schedule the data file for GC
-	if entry.FileType == index.FileTypeWAL {
-		// For WAL entries, we need to decrement the refcount.
-		// If the WAL file is shared with other streams, decrementing may not trigger deletion.
-		// We use the same mechanism as compaction swap.
-		if entry.WalID != "" {
-			metaDomain := int(metadata.CalculateMetaDomain(entry.StreamID, w.config.NumDomains))
-			if _, err := w.decrementWALRefCount(ctx, metaDomain, entry.WalID, entry.WalPath, deleteAfterMs); err != nil {
-				// Log but don't fail - orphan GC will clean up eventually
-				return nil
+	if entry.FileType == index.FileTypeParquet {
+		return w.deleteParquetIndexEntry(ctx, key, entry, deleteAfterMs)
+	}
+
+	// Unknown file type, just delete the index entry
+	return w.meta.Delete(ctx, key)
+}
+
+// deleteWALIndexEntryAtomically deletes a WAL index entry and decrements the WAL
+// refcount in a single atomic transaction. This prevents refcount leaks that could
+// occur if the operations were performed separately.
+func (w *RetentionWorker) deleteWALIndexEntryAtomically(
+	ctx context.Context,
+	key string,
+	entry index.IndexEntry,
+	deleteAfterMs int64,
+) error {
+	if entry.WalID == "" {
+		// No WAL ID, just delete the index entry
+		return w.meta.Delete(ctx, key)
+	}
+
+	metaDomain := int(metadata.CalculateMetaDomain(entry.StreamID, w.config.NumDomains))
+
+	const maxRetries = 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err := w.meta.Txn(ctx, key, func(txn metadata.Txn) error {
+			// Delete the index entry (unconditional - idempotent if already deleted)
+			txn.Delete(key)
+
+			// Decrement WAL refcount within the same transaction
+			if err := w.decrementWALRefCountInTxn(txn, metaDomain, entry.WalID, entry.WalPath, deleteAfterMs); err != nil {
+				return err
 			}
-		}
-	} else if entry.FileType == index.FileTypeParquet {
-		// For Parquet entries, schedule direct GC when Iceberg is not enabled.
-		if w.config.IcebergEnabled {
+
+			return nil
+		})
+
+		if err == nil {
 			return nil
 		}
-		gcRecord := ParquetGCRecord{
-			Path:                    entry.ParquetPath,
-			DeleteAfterMs:           deleteAfterMs,
-			CreatedAt:               entry.CreatedAtMs,
-			SizeBytes:               int64(entry.ParquetSizeBytes),
-			StreamID:                entry.StreamID,
-			IcebergEnabled:          false,
-			IcebergRemovalConfirmed: true,
+
+		// Retry on version mismatch or transaction conflict
+		if errors.Is(err, metadata.ErrVersionMismatch) || errors.Is(err, metadata.ErrTxnConflict) {
+			if attempt < maxRetries-1 {
+				continue
+			}
 		}
-		if err := ScheduleParquetGC(ctx, w.meta, gcRecord); err != nil {
-			return fmt.Errorf("schedule Parquet GC: %w", err)
-		}
+
+		return fmt.Errorf("delete WAL index entry %s: %w", key, err)
 	}
 
 	return nil
 }
 
-// decrementWALRefCount decrements WAL refcount and schedules for GC if zero.
-func (w *RetentionWorker) decrementWALRefCount(
+// deleteParquetIndexEntry deletes a Parquet index entry and schedules GC if needed.
+func (w *RetentionWorker) deleteParquetIndexEntry(
 	ctx context.Context,
+	key string,
+	entry index.IndexEntry,
+	deleteAfterMs int64,
+) error {
+	// Delete the index entry first
+	if err := w.meta.Delete(ctx, key); err != nil {
+		return fmt.Errorf("delete index entry %s: %w", key, err)
+	}
+
+	// Schedule GC for the Parquet file when Iceberg is not enabled
+	if w.config.IcebergEnabled {
+		return nil
+	}
+
+	gcRecord := ParquetGCRecord{
+		Path:                    entry.ParquetPath,
+		DeleteAfterMs:           deleteAfterMs,
+		CreatedAt:               entry.CreatedAtMs,
+		SizeBytes:               int64(entry.ParquetSizeBytes),
+		StreamID:                entry.StreamID,
+		IcebergEnabled:          false,
+		IcebergRemovalConfirmed: true,
+	}
+	if err := ScheduleParquetGC(ctx, w.meta, gcRecord); err != nil {
+		return fmt.Errorf("schedule Parquet GC: %w", err)
+	}
+
+	return nil
+}
+
+// decrementWALRefCountInTxn decrements the WAL refcount within a transaction.
+// If the refcount reaches zero, it schedules the WAL for GC. This method is
+// designed to be called from within a transaction to ensure atomicity with
+// other operations (like index entry deletion).
+func (w *RetentionWorker) decrementWALRefCountInTxn(
+	txn metadata.Txn,
 	metaDomain int,
 	walID string,
 	walPath string,
 	deleteAfterMs int64,
-) (bool, error) {
+) error {
 	walObjectKey := keys.WALObjectKeyPath(metaDomain, walID)
 
-	result, err := w.meta.Get(ctx, walObjectKey)
+	value, version, err := txn.Get(walObjectKey)
 	if err != nil {
-		return false, err
-	}
-	if !result.Exists {
-		// WAL object record doesn't exist - may already be deleted
-		return false, nil
+		if errors.Is(err, metadata.ErrKeyNotFound) {
+			// WAL object record doesn't exist - may already be deleted or GC'd.
+			// This is idempotent - we can proceed without decrementing.
+			return nil
+		}
+		return fmt.Errorf("get WAL object record: %w", err)
 	}
 
 	var record walObjectRecord
-	if err := json.Unmarshal(result.Value, &record); err != nil {
-		return false, err
+	if err := json.Unmarshal(value, &record); err != nil {
+		return fmt.Errorf("unmarshal WAL object record: %w", err)
 	}
 
-	record.RefCount--
-	if record.RefCount <= 0 {
-		// Move to GC queue
+	if record.RefCount <= 1 {
+		// Move to GC queue - refcount is reaching zero
 		gcKey := keys.WALGCKeyPath(metaDomain, walID)
 		gcRecord := WALGCRecord{
 			Path:          walPath,
@@ -409,28 +468,21 @@ func (w *RetentionWorker) decrementWALRefCount(
 		}
 		gcRecordBytes, err := json.Marshal(gcRecord)
 		if err != nil {
-			return false, err
+			return fmt.Errorf("marshal GC record: %w", err)
 		}
-
-		err = w.meta.Txn(ctx, walObjectKey, func(txn metadata.Txn) error {
-			txn.DeleteWithVersion(walObjectKey, result.Version)
-			txn.Put(gcKey, gcRecordBytes)
-			return nil
-		})
-		if err != nil {
-			return false, err
-		}
-		return true, nil
+		txn.DeleteWithVersion(walObjectKey, version)
+		txn.Put(gcKey, gcRecordBytes)
+		return nil
 	}
 
-	// Update refcount
+	// Decrement refcount
+	record.RefCount--
 	recordBytes, err := json.Marshal(record)
 	if err != nil {
-		return false, err
+		return fmt.Errorf("marshal updated record: %w", err)
 	}
-
-	_, err = w.meta.Put(ctx, walObjectKey, recordBytes, metadata.WithExpectedVersion(result.Version))
-	return false, err
+	txn.PutWithVersion(walObjectKey, recordBytes, version)
+	return nil
 }
 
 // walObjectRecord mirrors produce.WALObjectRecord to avoid import cycle.

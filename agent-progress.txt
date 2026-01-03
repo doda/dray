@@ -1666,3 +1666,26 @@ Start with project-setup, then follow spec phases:
   - `go test ./internal/iceberg/... -count=1` - all tests pass
   - `./init.sh --quick` - SUCCESS
 - **No blockers. Follow-up**: Wire compaction/Iceberg commit flow to call ConfirmParquetIcebergRemoval
+
+## Session: 2026-01-03 - retention-refcount-atomicity
+
+- **Task**: retention-refcount-atomicity (PASS)
+- **Summary**: Made WAL refcount decrement atomic with index entry deletion during retention to prevent refcount leaks.
+- **Key changes**:
+  - Added `deleteWALIndexEntryAtomically()` - uses a transaction to delete index entry AND decrement refcount atomically
+  - Added `decrementWALRefCountInTxn()` - transaction-aware refcount decrement (similar to compaction swap pattern)
+  - Refactored `deleteIndexEntry()` to dispatch to specialized methods for WAL vs Parquet entries
+  - Added retry logic with version conflict handling (up to 3 retries)
+  - Handles missing WAL records idempotently (already deleted/GC'd case)
+- **Files modified**:
+  - `internal/gc/retention.go` (added atomic transaction support, new methods)
+  - `internal/gc/retention_test.go` (added 3 new tests for atomicity verification)
+- **Tests added**:
+  - `TestRetentionWorker_AtomicRefCountDecrement` - verifies index+refcount atomicity
+  - `TestRetentionWorker_RefCountConsistencyAfterVersionConflict` - refcount stays consistent after retries  
+  - `TestRetentionWorker_IdempotentRetryOnMissingWALRecord` - handles missing WAL records gracefully
+- **Verification**: 
+  - `go test ./internal/gc/... -count=1` - all 58 tests pass (3 new)
+  - `go test ./internal/compaction/... ./internal/produce/... -count=1` - all pass
+  - `./init.sh --quick` - SUCCESS
+- **No blockers or follow-ups identified**
