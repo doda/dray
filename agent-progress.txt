@@ -1768,3 +1768,18 @@ Start with project-setup, then follow spec phases:
   - `go test ./internal/metrics/... -count=1` - all 97 tests pass (3 new)
   - `./init.sh` - SUCCESS
 - **No blockers or follow-ups identified**
+[2026-01-03T07:45:00Z] Completed gc-metrics-log-scan-errors
+- **Task**: Log GC backlog scan errors to avoid silent metrics stalls
+- **What was done**:
+  - Added structured logging to `scanOnce()` in `internal/metrics/gc.go`
+  - Added `slog.Warn()` for each of 6 provider method failures with "provider" and "error" fields
+  - Added test `TestGCBacklogScanner_LogsProviderErrors` to verify logging on failures
+- **Files modified**:
+  - `internal/metrics/gc.go` (added slog import, logging for all 6 provider failures)
+  - `internal/metrics/gc_test.go` (added test with failing mock provider)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/metrics/... -run GC` - all 17 GC tests pass (1 new)
+  - `go test ./internal/metrics/...` - all 98 tests pass
+  - `./init.sh --quick` - SUCCESS
+- **No blockers or follow-ups identified**

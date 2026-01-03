@@ -1,8 +1,12 @@
 package metrics
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -432,3 +436,62 @@ func TestGCBacklogScanner_ProviderInterface(t *testing.T) {
 
 // Ensure io_prometheus_client is used (it's imported indirectly via prometheus)
 var _ = io_prometheus_client.Metric{}
+
+func TestGCBacklogScanner_LogsProviderErrors(t *testing.T) {
+	var logBuf bytes.Buffer
+	var logMu sync.Mutex
+	handler := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	reg := prometheus.NewRegistry()
+	m := NewGCMetricsWithRegistry(reg)
+
+	// Set initial values
+	m.RecordOrphanWALCount(99)
+	m.RecordPendingWALDeletes(88)
+
+	providerErr := errors.New("metadata connection failed")
+	provider := &mockGCStatsProvider{
+		err: providerErr,
+	}
+
+	scanner := NewGCBacklogScanner(m, provider, time.Hour)
+	scanner.ScanOnce()
+
+	logMu.Lock()
+	logOutput := logBuf.String()
+	logMu.Unlock()
+
+	// Verify logging includes all provider types
+	expectedProviders := []string{
+		"orphan_wal_count",
+		"staging_wal_count",
+		"pending_wal_delete_count",
+		"eligible_wal_delete_count",
+		"pending_parquet_delete_count",
+		"eligible_parquet_delete_count",
+	}
+
+	for _, provider := range expectedProviders {
+		if !strings.Contains(logOutput, provider) {
+			t.Errorf("expected log to contain provider '%s', got: %s", provider, logOutput)
+		}
+	}
+
+	if !strings.Contains(logOutput, "gc backlog scan failed") {
+		t.Errorf("expected log to contain 'gc backlog scan failed', got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "metadata connection failed") {
+		t.Errorf("expected log to contain error message 'metadata connection failed', got: %s", logOutput)
+	}
+
+	// Verify metrics were not updated (kept original values)
+	if v := getGaugeValue(t, reg, "dray_gc_orphan_wal_count"); v != 99 {
+		t.Errorf("expected orphan WAL count 99 (unchanged), got %v", v)
+	}
+	if v := getGaugeValue(t, reg, "dray_gc_pending_wal_deletes"); v != 88 {
+		t.Errorf("expected pending WAL deletes 88 (unchanged), got %v", v)
+	}
+}
