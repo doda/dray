@@ -2443,3 +2443,22 @@ Start with project-setup, then follow spec phases:
   - WAL_GC_READY recovery just transitions to DONE (all work already complete)
   - Each test verifies job state, data integrity, and no duplicates after recovery
 - **No blockers or follow-ups identified**
+
+---
+## 2026-01-03: Spec Audit (lens=spec) - ALL PASS
+- **Audit Scope**: Full spec compliance audit
+- **Tests Run**: `go test ./...` - all 26 packages pass
+- **Key Spec Areas Verified**:
+  - WAL format (§5.2.2): Header 49 bytes, magic DRAYWO1, ChunkIndexEntry 44 bytes
+  - WAL path (§5.1): zone=/domain=/date= format with .wo extension
+  - Parquet schema (§5.3): All 11 columns present, headers as list not map
+  - Parquet path (§5.1): compaction/v1/topic=/partition=/date= format
+  - IndexEntry (§6.3.3): WAL vs Parquet fields, ParquetID, IcebergDataFileID populated
+  - Compaction saga (§11.6): 5 states including WAL_GC_READY per spec
+  - Kafka API coverage (§14): All required APIs (18 core + SASL)
+  - Keyspace layout (§6.3): All keys prefixed /dray/v1
+  - MetaDomain-scoped WAL (§9.2): ErrMetaDomainMismatch enforced
+  - Invariants I1-I6: All integration tests present and passing
+- **Gaps Found**: None
+- **Tasks Created**: None (all spec requirements implemented)
+- **Conclusion**: Implementation matches spec v1.2.1; no new tasks needed
