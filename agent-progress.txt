@@ -2269,3 +2269,37 @@ Start with project-setup, then follow spec phases:
   - Zone-aware routing (§7): COMPLIANT - zone_id parsing, filtering, RendezvousHash affinity all correct
 - **New Tasks Added**: 6 tasks for spec gaps (parquet-schema-add-record-crc, parquet-schema-rename-timestamp-column, populate-parquet-index-entry-ids, compaction-saga-add-wal-gc-ready-state, integration-test-parquet-schema-roundtrip, integration-test-compaction-saga-recovery)
 - **No blockers identified** - gaps are minor and do not affect core correctness
+
+## Session: 2026-01-03 - parquet-schema-add-record-crc
+
+- **Task**: parquet-schema-add-record-crc (PASS)
+- **Summary**: Added optional record_crc column to Parquet schema per SPEC.md section 5.3.
+- **Changes made**:
+  - Added `FieldIDRecordCRC = 14` constant to Iceberg schema
+  - Added `record_crc` field (int32, optional) to Iceberg schema in `DefaultSchema()`
+  - Added `RecordCRC *int32` field to `Record` struct in compaction/worker/parquet.go
+  - Added `RecordCRC *int32` field to `ParquetRecordWithHeaders` struct in fetch/parquet_reader.go
+  - Added `computeRecordCRC()` function that computes CRC32C over key+value+headers
+  - Modified `parseRecord()` to populate RecordCRC during WAL-to-Parquet conversion
+  - Added 6 new tests for record_crc functionality
+- **Files modified**:
+  - `internal/iceberg/catalog/schema.go` (added FieldIDRecordCRC and record_crc field)
+  - `internal/compaction/worker/parquet.go` (added RecordCRC field)
+  - `internal/compaction/worker/parquet_test.go` (added 3 tests)
+  - `internal/compaction/worker/converter.go` (added computeRecordCRC and population)
+  - `internal/compaction/worker/converter_test.go` (added 4 tests)
+  - `internal/fetch/parquet_reader.go` (added RecordCRC field)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/compaction/worker/... -run RecordCRC` - all 6 tests pass
+  - `go test ./internal/compaction/...` - all compaction tests pass
+  - `go test ./internal/fetch/...` - all fetch tests pass
+  - `go test ./internal/iceberg/catalog/...` - all catalog tests pass
+  - `go test ./...` - all 100+ project tests pass
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - CRC32C (Castagnoli polynomial) matches Kafka's batch CRC format
+  - Record CRC computed over key + value + headers (not batch-level)
+  - RecordCRC is optional (pointer type) per spec requirement
+  - Iceberg schema field ID 14 chosen to not conflict with existing IDs
+- **No blockers or follow-ups identified**
