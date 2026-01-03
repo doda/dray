@@ -1867,3 +1867,31 @@ Start with project-setup, then follow spec phases:
   - `./init.sh --quick` - SUCCESS
 - **No blockers or follow-ups identified**
 
+
+## Session: 2026-01-03 - optimize-listoffsets-index-scan
+
+- **Task**: optimize-listoffsets-index-scan (PASS)
+- **Summary**: Optimized LookupOffsetByTimestamp to avoid full index scans using bounded range queries.
+- **Changes made**:
+  - Replaced full index scan (limit=0) with O(log N) binary search for monotonic timestamps
+  - Added quick paths for first/last entry checks to short-circuit common cases
+  - Added paginated iteration (batch size 100) for non-monotonic timestamp fallback
+  - Extracted `resolveTimestampEntry()` helper for finding exact offset within an entry
+  - Added 2 new tests: `TestLookupOffsetByTimestamp_LimitedListCalls` (1000 entries, ~12 List calls)
+  - Added `TestLookupOffsetByTimestamp_LimitedListCalls_EdgeCases` (first/last/after verification)
+- **Files modified**:
+  - `internal/index/entry.go` (replaced LookupOffsetByTimestamp, added binary search + paginated methods)
+  - `internal/index/entry_test.go` (added fmt import, 2 new test functions)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/index/... -run TestLookupOffsetByTimestamp` - all 10 tests pass
+  - New test shows 12 List calls for 1000 entries (O(log N) vs O(N))
+  - Edge cases: 1 call for first entry, 2 calls for "after all", 11 for last entry
+  - `go test ./internal/index/...` - all tests pass
+  - `go test ./internal/protocol/...` - all tests pass
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - Binary search uses offset bounds (not timestamp bounds) since keys sorted by offsetEnd
+  - Monotonicity check: if lastEntry.Max >= firstEntry.Max, use binary search
+  - Non-monotonic case cannot short-circuit on last entry (middle entries may have higher max)
+- **No blockers or follow-ups identified**

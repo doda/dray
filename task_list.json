@@ -3685,7 +3685,7 @@
       "internal/protocol/list_offsets.go",
       "internal/index/entry.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "wire-index-hwm-caches-into-read-paths",

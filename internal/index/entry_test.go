@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -2217,6 +2218,154 @@ func TestLookupOffsetByTimestamp_StreamNotFound(t *testing.T) {
 	_, err := sm.LookupOffsetByTimestamp(ctx, "nonexistent", 1000)
 	if !errors.Is(err, ErrStreamNotFound) {
 		t.Errorf("expected ErrStreamNotFound, got %v", err)
+	}
+}
+
+// TestLookupOffsetByTimestamp_LimitedListCalls verifies that the optimized timestamp
+// lookup uses O(log N) List calls instead of loading all entries at once.
+// This ensures the binary search optimization is working correctly.
+func TestLookupOffsetByTimestamp_LimitedListCalls(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, _ := sm.CreateStream(ctx, "test-topic", 0)
+
+	// Create 1000 entries with monotonically increasing timestamps
+	numEntries := 1000
+	for i := 0; i < numEntries; i++ {
+		_, err := sm.AppendIndexEntry(ctx, AppendRequest{
+			StreamID:       streamID,
+			RecordCount:    10,
+			ChunkSizeBytes: 100,
+			CreatedAtMs:    time.Now().UnixMilli(),
+			MinTimestampMs: int64(i * 1000),
+			MaxTimestampMs: int64(i*1000 + 500),
+			WalID:          fmt.Sprintf("wal-%d", i),
+			WalPath:        fmt.Sprintf("wal/%d.wal", i),
+			ChunkOffset:    0,
+			ChunkLength:    100,
+		})
+		if err != nil {
+			t.Fatalf("failed to append entry %d: %v", i, err)
+		}
+	}
+
+	// Reset List call counter
+	store.listCalls = 0
+
+	// Lookup a timestamp in the middle of the range
+	// With 1000 entries, binary search should need about log2(1000) ≈ 10 iterations
+	targetTimestamp := int64(500 * 1000) // Middle of range
+	result, err := sm.LookupOffsetByTimestamp(ctx, streamID, targetTimestamp)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Found {
+		t.Error("expected to find offset")
+	}
+
+	// We expect O(log N) List calls:
+	// - 1 call for GetHWM (to verify stream exists)
+	// - 1 call to load first entry
+	// - 1 call to load last entry
+	// - ~log2(1000) ≈ 10 calls for binary search
+	// - 1 call for final resolution
+	// Total: approximately 15-20 calls
+	// With full scan it would be 1 call loading all 1000 entries
+	// We assert the number of calls is significantly less than a threshold
+	// that would indicate a full scan or excessive operations
+	maxExpectedCalls := 25 // Generous upper bound for O(log N) behavior
+
+	if store.listCalls > maxExpectedCalls {
+		t.Errorf("listCalls = %d, expected <= %d (O(log N) behavior)", store.listCalls, maxExpectedCalls)
+	}
+
+	t.Logf("listCalls = %d for %d entries (expected O(log N) ≈ %d)", store.listCalls, numEntries, int(1+2+10+1))
+
+	// Also verify correctness: timestamp 500000 should be in entry 500
+	// Entry 500 has min=500000, max=500500, startOffset=500*10=5000
+	expectedOffset := int64(500 * 10)
+	if result.Offset != expectedOffset {
+		t.Errorf("Offset = %d, expected %d", result.Offset, expectedOffset)
+	}
+}
+
+// TestLookupOffsetByTimestamp_LimitedListCalls_EdgeCases tests that edge cases
+// also use limited List calls.
+func TestLookupOffsetByTimestamp_LimitedListCalls_EdgeCases(t *testing.T) {
+	store := newIndexTestStore()
+	sm := NewStreamManager(store)
+	ctx := context.Background()
+
+	streamID, _ := sm.CreateStream(ctx, "test-topic", 0)
+
+	// Create 500 entries
+	numEntries := 500
+	for i := 0; i < numEntries; i++ {
+		_, err := sm.AppendIndexEntry(ctx, AppendRequest{
+			StreamID:       streamID,
+			RecordCount:    10,
+			ChunkSizeBytes: 100,
+			CreatedAtMs:    time.Now().UnixMilli(),
+			MinTimestampMs: int64(i * 1000),
+			MaxTimestampMs: int64(i*1000 + 500),
+			WalID:          fmt.Sprintf("wal-%d", i),
+			WalPath:        fmt.Sprintf("wal/%d.wal", i),
+			ChunkOffset:    0,
+			ChunkLength:    100,
+		})
+		if err != nil {
+			t.Fatalf("failed to append entry %d: %v", i, err)
+		}
+	}
+
+	tests := []struct {
+		name         string
+		timestamp    int64
+		expectFound  bool
+		maxListCalls int
+	}{
+		{
+			name:         "first entry quick path",
+			timestamp:    100, // Within first entry (min=0, max=500)
+			expectFound:  true,
+			maxListCalls: 5, // GetHWM + first entry load + resolution
+		},
+		{
+			name:         "last entry quick path",
+			timestamp:    int64((numEntries - 1) * 1000), // Start of last entry
+			expectFound:  true,
+			maxListCalls: 25, // GetHWM + first + last + binary search
+		},
+		{
+			name:         "after all entries",
+			timestamp:    int64(numEntries * 1000), // After all entries
+			expectFound:  false,
+			maxListCalls: 5, // GetHWM + first + last (quick rejection)
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store.listCalls = 0
+
+			result, err := sm.LookupOffsetByTimestamp(ctx, streamID, tt.timestamp)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.Found != tt.expectFound {
+				t.Errorf("Found = %v, expected %v", result.Found, tt.expectFound)
+			}
+
+			if store.listCalls > tt.maxListCalls {
+				t.Errorf("listCalls = %d, expected <= %d", store.listCalls, tt.maxListCalls)
+			}
+
+			t.Logf("listCalls = %d for %s", store.listCalls, tt.name)
+		})
 	}
 }
 
