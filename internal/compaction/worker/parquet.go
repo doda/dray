@@ -17,7 +17,7 @@ import (
 type Record struct {
 	Partition     int32    `parquet:"partition"`
 	Offset        int64    `parquet:"offset"`
-	Timestamp     int64    `parquet:"timestamp_ms,timestamp(millisecond)"`
+	Timestamp     int64    `parquet:"timestamp,timestamp(millisecond)"`
 	Key           []byte   `parquet:"key,optional"`
 	Value         []byte   `parquet:"value,optional"`
 	Headers       []Header `parquet:"headers,list,optional"`

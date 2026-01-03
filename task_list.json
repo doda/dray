@@ -3890,7 +3890,7 @@
       "Update tests to use new column name",
       "Run Parquet/compaction/fetch tests and fix any failures"
     ],
-    "completed": false,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/iceberg/catalog/schema.go",

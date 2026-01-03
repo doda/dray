@@ -43,7 +43,7 @@ func TestDataFileStatsIntegration(t *testing.T) {
 	}
 
 	// Verify bounds are set for the right field IDs
-	boundFields := []int{FieldIDPartition, FieldIDOffset, FieldIDTimestampMs}
+	boundFields := []int{FieldIDPartition, FieldIDOffset, FieldIDTimestamp}
 	for _, fieldID := range boundFields {
 		if df.LowerBounds[fieldID] == nil {
 			t.Errorf("LowerBounds[%d] is nil", fieldID)
@@ -62,8 +62,8 @@ func TestDataFileStatsIntegration(t *testing.T) {
 	}
 
 	// Verify timestamp bounds decode correctly
-	gotMinTs := int64(binary.BigEndian.Uint64(df.LowerBounds[FieldIDTimestampMs]))
-	gotMaxTs := int64(binary.BigEndian.Uint64(df.UpperBounds[FieldIDTimestampMs]))
+	gotMinTs := int64(binary.BigEndian.Uint64(df.LowerBounds[FieldIDTimestamp]))
+	gotMaxTs := int64(binary.BigEndian.Uint64(df.UpperBounds[FieldIDTimestamp]))
 	if gotMinTs != minTs || gotMaxTs != maxTs {
 		t.Errorf("Timestamp bounds mismatch: expected [%d,%d], got [%d,%d]",
 			minTs, maxTs, gotMinTs, gotMaxTs)
@@ -162,7 +162,7 @@ func TestBuildDataFileFromStats_WithStats(t *testing.T) {
 	}
 
 	// Check timestamp lower bound
-	tsLower := df.LowerBounds[FieldIDTimestampMs]
+	tsLower := df.LowerBounds[FieldIDTimestamp]
 	if tsLower == nil {
 		t.Fatal("expected timestamp lower bound")
 	}
@@ -172,7 +172,7 @@ func TestBuildDataFileFromStats_WithStats(t *testing.T) {
 	}
 
 	// Check timestamp upper bound
-	tsUpper := df.UpperBounds[FieldIDTimestampMs]
+	tsUpper := df.UpperBounds[FieldIDTimestamp]
 	if tsUpper == nil {
 		t.Fatal("expected timestamp upper bound")
 	}
@@ -191,8 +191,8 @@ func TestBuildDataFileFromStats_WithStats(t *testing.T) {
 	if df.ValueCounts[FieldIDOffset] != recordCount {
 		t.Errorf("expected ValueCounts[offset]=%d, got %d", recordCount, df.ValueCounts[FieldIDOffset])
 	}
-	if df.ValueCounts[FieldIDTimestampMs] != recordCount {
-		t.Errorf("expected ValueCounts[timestamp]=%d, got %d", recordCount, df.ValueCounts[FieldIDTimestampMs])
+	if df.ValueCounts[FieldIDTimestamp] != recordCount {
+		t.Errorf("expected ValueCounts[timestamp]=%d, got %d", recordCount, df.ValueCounts[FieldIDTimestamp])
 	}
 	if df.ValueCounts[FieldIDPartition] != recordCount {
 		t.Errorf("expected ValueCounts[partition]=%d, got %d", recordCount, df.ValueCounts[FieldIDPartition])
@@ -276,7 +276,7 @@ func TestDefaultDataFileStats(t *testing.T) {
 	}
 
 	// Verify timestamp bounds
-	tsUpper := stats.UpperBounds[FieldIDTimestampMs]
+	tsUpper := stats.UpperBounds[FieldIDTimestamp]
 	gotMaxTs := int64(binary.BigEndian.Uint64(tsUpper))
 	if gotMaxTs != maxTs {
 		t.Errorf("expected maxTs=%d, got %d", maxTs, gotMaxTs)

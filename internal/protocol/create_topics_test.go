@@ -807,13 +807,13 @@ func TestCreateTopicsHandler_IcebergTableSchema(t *testing.T) {
 
 	// Verify required fields per SPEC.md section 5.3
 	expectedFields := map[string]bool{
-		"partition":    true,
-		"offset":       true,
-		"timestamp_ms": true,
-		"key":          true,
-		"value":        true,
-		"headers":      true,
-		"attributes":   true,
+		"partition":  true,
+		"offset":     true,
+		"timestamp":  true,
+		"key":        true,
+		"value":      true,
+		"headers":    true,
+		"attributes": true,
 	}
 
 	fieldNames := make(map[string]bool)

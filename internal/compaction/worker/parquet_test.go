@@ -749,13 +749,13 @@ func TestWriter_ParquetFileStats(t *testing.T) {
 		switch field.Name() {
 		case "offset":
 			offsetColIdx = i
-		case "timestamp_ms":
+		case "timestamp":
 			timestampColIdx = i
 		}
 	}
 
 	if offsetColIdx < 0 || timestampColIdx < 0 {
-		t.Fatal("offset or timestamp_ms column not found")
+		t.Fatal("offset or timestamp column not found")
 	}
 
 	// Verify offset column stats
@@ -828,7 +828,7 @@ func TestParquetSchema_MatchesSpec(t *testing.T) {
 	expectedColumns := map[string]bool{
 		"partition":      true,
 		"offset":         true,
-		"timestamp_ms":   true,
+		"timestamp":      true,
 		"key":            true,
 		"value":          true,
 		"headers":        true,
