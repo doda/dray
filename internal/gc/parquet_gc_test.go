@@ -522,3 +522,187 @@ func TestParquetGCWorker_GracePeriodRespected(t *testing.T) {
 		t.Error("GC marker should still exist (grace period not passed)")
 	}
 }
+
+func TestParquetGCWorker_BlocksGCWhenIcebergEnabledButNotConfirmed(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	streamID := "stream-iceberg"
+	parquetPath := "streams/" + streamID + "/parquet/iceberg-file.parquet"
+
+	// Create object
+	objStore.Put(ctx, parquetPath, bytes.NewReader([]byte("parquet-data")), 12, "application/octet-stream")
+
+	// GC marker with IcebergEnabled=true but IcebergRemovalConfirmed=false
+	gcRecord := ParquetGCRecord{
+		Path:                    parquetPath,
+		DeleteAfterMs:           time.Now().Add(-1 * time.Hour).UnixMilli(),
+		CreatedAt:               time.Now().Add(-2 * time.Hour).UnixMilli(),
+		SizeBytes:               12,
+		StreamID:                streamID,
+		IcebergEnabled:          true,
+		IcebergRemovalConfirmed: false, // Not yet removed from Iceberg
+	}
+
+	err := ScheduleParquetGC(ctx, metaStore, gcRecord)
+	if err != nil {
+		t.Fatalf("ScheduleParquetGC failed: %v", err)
+	}
+
+	// Run GC - should NOT delete because Iceberg removal not confirmed
+	worker := NewParquetGCWorker(metaStore, objStore, ParquetGCWorkerConfig{BatchSize: 100})
+	err = worker.ScanOnce(ctx)
+	if err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// Object should still exist
+	if !objStore.hasObject(parquetPath) {
+		t.Error("Parquet object should NOT have been deleted (Iceberg removal not confirmed)")
+	}
+
+	// Marker should still exist
+	gcKey := keys.ParquetGCKeyPath(streamID, "iceberg-file")
+	result, _ := metaStore.Get(ctx, gcKey)
+	if !result.Exists {
+		t.Error("GC marker should still exist (Iceberg removal not confirmed)")
+	}
+}
+
+func TestParquetGCWorker_DeletesWhenIcebergRemovalConfirmed(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	objStore := newMockObjectStore()
+	ctx := context.Background()
+
+	streamID := "stream-iceberg-confirmed"
+	parquetPath := "streams/" + streamID + "/parquet/confirmed-file.parquet"
+
+	// Create object
+	objStore.Put(ctx, parquetPath, bytes.NewReader([]byte("parquet-data")), 12, "application/octet-stream")
+
+	// GC marker with IcebergEnabled=true AND IcebergRemovalConfirmed=true
+	gcRecord := ParquetGCRecord{
+		Path:                    parquetPath,
+		DeleteAfterMs:           time.Now().Add(-1 * time.Hour).UnixMilli(),
+		CreatedAt:               time.Now().Add(-2 * time.Hour).UnixMilli(),
+		SizeBytes:               12,
+		StreamID:                streamID,
+		IcebergEnabled:          true,
+		IcebergRemovalConfirmed: true, // Confirmed removed from Iceberg
+	}
+
+	err := ScheduleParquetGC(ctx, metaStore, gcRecord)
+	if err != nil {
+		t.Fatalf("ScheduleParquetGC failed: %v", err)
+	}
+
+	// Run GC - should delete because Iceberg removal is confirmed
+	worker := NewParquetGCWorker(metaStore, objStore, ParquetGCWorkerConfig{BatchSize: 100})
+	err = worker.ScanOnce(ctx)
+	if err != nil {
+		t.Fatalf("ScanOnce failed: %v", err)
+	}
+
+	// Object should be deleted
+	if objStore.hasObject(parquetPath) {
+		t.Error("Parquet object should have been deleted (Iceberg removal confirmed)")
+	}
+
+	// Marker should be deleted
+	gcKey := keys.ParquetGCKeyPath(streamID, "confirmed-file")
+	result, _ := metaStore.Get(ctx, gcKey)
+	if result.Exists {
+		t.Error("GC marker should have been deleted")
+	}
+}
+
+func TestConfirmParquetIcebergRemoval(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	ctx := context.Background()
+
+	streamID := "stream-confirm"
+	parquetPath := "streams/" + streamID + "/parquet/to-confirm.parquet"
+
+	// Create GC record with IcebergEnabled=true, IcebergRemovalConfirmed=false
+	gcRecord := ParquetGCRecord{
+		Path:                    parquetPath,
+		DeleteAfterMs:           time.Now().Add(10 * time.Minute).UnixMilli(),
+		CreatedAt:               time.Now().UnixMilli(),
+		SizeBytes:               1024,
+		StreamID:                streamID,
+		IcebergEnabled:          true,
+		IcebergRemovalConfirmed: false,
+	}
+
+	err := ScheduleParquetGC(ctx, metaStore, gcRecord)
+	if err != nil {
+		t.Fatalf("ScheduleParquetGC failed: %v", err)
+	}
+
+	// Confirm Iceberg removal
+	err = ConfirmParquetIcebergRemoval(ctx, metaStore, streamID, parquetPath)
+	if err != nil {
+		t.Fatalf("ConfirmParquetIcebergRemoval failed: %v", err)
+	}
+
+	// Verify the record was updated
+	gcKey := keys.ParquetGCKeyPath(streamID, "to-confirm")
+	result, err := metaStore.Get(ctx, gcKey)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if !result.Exists {
+		t.Fatal("GC marker should still exist")
+	}
+
+	var updatedRecord ParquetGCRecord
+	if err := json.Unmarshal(result.Value, &updatedRecord); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	if !updatedRecord.IcebergRemovalConfirmed {
+		t.Error("IcebergRemovalConfirmed should be true after confirmation")
+	}
+}
+
+func TestConfirmParquetIcebergRemoval_AlreadyConfirmed(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	ctx := context.Background()
+
+	streamID := "stream-already-confirmed"
+	parquetPath := "streams/" + streamID + "/parquet/already-confirmed.parquet"
+
+	// Create GC record already confirmed
+	gcRecord := ParquetGCRecord{
+		Path:                    parquetPath,
+		DeleteAfterMs:           time.Now().Add(10 * time.Minute).UnixMilli(),
+		CreatedAt:               time.Now().UnixMilli(),
+		SizeBytes:               1024,
+		StreamID:                streamID,
+		IcebergEnabled:          true,
+		IcebergRemovalConfirmed: true, // Already confirmed
+	}
+
+	err := ScheduleParquetGC(ctx, metaStore, gcRecord)
+	if err != nil {
+		t.Fatalf("ScheduleParquetGC failed: %v", err)
+	}
+
+	// Confirm again - should be no-op
+	err = ConfirmParquetIcebergRemoval(ctx, metaStore, streamID, parquetPath)
+	if err != nil {
+		t.Fatalf("ConfirmParquetIcebergRemoval should succeed for already confirmed: %v", err)
+	}
+}
+
+func TestConfirmParquetIcebergRemoval_RecordDoesNotExist(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	ctx := context.Background()
+
+	// Confirm removal for a record that doesn't exist - should be no-op
+	err := ConfirmParquetIcebergRemoval(ctx, metaStore, "nonexistent-stream", "nonexistent.parquet")
+	if err != nil {
+		t.Fatalf("ConfirmParquetIcebergRemoval should succeed for missing record: %v", err)
+	}
+}

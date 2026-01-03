@@ -3523,7 +3523,7 @@
       "internal/iceberg",
       "internal/compaction"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "retention-refcount-atomicity",

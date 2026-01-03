@@ -751,3 +751,125 @@ func containsSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+func TestIndexSwapper_Swap_ParquetRewrite_IcebergEnabled(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMockStore()
+	swapper := NewIndexSwapper(meta)
+
+	streamID := "test-stream-iceberg-rewrite"
+
+	oldParquet := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      0,
+		EndOffset:        100,
+		FileType:         index.FileTypeParquet,
+		RecordCount:      100,
+		MessageCount:     100,
+		MinTimestampMs:   1000,
+		MaxTimestampMs:   2000,
+		CreatedAtMs:      time.Now().UnixMilli(),
+		ParquetPath:      "/parquet/test-stream-iceberg-rewrite/old-parquet.parquet",
+		ParquetSizeBytes: 400,
+	}
+	oldParquetBytes, _ := json.Marshal(oldParquet)
+	oldParquetKey, _ := keys.OffsetIndexKeyPath(streamID, oldParquet.EndOffset, int64(oldParquet.ParquetSizeBytes))
+	meta.Put(ctx, oldParquetKey, oldParquetBytes)
+
+	newParquet := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      0,
+		EndOffset:        100,
+		FileType:         index.FileTypeParquet,
+		RecordCount:      100,
+		MessageCount:     100,
+		MinTimestampMs:   1000,
+		MaxTimestampMs:   2000,
+		CreatedAtMs:      time.Now().UnixMilli(),
+		ParquetPath:      "/parquet/test-stream-iceberg-rewrite/new-parquet.parquet",
+		ParquetSizeBytes: 300,
+	}
+
+	result, err := swapper.Swap(ctx, SwapRequest{
+		StreamID:         streamID,
+		ParquetIndexKeys: []string{oldParquetKey},
+		ParquetEntry:     newParquet,
+		IcebergEnabled:   true, // Iceberg is enabled for this stream
+	})
+	if err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	if len(result.ParquetGCCandidates) != 1 {
+		t.Fatalf("expected 1 Parquet GC candidate, got %d", len(result.ParquetGCCandidates))
+	}
+
+	candidate := result.ParquetGCCandidates[0]
+	if candidate.Path != oldParquet.ParquetPath {
+		t.Errorf("expected GC candidate path %s, got %s", oldParquet.ParquetPath, candidate.Path)
+	}
+	if !candidate.IcebergEnabled {
+		t.Error("expected GC candidate IcebergEnabled to be true when swap has IcebergEnabled=true")
+	}
+	if candidate.IcebergRemovalConfirmed {
+		t.Error("expected GC candidate IcebergRemovalConfirmed to be false initially")
+	}
+}
+
+func TestIndexSwapper_Swap_ParquetRewrite_IcebergDisabled(t *testing.T) {
+	ctx := context.Background()
+	meta := metadata.NewMockStore()
+	swapper := NewIndexSwapper(meta)
+
+	streamID := "test-stream-no-iceberg-rewrite"
+
+	oldParquet := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      0,
+		EndOffset:        100,
+		FileType:         index.FileTypeParquet,
+		RecordCount:      100,
+		MessageCount:     100,
+		MinTimestampMs:   1000,
+		MaxTimestampMs:   2000,
+		CreatedAtMs:      time.Now().UnixMilli(),
+		ParquetPath:      "/parquet/test-stream-no-iceberg-rewrite/old-parquet.parquet",
+		ParquetSizeBytes: 400,
+	}
+	oldParquetBytes, _ := json.Marshal(oldParquet)
+	oldParquetKey, _ := keys.OffsetIndexKeyPath(streamID, oldParquet.EndOffset, int64(oldParquet.ParquetSizeBytes))
+	meta.Put(ctx, oldParquetKey, oldParquetBytes)
+
+	newParquet := index.IndexEntry{
+		StreamID:         streamID,
+		StartOffset:      0,
+		EndOffset:        100,
+		FileType:         index.FileTypeParquet,
+		RecordCount:      100,
+		MessageCount:     100,
+		MinTimestampMs:   1000,
+		MaxTimestampMs:   2000,
+		CreatedAtMs:      time.Now().UnixMilli(),
+		ParquetPath:      "/parquet/test-stream-no-iceberg-rewrite/new-parquet.parquet",
+		ParquetSizeBytes: 300,
+	}
+
+	result, err := swapper.Swap(ctx, SwapRequest{
+		StreamID:         streamID,
+		ParquetIndexKeys: []string{oldParquetKey},
+		ParquetEntry:     newParquet,
+		IcebergEnabled:   false, // Iceberg is NOT enabled for this stream
+	})
+	if err != nil {
+		t.Fatalf("Swap failed: %v", err)
+	}
+
+	if len(result.ParquetGCCandidates) != 1 {
+		t.Fatalf("expected 1 Parquet GC candidate, got %d", len(result.ParquetGCCandidates))
+	}
+
+	candidate := result.ParquetGCCandidates[0]
+	if candidate.IcebergEnabled {
+		t.Error("expected GC candidate IcebergEnabled to be false when swap has IcebergEnabled=false")
+	}
+}

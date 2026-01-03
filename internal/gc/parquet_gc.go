@@ -355,3 +355,49 @@ func extractParquetID(path string) string {
 
 	return filename
 }
+
+// ConfirmParquetIcebergRemoval marks a Parquet GC record as having been removed from
+// Iceberg metadata. This is called after a successful ReplaceFiles commit to the Iceberg
+// catalog. Once confirmed, the Parquet file becomes eligible for deletion by the GC worker.
+func ConfirmParquetIcebergRemoval(ctx context.Context, meta metadata.MetadataStore, streamID, parquetPath string) error {
+	parquetID := extractParquetID(parquetPath)
+	if parquetID == "" {
+		return fmt.Errorf("could not extract parquet ID from path: %s", parquetPath)
+	}
+
+	gcKey := keys.ParquetGCKeyPath(streamID, parquetID)
+
+	result, err := meta.Get(ctx, gcKey)
+	if err != nil {
+		return fmt.Errorf("get Parquet GC record: %w", err)
+	}
+	if !result.Exists {
+		return nil
+	}
+
+	var record ParquetGCRecord
+	if err := json.Unmarshal(result.Value, &record); err != nil {
+		return fmt.Errorf("unmarshal Parquet GC record: %w", err)
+	}
+
+	if record.IcebergRemovalConfirmed {
+		return nil
+	}
+
+	record.IcebergRemovalConfirmed = true
+
+	recordBytes, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal Parquet GC record: %w", err)
+	}
+
+	_, err = meta.Put(ctx, gcKey, recordBytes, metadata.WithExpectedVersion(result.Version))
+	if err != nil {
+		if errors.Is(err, metadata.ErrVersionMismatch) {
+			return ConfirmParquetIcebergRemoval(ctx, meta, streamID, parquetPath)
+		}
+		return fmt.Errorf("update Parquet GC record: %w", err)
+	}
+
+	return nil
+}
