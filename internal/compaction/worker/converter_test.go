@@ -1529,3 +1529,150 @@ func TestConvertWALToParquet_MultipleBatches_OneCorrupted(t *testing.T) {
 		t.Errorf("expected error message to mention CRC, got: %v", err)
 	}
 }
+
+func TestConvertWALToParquet_RecordCRCPopulated(t *testing.T) {
+	// Create a batch with known content
+	records := []testRecord{
+		{key: []byte("key1"), value: []byte("value1"), timestampDelta: 0},
+		{key: []byte("key2"), value: []byte("value2"), timestampDelta: 100},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+	walData := buildTestWAL([][]byte{batch}, 123)
+
+	result, err := ConvertWALToParquet(walData, 0, 0)
+	if err != nil {
+		t.Fatalf("ConvertWALToParquet failed: %v", err)
+	}
+
+	// Read back the Parquet records
+	reader, err := NewReader(result.ParquetData)
+	if err != nil {
+		t.Fatalf("NewReader failed: %v", err)
+	}
+	defer reader.Close()
+
+	parquetRecords, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if len(parquetRecords) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(parquetRecords))
+	}
+
+	// Verify each record has a non-nil RecordCRC
+	for i, rec := range parquetRecords {
+		if rec.RecordCRC == nil {
+			t.Errorf("record %d: expected non-nil RecordCRC", i)
+			continue
+		}
+
+		// Verify the CRC matches what we compute
+		expectedCRC := computeRecordCRC(rec.Key, rec.Value, rec.Headers)
+		if *rec.RecordCRC != expectedCRC {
+			t.Errorf("record %d: CRC mismatch - got %d, expected %d", i, *rec.RecordCRC, expectedCRC)
+		}
+	}
+}
+
+func TestComputeRecordCRC_Consistency(t *testing.T) {
+	key := []byte("test-key")
+	value := []byte("test-value")
+	headers := []Header{
+		{Key: "h1", Value: []byte("v1")},
+		{Key: "h2", Value: nil},
+	}
+
+	// Same inputs should produce same CRC
+	crc1 := computeRecordCRC(key, value, headers)
+	crc2 := computeRecordCRC(key, value, headers)
+	if crc1 != crc2 {
+		t.Errorf("CRC not consistent: %d != %d", crc1, crc2)
+	}
+
+	// Different inputs should produce different CRCs
+	crc3 := computeRecordCRC([]byte("different-key"), value, headers)
+	if crc1 == crc3 {
+		t.Error("CRC should differ for different keys")
+	}
+
+	crc4 := computeRecordCRC(key, []byte("different-value"), headers)
+	if crc1 == crc4 {
+		t.Error("CRC should differ for different values")
+	}
+
+	crc5 := computeRecordCRC(key, value, nil)
+	if crc1 == crc5 {
+		t.Error("CRC should differ with no headers")
+	}
+}
+
+func TestComputeRecordCRC_NilKeyValue(t *testing.T) {
+	// Nil key and value should not panic
+	crc := computeRecordCRC(nil, nil, nil)
+	if crc != 0 {
+		// CRC32C of empty input is 0
+		t.Logf("CRC for nil inputs: %d", crc)
+	}
+
+	// Empty key/value vs nil should produce different CRCs
+	crcEmpty := computeRecordCRC([]byte{}, []byte{}, nil)
+	crcNil := computeRecordCRC(nil, nil, nil)
+	// Empty byte slices add no bytes, so should equal nil case
+	if crcEmpty != crcNil {
+		t.Errorf("empty vs nil CRC mismatch: %d vs %d", crcEmpty, crcNil)
+	}
+}
+
+func TestConvertWALToParquet_RecordCRCWithHeaders(t *testing.T) {
+	// Create a batch with headers (testRecord already supports headers)
+	records := []testRecord{
+		{
+			key:            []byte("key1"),
+			value:          []byte("value1"),
+			timestampDelta: 0,
+			headers: []testHeader{
+				{key: "trace-id", value: []byte("abc123")},
+				{key: "source", value: []byte("test")},
+			},
+		},
+	}
+	batch := buildTestRecordBatch(records, 1000, 0)
+	walData := buildTestWAL([][]byte{batch}, 123)
+
+	result, err := ConvertWALToParquet(walData, 0, 0)
+	if err != nil {
+		t.Fatalf("ConvertWALToParquet failed: %v", err)
+	}
+
+	reader, err := NewReader(result.ParquetData)
+	if err != nil {
+		t.Fatalf("NewReader failed: %v", err)
+	}
+	defer reader.Close()
+
+	parquetRecords, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if len(parquetRecords) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(parquetRecords))
+	}
+
+	rec := parquetRecords[0]
+	if rec.RecordCRC == nil {
+		t.Fatal("expected non-nil RecordCRC")
+	}
+
+	// Verify headers are present
+	if len(rec.Headers) != 2 {
+		t.Errorf("expected 2 headers, got %d", len(rec.Headers))
+	}
+
+	// Verify CRC includes headers
+	expectedCRC := computeRecordCRC(rec.Key, rec.Value, rec.Headers)
+	if *rec.RecordCRC != expectedCRC {
+		t.Errorf("CRC mismatch with headers - got %d, expected %d", *rec.RecordCRC, expectedCRC)
+	}
+}

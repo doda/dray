@@ -18,6 +18,7 @@ const (
 	FieldIDProducerEpoch = 8
 	FieldIDBaseSequence  = 9
 	FieldIDAttributes    = 10
+	FieldIDRecordCRC     = 14
 
 	FieldIDHeadersElement = 11
 	FieldIDHeaderKey      = 12
@@ -117,6 +118,13 @@ func DefaultSchema() *iceberg.Schema {
 			Type:     iceberg.PrimitiveTypes.Int32,
 			Required: true,
 			Doc:      "Record batch attributes",
+		},
+		iceberg.NestedField{
+			ID:       FieldIDRecordCRC,
+			Name:     "record_crc",
+			Type:     iceberg.PrimitiveTypes.Int32,
+			Required: false,
+			Doc:      "Record CRC32C for debugging/validation (optional)",
 		},
 	)
 }

@@ -466,7 +466,30 @@ func parseRecord(data []byte, partition int32, offset int64, firstTimestamp int6
 		rec.BaseSequence = &baseSequence
 	}
 
+	// Compute and set record CRC for debugging/validation
+	recCRC := computeRecordCRC(key, value, headers)
+	rec.RecordCRC = &recCRC
+
 	return rec, pos, nil
+}
+
+// computeRecordCRC calculates a CRC32C over the record's content (key, value, headers).
+// This is used for debugging/validation per SPEC 5.3.
+func computeRecordCRC(key, value []byte, headers []Header) int32 {
+	h := crc32.New(crc32cTable)
+	if key != nil {
+		h.Write(key)
+	}
+	if value != nil {
+		h.Write(value)
+	}
+	for _, hdr := range headers {
+		h.Write([]byte(hdr.Key))
+		if hdr.Value != nil {
+			h.Write(hdr.Value)
+		}
+	}
+	return int32(h.Sum32())
 }
 
 // readVarint reads a zigzag-encoded signed varint from the data.

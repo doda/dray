@@ -836,6 +836,7 @@ func TestParquetSchema_MatchesSpec(t *testing.T) {
 		"producer_epoch": true,
 		"base_sequence":  true,
 		"attributes":     true,
+		"record_crc":     true,
 	}
 
 	for _, field := range schema.Fields() {
@@ -848,5 +849,130 @@ func TestParquetSchema_MatchesSpec(t *testing.T) {
 
 	for col := range expectedColumns {
 		t.Errorf("missing column: %s", col)
+	}
+}
+
+func TestWriter_RecordCRC(t *testing.T) {
+	// Test that record_crc field is written and readable
+	crc1 := int32(12345)
+	crc2 := int32(-9876)
+
+	records := []Record{
+		{
+			Partition:   0,
+			Offset:      0,
+			Timestamp:   1000,
+			Key:         []byte("key1"),
+			Value:       []byte("value1"),
+			Attributes:  0,
+			RecordCRC:   &crc1,
+		},
+		{
+			Partition:   0,
+			Offset:      1,
+			Timestamp:   1001,
+			Key:         []byte("key2"),
+			Value:       []byte("value2"),
+			Attributes:  0,
+			RecordCRC:   &crc2,
+		},
+		{
+			Partition:   0,
+			Offset:      2,
+			Timestamp:   1002,
+			Key:         []byte("key3"),
+			Value:       []byte("value3"),
+			Attributes:  0,
+			RecordCRC:   nil, // optional - can be nil
+		},
+	}
+
+	data, _, err := WriteToBuffer(records)
+	if err != nil {
+		t.Fatalf("WriteToBuffer failed: %v", err)
+	}
+
+	reader, err := NewReader(data)
+	if err != nil {
+		t.Fatalf("NewReader failed: %v", err)
+	}
+	defer reader.Close()
+
+	readRecords, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if len(readRecords) != 3 {
+		t.Fatalf("expected 3 records, got %d", len(readRecords))
+	}
+
+	// Record 0: has CRC
+	if readRecords[0].RecordCRC == nil {
+		t.Errorf("record 0: expected non-nil record_crc")
+	} else if *readRecords[0].RecordCRC != crc1 {
+		t.Errorf("record 0: expected record_crc %d, got %d", crc1, *readRecords[0].RecordCRC)
+	}
+
+	// Record 1: has CRC
+	if readRecords[1].RecordCRC == nil {
+		t.Errorf("record 1: expected non-nil record_crc")
+	} else if *readRecords[1].RecordCRC != crc2 {
+		t.Errorf("record 1: expected record_crc %d, got %d", crc2, *readRecords[1].RecordCRC)
+	}
+
+	// Record 2: nil CRC
+	if readRecords[2].RecordCRC != nil {
+		t.Errorf("record 2: expected nil record_crc, got %d", *readRecords[2].RecordCRC)
+	}
+}
+
+func TestWriter_RoundTripPreservesRecordCRC(t *testing.T) {
+	pid := int64(999)
+	epoch := int32(42)
+	seq := int32(7)
+	crc := int32(0x12345678)
+
+	original := Record{
+		Partition:     3,
+		Offset:        12345,
+		Timestamp:     time.Now().UnixMilli(),
+		Key:           []byte("test-key"),
+		Value:         []byte("test-value"),
+		Headers: []Header{
+			{Key: "trace-id", Value: []byte("abc123")},
+		},
+		ProducerID:    &pid,
+		ProducerEpoch: &epoch,
+		BaseSequence:  &seq,
+		Attributes:    8,
+		RecordCRC:     &crc,
+	}
+
+	data, _, err := WriteToBuffer([]Record{original})
+	if err != nil {
+		t.Fatalf("WriteToBuffer failed: %v", err)
+	}
+
+	reader, err := NewReader(data)
+	if err != nil {
+		t.Fatalf("NewReader failed: %v", err)
+	}
+	defer reader.Close()
+
+	readRecords, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll failed: %v", err)
+	}
+
+	if len(readRecords) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(readRecords))
+	}
+
+	rec := readRecords[0]
+	if rec.RecordCRC == nil {
+		t.Errorf("expected non-nil record_crc")
+	} else if *rec.RecordCRC != crc {
+		t.Errorf("record_crc mismatch: expected %d, got %d", crc, *rec.RecordCRC)
 	}
 }

@@ -75,6 +75,7 @@ type ParquetRecordWithHeaders struct {
 	ProducerEpoch *int32          `parquet:"producer_epoch,optional"`
 	BaseSequence  *int32          `parquet:"base_sequence,optional"`
 	Attributes    int32           `parquet:"attributes"`
+	RecordCRC     *int32          `parquet:"record_crc,optional"`
 }
 
 // ReadBatches reads records from a Parquet file and reconstructs Kafka batches.

@@ -25,6 +25,7 @@ type Record struct {
 	ProducerEpoch *int32   `parquet:"producer_epoch,optional"`
 	BaseSequence  *int32   `parquet:"base_sequence,optional"`
 	Attributes    int32    `parquet:"attributes"`
+	RecordCRC     *int32   `parquet:"record_crc,optional"`
 }
 
 // Header represents a single Kafka record header.
