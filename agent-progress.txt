@@ -1784,3 +1784,24 @@ Start with project-setup, then follow spec phases:
   - `./init.sh --quick` - SUCCESS
 - **No blockers or follow-ups identified**
 [2026-01-03T07:48:04.753Z] Audit (codex): FAIL, 5 area(s), 17 new, lens=performance.
+[2026-01-03T08:30:00Z] Completed cancel-inflight-fetch-on-conn-close
+- **Task**: Tie request contexts to connection lifecycle so long-poll fetches stop when clients disconnect
+- **What was done**:
+  - Added per-connection context in handleConn that is cancelled when connection closes
+  - Implemented monitorConnection() using unix.Poll with POLLRDHUP to detect remote close
+  - Context is passed to handlers, allowing long-poll fetches to exit early on disconnect
+  - Added TestServer_LongPollExitsOnConnectionClose test
+- **Files modified**:
+  - `internal/server/server.go` (added connCtx, reqCtx, monitorConnection using unix.Poll)
+  - `internal/server/server_test.go` (added longPollHandler and test)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/server/... -run TestServer_LongPoll` - PASS
+  - `go test ./internal/server/...` - all tests pass
+  - `go test ./internal/protocol/...` - all tests pass
+  - `./init.sh --quick` - SUCCESS
+- **Technical notes**:
+  - POLLRDHUP is key to detecting remote close without reading data
+  - Simple POLLIN/POLLHUP didn't work (POLLIN is set when remote closes)
+  - bufio.Reader Peek approach failed due to error caching breaking subsequent reads
+- **No blockers or follow-ups identified**

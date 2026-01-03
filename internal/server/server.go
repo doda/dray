@@ -19,6 +19,7 @@ import (
 	"github.com/dray-io/dray/internal/metrics"
 	"github.com/dray-io/dray/internal/protocol"
 	"github.com/twmb/franz-go/pkg/kmsg"
+	"golang.org/x/sys/unix"
 )
 
 // ErrServerClosed is returned when operations are attempted on a closed server.
@@ -295,6 +296,11 @@ func (s *Server) ReloadCertificate() error {
 
 func (s *Server) handleConn(conn net.Conn) {
 	defer s.connWg.Done()
+
+	// Create per-connection context that gets cancelled when connection closes.
+	// This allows long-running handlers (e.g., long-poll fetch) to exit early.
+	connCtx, connCancel := context.WithCancel(context.Background())
+	defer connCancel()
 	defer conn.Close()
 
 	connID := s.connID.Add(1)
@@ -367,7 +373,8 @@ func (s *Server) handleConn(conn net.Conn) {
 		})
 		reqLogger.Debug("request received")
 
-		ctx := context.Background()
+		// Use connection context as parent so handlers can detect connection close.
+		ctx := connCtx
 		ctx = logging.WithLoggerCtx(ctx, reqLogger)
 
 		// Store connection state in context for SASL handlers to update
@@ -392,7 +399,21 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 		s.inflightWg.Add(1)
 		s.requestMu.Unlock()
-		response, err := s.handler.HandleRequest(ctx, header, payload)
+
+		// Create per-request context that gets cancelled when connection closes.
+		// This enables long-running handlers (e.g., long-poll fetch) to exit early.
+		reqCtx, reqCancel := context.WithCancel(ctx)
+
+		// Monitor connection for closure while handler is running.
+		// Use poll syscall to detect connection state without reading data.
+		connMonitorDone := make(chan struct{})
+		go s.monitorConnection(conn, reqCtx, reqCancel, connMonitorDone)
+
+		response, err := s.handler.HandleRequest(reqCtx, header, payload)
+
+		// Stop monitoring and wait for goroutine to finish
+		reqCancel()
+		<-connMonitorDone
 		if err != nil {
 			reqLogger.Errorf("handler error", map[string]any{"error": err.Error()})
 			if s.metrics != nil {
@@ -583,6 +604,70 @@ func (s *Server) writeResponse(w io.Writer, response []byte) error {
 	}
 
 	return nil
+}
+
+// monitorConnection watches for connection closure while a handler is running.
+// It uses poll syscall to detect when the remote end closes the connection,
+// without reading any data (which could consume pipelined requests).
+// When closure is detected, it cancels the request context so the handler can exit early.
+func (s *Server) monitorConnection(conn net.Conn, ctx context.Context, cancel context.CancelFunc, done chan struct{}) {
+	defer close(done)
+
+	// Get the underlying file descriptor for polling
+	tcpConn, ok := conn.(*net.TCPConn)
+	if !ok {
+		// Not a TCP connection, can't monitor
+		<-ctx.Done()
+		return
+	}
+
+	rawConn, err := tcpConn.SyscallConn()
+	if err != nil {
+		// Can't get raw conn, fall back to waiting for context
+		<-ctx.Done()
+		return
+	}
+
+	var fd int
+	if err := rawConn.Control(func(fdPtr uintptr) {
+		fd = int(fdPtr)
+	}); err != nil {
+		<-ctx.Done()
+		return
+	}
+
+	// Poll for connection close using POLLRDHUP which specifically detects
+	// when the remote end has shutdown the connection (sent FIN).
+	pollFds := []unix.PollFd{{
+		Fd:     int32(fd),
+		Events: unix.POLLRDHUP | unix.POLLHUP | unix.POLLERR,
+	}}
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Handler finished or was cancelled externally
+			return
+		default:
+		}
+
+		// Poll with 100ms timeout
+		n, err := unix.Poll(pollFds, 100)
+		if err != nil {
+			if err == unix.EINTR {
+				continue // Interrupted, retry
+			}
+			// Poll error, cancel context
+			cancel()
+			return
+		}
+
+		if n > 0 && pollFds[0].Revents != 0 {
+			// POLLRDHUP, POLLHUP, or POLLERR all indicate connection issues
+			cancel()
+			return
+		}
+	}
 }
 
 // EncodeResponseHeader creates a Kafka response header.
