@@ -42,7 +42,7 @@ func (d *Decoder) Decode() (*WAL, error) {
 
 // DecodeFromBytes parses a WAL from a byte slice.
 func DecodeFromBytes(data []byte) (*WAL, error) {
-	if len(data) < HeaderSize+FooterSize {
+	if len(data) < HeaderSize {
 		return nil, ErrTruncatedHeader
 	}
 
@@ -52,13 +52,16 @@ func DecodeFromBytes(data []byte) (*WAL, error) {
 		return nil, err
 	}
 
-	// Validate CRC32C footer
-	if err := validateCRC(data); err != nil {
-		return nil, err
+	// Check if footer is present and validate CRC if so
+	hasFooter := hasFooter(data, header)
+	if hasFooter {
+		if err := validateCRC(data); err != nil {
+			return nil, err
+		}
 	}
 
 	// Parse chunk index
-	indexEntries, err := parseChunkIndex(data, header)
+	indexEntries, err := parseChunkIndex(data, header, hasFooter)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +125,15 @@ func parseHeader(data []byte) (*Header, error) {
 	return header, nil
 }
 
+// hasFooter determines if a CRC32C footer is present in the WAL data.
+// The footer is optional in WAL v1. We detect its presence by checking if
+// the data length matches the expected size with a footer.
+func hasFooter(data []byte, header *Header) bool {
+	indexSize := uint64(header.ChunkCount) * uint64(ChunkIndexEntrySize)
+	expectedWithFooter := header.ChunkIndexOffset + indexSize + FooterSize
+	return uint64(len(data)) == expectedWithFooter
+}
+
 // validateCRC checks the CRC32C footer against the computed checksum.
 func validateCRC(data []byte) error {
 	if len(data) < FooterSize {
@@ -140,7 +152,7 @@ func validateCRC(data []byte) error {
 }
 
 // parseChunkIndex parses all chunk index entries from the WAL.
-func parseChunkIndex(data []byte, header *Header) ([]ChunkIndexEntry, error) {
+func parseChunkIndex(data []byte, header *Header, footerPresent bool) ([]ChunkIndexEntry, error) {
 	if header.ChunkCount == 0 {
 		return nil, nil
 	}
@@ -156,8 +168,14 @@ func parseChunkIndex(data []byte, header *Header) ([]ChunkIndexEntry, error) {
 	}
 	indexEnd := header.ChunkIndexOffset + indexSize
 
-	// Validate index bounds (must not overlap with footer)
-	if indexEnd > dataLen-uint64(FooterSize) {
+	// Validate index bounds
+	var maxIndexEnd uint64
+	if footerPresent {
+		maxIndexEnd = dataLen - uint64(FooterSize)
+	} else {
+		maxIndexEnd = dataLen
+	}
+	if indexEnd > maxIndexEnd {
 		return nil, ErrTruncatedIndex
 	}
 

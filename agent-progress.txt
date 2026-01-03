@@ -1954,3 +1954,26 @@ Start with project-setup, then follow spec phases:
   - Backoff formula: `backoff = min(backoff * factor, maxBackoff)`
   - Maintains backward compatibility: existing calls without options use defaults
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - wal-decoder-optional-footer
+
+- **Task**: wal-decoder-optional-footer (PASS)
+- **Summary**: Made WAL CRC32C footer validation conditional on footer presence per spec.
+- **Changes made**:
+  - Reduced minimum size check in `DecodeFromBytes` from `HeaderSize+FooterSize` to just `HeaderSize`
+  - Added `hasFooter()` helper function to detect footer presence based on expected data length
+  - Updated `parseChunkIndex()` to take `footerPresent` parameter and adjust bounds check accordingly
+  - CRC validation is now only performed when footer is present
+  - Added `TestDecodeWithoutFooter` test (multiple chunks, multiple batches)
+  - Added `TestDecodeEmptyWALWithoutFooter` test (empty WAL without footer)
+  - Fixed `TestDecodeTruncatedHeader` to check `HeaderSize-1` instead of `HeaderSize+FooterSize-1`
+- **Files modified**:
+  - `internal/wal/decoder.go` (added hasFooter, modified DecodeFromBytes and parseChunkIndex)
+  - `internal/wal/decoder_test.go` (fixed truncated header test, added 2 new footer-less tests)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/wal/... -run "TestDecodeWithoutFooter|TestDecodeEmptyWALWithoutFooter"` - PASS
+  - `go test ./internal/wal/...` - all tests pass
+  - `go test ./...` - all project tests pass
+  - `./init.sh --quick` - SUCCESS
+- **No blockers or follow-ups identified**

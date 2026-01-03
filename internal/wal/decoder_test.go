@@ -301,8 +301,8 @@ func TestDecodeTruncatedHeader(t *testing.T) {
 		t.Errorf("expected ErrTruncatedHeader, got %v", err)
 	}
 
-	// Just under minimum size
-	_, err = DecodeFromBytes(make([]byte, HeaderSize+FooterSize-1))
+	// Just under header size
+	_, err = DecodeFromBytes(make([]byte, HeaderSize-1))
 	if !errors.Is(err, ErrTruncatedHeader) {
 		t.Errorf("expected ErrTruncatedHeader, got %v", err)
 	}
@@ -756,5 +756,121 @@ func TestDecodeEmptyBatchData(t *testing.T) {
 	}
 	if len(decoded.Chunks[0].Batches[0].Data) != 0 {
 		t.Errorf("batch data length = %d, want 0", len(decoded.Chunks[0].Batches[0].Data))
+	}
+}
+
+func TestDecodeWithoutFooter(t *testing.T) {
+	walID := uuid.MustParse("abcdef01-2345-6789-abcd-ef0123456789")
+	wal := NewWAL(walID, 99, 1700000000000)
+
+	batch1 := []byte("first batch data here")
+	batch2 := []byte("second batch")
+	wal.AddChunk(Chunk{
+		StreamID: 100,
+		Batches: []BatchEntry{
+			{Data: batch1},
+			{Data: batch2},
+		},
+		RecordCount:    5,
+		MinTimestampMs: 1000,
+		MaxTimestampMs: 2000,
+	})
+	wal.AddChunk(Chunk{
+		StreamID:       200,
+		Batches:        []BatchEntry{{Data: []byte("stream 200 data")}},
+		RecordCount:    1,
+		MinTimestampMs: 3000,
+		MaxTimestampMs: 3000,
+	})
+
+	// Encode normally (with footer)
+	data, err := EncodeToBytes(wal)
+	if err != nil {
+		t.Fatalf("EncodeToBytes failed: %v", err)
+	}
+
+	// Verify it works with footer
+	_, err = DecodeFromBytes(data)
+	if err != nil {
+		t.Fatalf("DecodeFromBytes with footer failed: %v", err)
+	}
+
+	// Strip the CRC32C footer (last 4 bytes)
+	dataWithoutFooter := data[:len(data)-FooterSize]
+
+	// Decode without footer should succeed
+	decoded, err := DecodeFromBytes(dataWithoutFooter)
+	if err != nil {
+		t.Fatalf("DecodeFromBytes without footer failed: %v", err)
+	}
+
+	// Verify the decoded data matches
+	if decoded.WalID != walID {
+		t.Errorf("WalID = %v, want %v", decoded.WalID, walID)
+	}
+	if decoded.MetaDomain != 99 {
+		t.Errorf("MetaDomain = %d, want 99", decoded.MetaDomain)
+	}
+	if decoded.CreatedAtUnixMs != 1700000000000 {
+		t.Errorf("CreatedAtUnixMs = %d, want 1700000000000", decoded.CreatedAtUnixMs)
+	}
+	if len(decoded.Chunks) != 2 {
+		t.Fatalf("len(Chunks) = %d, want 2", len(decoded.Chunks))
+	}
+
+	// Chunks are sorted by StreamID
+	chunk0 := decoded.Chunks[0]
+	if chunk0.StreamID != 100 {
+		t.Errorf("chunk[0].StreamID = %d, want 100", chunk0.StreamID)
+	}
+	if chunk0.RecordCount != 5 {
+		t.Errorf("chunk[0].RecordCount = %d, want 5", chunk0.RecordCount)
+	}
+	if len(chunk0.Batches) != 2 {
+		t.Fatalf("chunk[0] len(Batches) = %d, want 2", len(chunk0.Batches))
+	}
+	if !bytes.Equal(chunk0.Batches[0].Data, batch1) {
+		t.Errorf("chunk[0].Batches[0].Data = %q, want %q", chunk0.Batches[0].Data, batch1)
+	}
+	if !bytes.Equal(chunk0.Batches[1].Data, batch2) {
+		t.Errorf("chunk[0].Batches[1].Data = %q, want %q", chunk0.Batches[1].Data, batch2)
+	}
+
+	chunk1 := decoded.Chunks[1]
+	if chunk1.StreamID != 200 {
+		t.Errorf("chunk[1].StreamID = %d, want 200", chunk1.StreamID)
+	}
+	if chunk1.RecordCount != 1 {
+		t.Errorf("chunk[1].RecordCount = %d, want 1", chunk1.RecordCount)
+	}
+}
+
+func TestDecodeEmptyWALWithoutFooter(t *testing.T) {
+	walID := uuid.New()
+	wal := NewWAL(walID, 42, 1703686800000)
+
+	// Encode with footer
+	data, err := EncodeToBytes(wal)
+	if err != nil {
+		t.Fatalf("EncodeToBytes failed: %v", err)
+	}
+
+	// Strip footer
+	dataWithoutFooter := data[:len(data)-FooterSize]
+
+	// Decode without footer
+	decoded, err := DecodeFromBytes(dataWithoutFooter)
+	if err != nil {
+		t.Fatalf("DecodeFromBytes without footer failed: %v", err)
+	}
+
+	if decoded.WalID != walID {
+		t.Errorf("WalID = %v, want %v", decoded.WalID, walID)
+	}
+	if decoded.MetaDomain != 42 {
+		t.Errorf("MetaDomain = %d, want 42", decoded.MetaDomain)
+	}
+	if len(decoded.Chunks) != 0 {
+		t.Errorf("len(Chunks) = %d, want 0", len(decoded.Chunks))
 	}
 }
