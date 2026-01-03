@@ -1619,3 +1619,23 @@ Start with project-setup, then follow spec phases:
 - Codex working session error: Codex working produced no agent messages
 - Auto-commit created by harness for uncommitted changes.
 - Next session: review the "Auto-commit uncommitted changes (working)" commit before resuming.
+
+## Session: 2026-01-03 - list-groups-prefix-scope
+
+- **Task**: list-groups-prefix-scope (PASS)
+- **Summary**: Verified and documented that ListGroups already uses a scoped prefix for O(groups) listing performance.
+- **Key findings**:
+  - ListGroups was already correctly using `/dray/v1/groups-state/` prefix instead of `/dray/v1/groups/`
+  - This ensures O(groups) scan instead of O(all group keys) at scale
+  - Members/assignments/offsets are stored under `/dray/v1/groups/<groupId>/...` and not scanned during list
+- **Changes made**:
+  - Added `TestStore_ListGroupsDoesNotReadMemberOrOffsetKeys` test in `internal/groups/store_test.go`
+  - Fixed missing `testConfigWithOxia` helper in `cmd/drayd/test_helpers.go`
+  - Test verifies key layout ensures member/assignment/offset keys don't match listing prefix
+- **Files modified**:
+  - `internal/groups/store_test.go` (added verification test)
+  - `cmd/drayd/test_helpers.go` (created - fixed compilation issue from previous session)
+- **Verification**: 
+  - `go test ./internal/groups/...` - all 143 tests pass
+  - `./init.sh --quick` - SUCCESS
+- **No blockers or follow-ups identified**

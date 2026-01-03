@@ -3506,7 +3506,7 @@
     "scope": [
       "internal/groups"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "iceberg-catalog-remove-files-support",
