@@ -3785,7 +3785,7 @@
     "scope": [
       "internal/fetch/parquet_reader.go"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "iceberg-datafile-stats-population",

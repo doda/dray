@@ -2069,3 +2069,36 @@ Start with project-setup, then follow spec phases:
   - Not-found search: 4.2% of file read
 - **No blockers or follow-ups identified**
 
+
+## Session: 2026-01-03 - parquet-fetch-batch-aggregation
+
+- **Task**: parquet-fetch-batch-aggregation (PASS)
+- **Summary**: Implemented record batch aggregation for Parquet fetches to reduce overhead from one-batch-per-record.
+- **Changes made**:
+  - Added `DefaultBatchTargetSize` (64KB) and `DefaultBatchMaxRecords` (1000) constants
+  - Added `recordAggregator` struct to accumulate Parquet records and emit aggregated Kafka batches
+  - Added `buildKafkaRecordWithDeltas()` function to build records with proper offset/timestamp deltas
+  - Modified `ReadBatches()` to use aggregator instead of creating one batch per record
+  - Updated tests `TestParquetReader_ReadBatches` to expect aggregated batches
+  - Updated `TestParquetReader_MaxBytesLimit` to use large enough records to trigger aggregation
+  - Added `TestParquetReader_BatchAggregation_PreservesOffsetsAndOrdering` to verify:
+    - Records are aggregated into fewer batches
+    - CRC is valid for aggregated batches
+    - lastOffsetDelta and recordCount are correct
+    - Offset deltas are sequential (validated via `ValidateOffsetDeltas`)
+  - Added `TestParquetReader_BatchAggregation_RespectsMaxRecords` to verify max records limit
+- **Files modified**:
+  - `internal/fetch/parquet_reader.go` (added aggregator, constants, buildKafkaRecordWithDeltas)
+  - `internal/fetch/parquet_reader_test.go` (updated tests, added 2 new aggregation tests)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/fetch/... -run TestParquetReader` - all tests pass
+  - `go test ./...` - all project tests pass
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - Aggregator flushes when size >= 64KB or records >= 1000
+  - Each record stores correct offsetDelta (0, 1, 2, ...) and timestampDelta relative to batch base
+  - Batch header correctly sets lastOffsetDelta = recordCount - 1
+  - CRC32C computed over aggregated batch data
+  - Example: 50 records aggregated into 1 batch, 2500 records into 3 batches
+- **No blockers or follow-ups identified**
