@@ -497,7 +497,43 @@ func (a *Appender) IsCommitApplied(ctx context.Context, topicName, jobID string)
 // This is a helper to build the DataFile struct from compaction worker output.
 func BuildDataFileFromStats(path string, partition int32, recordCount, fileSizeBytes int64, stats *DataFileStats) DataFile {
 	df := DataFile{
-		Path: path,
+		Path:           path,
+		RecordCount:    recordCount,
+		FileSizeBytes:  fileSizeBytes,
+		PartitionValue: partition,
+	}
+
+	if stats != nil {
+		if stats.LowerBounds != nil {
+			df.LowerBounds = make(map[int][]byte, len(stats.LowerBounds))
+			for k, v := range stats.LowerBounds {
+				df.LowerBounds[int(k)] = v
+			}
+		}
+		if stats.UpperBounds != nil {
+			df.UpperBounds = make(map[int][]byte, len(stats.UpperBounds))
+			for k, v := range stats.UpperBounds {
+				df.UpperBounds[int(k)] = v
+			}
+		}
+		if stats.NullValueCounts != nil {
+			df.NullValueCounts = make(map[int]int64, len(stats.NullValueCounts))
+			for k, v := range stats.NullValueCounts {
+				df.NullValueCounts[int(k)] = v
+			}
+		}
+		if stats.ValueCounts != nil {
+			df.ValueCounts = make(map[int]int64, len(stats.ValueCounts))
+			for k, v := range stats.ValueCounts {
+				df.ValueCounts[int(k)] = v
+			}
+		}
+		if stats.ColumnSizes != nil {
+			df.ColumnSizes = make(map[int]int64, len(stats.ColumnSizes))
+			for k, v := range stats.ColumnSizes {
+				df.ColumnSizes[int(k)] = v
+			}
+		}
 	}
 
 	return df
