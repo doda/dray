@@ -6,9 +6,18 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
+)
+
+// Index cache watcher backoff configuration defaults.
+const (
+	defaultIndexCacheInitialBackoff = 100 * time.Millisecond
+	defaultIndexCacheMaxBackoff     = 30 * time.Second
+	defaultIndexCacheBackoffFactor  = 2.0
 )
 
 // CachedIndexEntry represents a cached index entry with revision stamping.
@@ -36,6 +45,18 @@ type IndexCacheConfig struct {
 	// MaxEntriesPerStream limits entries cached per stream.
 	// Default: 1000.
 	MaxEntriesPerStream int
+
+	// InitialBackoff is the initial delay for watcher retry on errors.
+	// Default: 100ms.
+	InitialBackoff time.Duration
+
+	// MaxBackoff is the maximum delay for watcher retry on errors.
+	// Default: 30s.
+	MaxBackoff time.Duration
+
+	// BackoffFactor is the multiplier for exponential backoff.
+	// Default: 2.0.
+	BackoffFactor float64
 }
 
 // DefaultIndexCacheConfig returns sensible defaults for IndexCache.
@@ -43,6 +64,9 @@ func DefaultIndexCacheConfig() IndexCacheConfig {
 	return IndexCacheConfig{
 		MaxMemoryBytes:      64 * 1024 * 1024, // 64MB
 		MaxEntriesPerStream: 1000,
+		InitialBackoff:      defaultIndexCacheInitialBackoff,
+		MaxBackoff:          defaultIndexCacheMaxBackoff,
+		BackoffFactor:       defaultIndexCacheBackoffFactor,
 	}
 }
 
@@ -80,11 +104,21 @@ type IndexCache struct {
 // The cache automatically starts watching for notifications to invalidate
 // stale entries. Call Close() when the cache is no longer needed.
 func NewIndexCache(store metadata.MetadataStore, config IndexCacheConfig) *IndexCache {
+	defaults := DefaultIndexCacheConfig()
 	if config.MaxMemoryBytes <= 0 {
-		config.MaxMemoryBytes = DefaultIndexCacheConfig().MaxMemoryBytes
+		config.MaxMemoryBytes = defaults.MaxMemoryBytes
 	}
 	if config.MaxEntriesPerStream <= 0 {
-		config.MaxEntriesPerStream = DefaultIndexCacheConfig().MaxEntriesPerStream
+		config.MaxEntriesPerStream = defaults.MaxEntriesPerStream
+	}
+	if config.InitialBackoff <= 0 {
+		config.InitialBackoff = defaults.InitialBackoff
+	}
+	if config.MaxBackoff <= 0 {
+		config.MaxBackoff = defaults.MaxBackoff
+	}
+	if config.BackoffFactor <= 1.0 {
+		config.BackoffFactor = defaults.BackoffFactor
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -412,6 +446,11 @@ func estimateEntrySize(e *IndexEntry) int64 {
 func (c *IndexCache) watchNotifications() {
 	defer c.wg.Done()
 
+	logger := logging.Global().With(map[string]any{
+		"component": "index_cache",
+	})
+	backoff := c.config.InitialBackoff
+
 	for {
 		// Check if we're closed before starting
 		c.mu.RLock()
@@ -428,10 +467,31 @@ func (c *IndexCache) watchNotifications() {
 			if c.ctx.Err() != nil {
 				return
 			}
-			// Invalidate all on error and retry
+
+			logger.Warnf("notification stream connection failed", map[string]any{
+				"error":   err.Error(),
+				"backoff": backoff.String(),
+			})
+
+			// Invalidate all on error and wait before retry
 			c.InvalidateAll()
+
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+
+			// Exponential backoff capped at maxBackoff
+			backoff = time.Duration(float64(backoff) * c.config.BackoffFactor)
+			if backoff > c.config.MaxBackoff {
+				backoff = c.config.MaxBackoff
+			}
 			continue
 		}
+
+		// Reset backoff on successful connection
+		backoff = c.config.InitialBackoff
 
 		// Process notifications until error or cancellation
 		c.processNotifications(stream)
@@ -443,6 +503,7 @@ func (c *IndexCache) watchNotifications() {
 		}
 
 		// Invalidate all after stream disconnect to ensure consistency
+		logger.Warnf("notification stream disconnected", nil)
 		c.InvalidateAll()
 	}
 }

@@ -4,10 +4,18 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
+)
+
+// HWM cache watcher backoff configuration defaults.
+const (
+	defaultHWMCacheInitialBackoff = 100 * time.Millisecond
+	defaultHWMCacheMaxBackoff     = 30 * time.Second
+	defaultHWMCacheBackoffFactor  = 2.0
 )
 
 // CachedHWM represents a cached high watermark value with revision stamping.
@@ -38,18 +46,47 @@ type HWMCache struct {
 	closeOnce sync.Once
 	closed    bool
 	wg        sync.WaitGroup
+
+	// Backoff configuration for watch loop errors.
+	initialBackoff time.Duration
+	maxBackoff     time.Duration
+	backoffFactor  float64
+}
+
+// HWMCacheOption configures an HWMCache.
+type HWMCacheOption func(*HWMCache)
+
+// WithHWMBackoff configures backoff parameters for the HWM watch loop.
+func WithHWMBackoff(initial, max time.Duration, factor float64) HWMCacheOption {
+	return func(c *HWMCache) {
+		if initial > 0 {
+			c.initialBackoff = initial
+		}
+		if max > 0 {
+			c.maxBackoff = max
+		}
+		if factor > 1.0 {
+			c.backoffFactor = factor
+		}
+	}
 }
 
 // NewHWMCache creates a new HWM cache backed by the given metadata store.
 // The cache automatically starts watching for notifications to invalidate
 // stale entries. Call Close() when the cache is no longer needed.
-func NewHWMCache(store metadata.MetadataStore) *HWMCache {
+func NewHWMCache(store metadata.MetadataStore, opts ...HWMCacheOption) *HWMCache {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &HWMCache{
-		store:  store,
-		cache:  make(map[string]CachedHWM),
-		ctx:    ctx,
-		cancel: cancel,
+		store:          store,
+		cache:          make(map[string]CachedHWM),
+		ctx:            ctx,
+		cancel:         cancel,
+		initialBackoff: defaultHWMCacheInitialBackoff,
+		maxBackoff:     defaultHWMCacheMaxBackoff,
+		backoffFactor:  defaultHWMCacheBackoffFactor,
+	}
+	for _, opt := range opts {
+		opt(c)
 	}
 	c.wg.Add(1)
 	go c.watchNotifications()
@@ -163,6 +200,7 @@ func (c *HWMCache) watchNotifications() {
 	})
 	var pendingRefresh []string
 	var disconnected bool
+	backoff := c.initialBackoff
 
 	for {
 		// Check if we're closed before starting
@@ -180,13 +218,31 @@ func (c *HWMCache) watchNotifications() {
 			if c.ctx.Err() != nil {
 				return
 			}
+
 			logger.Warnf("notification stream connection failed", map[string]any{
-				"error": err.Error(),
+				"error":   err.Error(),
+				"backoff": backoff.String(),
 			})
-			// Invalidate all on error and retry
+
+			// Invalidate all on error and wait before retry
 			c.InvalidateAll()
+
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+
+			// Exponential backoff capped at maxBackoff
+			backoff = time.Duration(float64(backoff) * c.backoffFactor)
+			if backoff > c.maxBackoff {
+				backoff = c.maxBackoff
+			}
 			continue
 		}
+
+		// Reset backoff on successful connection
+		backoff = c.initialBackoff
 
 		if disconnected {
 			logger.Infof("notification stream reconnected", map[string]any{

@@ -1926,3 +1926,31 @@ Start with project-setup, then follow spec phases:
   - `go test ./internal/protocol/...` - all tests pass
   - `./init.sh --quick` - SUCCESS
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - add-backoff-to-index-watchers
+
+- **Task**: add-backoff-to-index-watchers (PASS)
+- **Summary**: Added bounded exponential backoff to IndexCache and HWMCache notification watcher retry loops to prevent tight CPU spins on failures.
+- **Changes made**:
+  - Added backoff constants: `defaultInitialBackoff` (100ms), `defaultMaxBackoff` (30s), `defaultBackoffFactor` (2.0)
+  - Extended `IndexCacheConfig` with `InitialBackoff`, `MaxBackoff`, `BackoffFactor` fields
+  - Added `HWMCacheOption` and `WithHWMBackoff()` for configuring HWMCache backoff parameters
+  - Updated both `watchNotifications()` methods to implement exponential backoff with max cap
+  - Added logging with backoff context on errors and stream disconnects
+  - Backoff resets on successful notification stream connection
+  - Added 3 tests per cache: `TestXxxCacheWatcherBackoff`, `TestXxxCacheWatcherBackoffCapsAtMax`, `TestXxxCacheWatcherBackoffResetsOnSuccess`
+- **Files modified**:
+  - `internal/index/index_cache.go` (added backoff config, imports, updated watchNotifications)
+  - `internal/index/hwm_cache.go` (added backoff fields, HWMCacheOption, updated watchNotifications)
+  - `internal/index/index_cache_test.go` (added erroringMockStore and 3 backoff tests)
+  - `internal/index/hwm_cache_test.go` (added erroringHWMMockStore and 3 backoff tests)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/index/... -run Backoff` - all 6 backoff tests pass
+  - `go test ./internal/index/...` - all tests pass (1.335s)
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - Uses `time.After(backoff)` with select on context cancellation for interruptible waits
+  - Backoff formula: `backoff = min(backoff * factor, maxBackoff)`
+  - Maintains backward compatibility: existing calls without options use defaults
+- **No blockers or follow-ups identified**
