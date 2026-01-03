@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"sync"
 
@@ -19,6 +20,9 @@ import (
 	"github.com/dray-io/dray/internal/objectstore"
 	"github.com/dray-io/dray/internal/wal"
 )
+
+// crc32cTable is the CRC32C (Castagnoli) polynomial table used by Kafka record batches.
+var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
 // Converter reads WAL entries for a stream and converts them to Parquet.
 type Converter struct {
@@ -169,11 +173,46 @@ func parseBatchesFromChunk(chunkData []byte) ([][]byte, error) {
 	return batches, nil
 }
 
+// ErrBatchCRCMismatch is returned when a batch's CRC checksum doesn't match.
+var ErrBatchCRCMismatch = errors.New("batch CRC mismatch")
+
+// validateBatchCRC validates the CRC32C checksum of a Kafka v2 record batch.
+// The CRC covers everything from attributes (byte 21) to the end of the batch.
+// Returns nil if the CRC is valid, or an error describing the mismatch.
+func validateBatchCRC(batchData []byte) error {
+	if len(batchData) < 21 {
+		return errors.New("batch too small for CRC validation")
+	}
+
+	// Magic byte is at offset 16 (after baseOffset(8) + batchLength(4) + partitionLeaderEpoch(4))
+	magic := batchData[16]
+	if magic != 2 {
+		return fmt.Errorf("unsupported magic byte %d, expected 2", magic)
+	}
+
+	// CRC is stored at bytes 17-20 (after magic byte)
+	storedCRC := binary.BigEndian.Uint32(batchData[17:21])
+
+	// CRC is computed over bytes 21 to end (attributes through records)
+	computedCRC := crc32.Checksum(batchData[21:], crc32cTable)
+
+	if storedCRC != computedCRC {
+		return fmt.Errorf("%w: stored=0x%08x, computed=0x%08x", ErrBatchCRCMismatch, storedCRC, computedCRC)
+	}
+
+	return nil
+}
+
 // extractRecordsFromBatch parses a Kafka record batch and extracts individual records.
-// It handles decompression if the batch is compressed.
+// It validates the batch CRC and handles decompression if the batch is compressed.
 func extractRecordsFromBatch(batchData []byte, partition int32, baseOffset int64) ([]Record, error) {
 	if len(batchData) < 61 {
 		return nil, errors.New("batch too small")
+	}
+
+	// Validate CRC before processing
+	if err := validateBatchCRC(batchData); err != nil {
+		return nil, fmt.Errorf("CRC validation failed: %w", err)
 	}
 
 	// Parse batch header fields
