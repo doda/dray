@@ -2164,3 +2164,33 @@ Start with project-setup, then follow spec phases:
   - IndexSwapper.Swap() already supports ParquetIndexKeys for replacing old entries
   - Integration tests verify data consistency after merge (all records preserved)
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - streaming-compaction-conversion
+
+- **Task**: streaming-compaction-conversion (PASS)
+- **Summary**: Implemented streaming WAL-to-Parquet conversion to avoid loading all records into memory at once.
+- **Changes made**:
+  - Added `StreamingConverter` struct with `ConvertStreaming()` and `StreamingConvertWAL()` methods
+  - Added `StreamingConvertConfig` with configurable BatchSize (default 1000 records)
+  - Added `StoreRangeReader` adapter that wraps objectstore.Store.GetRange() to implement wal.RangeReader
+  - Added `StreamingConvertWALFromBytes()` convenience function for in-memory WAL data
+  - Streaming conversion processes records incrementally: reads chunk, extracts records, flushes to Parquet at BatchSize threshold
+  - Memory usage is bounded by: BatchSize records + one chunk at a time (not all records)
+  - Added 9 streaming converter tests covering various scenarios
+- **Files modified**:
+  - `internal/compaction/worker/converter.go` (added StreamingConverter, StoreRangeReader, streaming functions)
+  - `internal/compaction/worker/converter_test.go` (added 9 streaming tests)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/compaction/worker/... -run Streaming` - all 9 tests pass
+  - `TestStreamingConvertWALFromBytes_MatchesNonStreaming` - verifies output identical to non-streaming
+  - `TestStreamingConvertWALFromBytes_LargeWAL_BoundedMemory` - 2MB WAL with 2000 records, batch size 50
+  - `go test ./internal/compaction/...` - all 72 compaction tests pass
+  - `go test ./...` - all project tests pass
+  - `./init.sh` - SUCCESS
+- **Technical details**:
+  - Uses existing wal.StreamingDecoder for on-demand chunk reading
+  - Parquet Writer already supports incremental WriteRecords() calls
+  - BatchSize controls memory: records flushed when batch reaches threshold
+  - StoreRangeReader enables streaming from object storage via GetRange()
+- **No blockers or follow-ups identified**

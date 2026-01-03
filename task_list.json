@@ -3829,7 +3829,7 @@
     "scope": [
       "internal/compaction/worker"
     ],
-    "completed": false
+    "completed": true
   },
   {
     "id": "optimize-compaction-index-swap-scans",

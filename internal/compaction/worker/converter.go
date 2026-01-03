@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"github.com/golang/snappy"
 	"github.com/klauspost/compress/zstd"
@@ -508,4 +509,295 @@ func ConvertWALToParquet(walData []byte, partition int32, startOffset int64) (*C
 // WriteParquetToStorage writes Parquet data to object storage.
 func (c *Converter) WriteParquetToStorage(ctx context.Context, path string, data []byte) error {
 	return c.store.Put(ctx, path, bytes.NewReader(data), int64(len(data)), "application/x-parquet")
+}
+
+// StreamingConverter reads WAL entries and converts them to Parquet in a streaming fashion.
+// Unlike Converter, it processes batches incrementally and writes to Parquet as it goes,
+// never holding all records in memory at once.
+type StreamingConverter struct {
+	store objectstore.Store
+}
+
+// NewStreamingConverter creates a new streaming WAL-to-Parquet converter.
+func NewStreamingConverter(store objectstore.Store) *StreamingConverter {
+	return &StreamingConverter{store: store}
+}
+
+// StreamingConvertConfig configures streaming conversion behavior.
+type StreamingConvertConfig struct {
+	// BatchSize is the number of records to accumulate before writing to Parquet.
+	// Default is 1000 records.
+	BatchSize int
+}
+
+// DefaultStreamingConvertConfig returns the default configuration for streaming conversion.
+func DefaultStreamingConvertConfig() StreamingConvertConfig {
+	return StreamingConvertConfig{
+		BatchSize: 1000,
+	}
+}
+
+// ConvertStreaming reads WAL entries and converts them to Parquet incrementally.
+// It processes each WAL chunk separately, writing records to Parquet as batches,
+// avoiding loading all records into memory at once.
+func (c *StreamingConverter) ConvertStreaming(ctx context.Context, entries []*index.IndexEntry, partition int32, cfg StreamingConvertConfig) (*ConvertResult, error) {
+	if len(entries) == 0 {
+		return nil, errors.New("streaming converter: no entries to convert")
+	}
+
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 1000
+	}
+
+	// Validate all entries are WAL type and belong to same stream
+	streamID := entries[0].StreamID
+	for _, e := range entries {
+		if e.FileType != index.FileTypeWAL {
+			return nil, fmt.Errorf("streaming converter: expected WAL entry, got %s", e.FileType)
+		}
+		if e.StreamID != streamID {
+			return nil, errors.New("streaming converter: entries must belong to same stream")
+		}
+	}
+
+	// Create Parquet writer
+	writer := NewWriter()
+	recordBatch := make([]Record, 0, cfg.BatchSize)
+	currentOffset := entries[0].StartOffset
+
+	// Process each WAL entry's chunks incrementally
+	for _, entry := range entries {
+		rangeReader := NewStoreRangeReader(ctx, c.store, entry.WalPath)
+		decoder, err := wal.NewStreamingDecoder(rangeReader)
+		if err != nil {
+			return nil, fmt.Errorf("streaming converter: creating decoder for %s: %w", entry.WalPath, err)
+		}
+
+		// Find the chunk(s) that match this entry
+		for chunkIdx := 0; chunkIdx < decoder.ChunkCount(); chunkIdx++ {
+			chunkInfo := decoder.ChunkIndex(chunkIdx)
+			if chunkInfo == nil {
+				continue
+			}
+
+			// Check if this chunk matches our index entry
+			if chunkInfo.ChunkOffset != entry.ChunkOffset || chunkInfo.ChunkLength != entry.ChunkLength {
+				continue
+			}
+
+			chunk, err := decoder.ReadChunk(chunkIdx)
+			if err != nil {
+				return nil, fmt.Errorf("streaming converter: reading chunk %d from %s: %w", chunkIdx, entry.WalPath, err)
+			}
+
+			// Process batches within the chunk
+			for _, batch := range chunk.Batches {
+				records, err := extractRecordsFromBatch(batch.Data, partition, currentOffset)
+				if err != nil {
+					return nil, fmt.Errorf("streaming converter: extracting records at offset %d: %w", currentOffset, err)
+				}
+
+				for _, rec := range records {
+					recordBatch = append(recordBatch, rec)
+					currentOffset++
+
+					// Flush batch when it reaches the configured size
+					if len(recordBatch) >= cfg.BatchSize {
+						if err := writer.WriteRecords(recordBatch); err != nil {
+							return nil, fmt.Errorf("streaming converter: writing records: %w", err)
+						}
+						recordBatch = recordBatch[:0]
+					}
+				}
+			}
+		}
+	}
+
+	// Flush any remaining records
+	if len(recordBatch) > 0 {
+		if err := writer.WriteRecords(recordBatch); err != nil {
+			return nil, fmt.Errorf("streaming converter: writing final records: %w", err)
+		}
+	}
+
+	// Close the writer and get the result
+	parquetData, stats, err := writer.Close()
+	if err != nil {
+		return nil, fmt.Errorf("streaming converter: closing writer: %w", err)
+	}
+
+	return &ConvertResult{
+		ParquetData: parquetData,
+		Stats:       stats,
+		RecordCount: stats.RecordCount,
+	}, nil
+}
+
+// StreamingConvertWAL reads a WAL file and converts it to Parquet in a streaming fashion.
+// This is useful for converting entire WAL files without loading all data into memory.
+func (c *StreamingConverter) StreamingConvertWAL(ctx context.Context, walPath string, partition int32, startOffset int64, cfg StreamingConvertConfig) (*ConvertResult, error) {
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 1000
+	}
+
+	rangeReader := NewStoreRangeReader(ctx, c.store, walPath)
+	decoder, err := wal.NewStreamingDecoder(rangeReader)
+	if err != nil {
+		return nil, fmt.Errorf("streaming converter: creating decoder for %s: %w", walPath, err)
+	}
+
+	if decoder.ChunkCount() == 0 {
+		return nil, errors.New("streaming converter: WAL has no chunks")
+	}
+
+	writer := NewWriter()
+	recordBatch := make([]Record, 0, cfg.BatchSize)
+	currentOffset := startOffset
+
+	// Process each chunk in the WAL
+	for chunkIdx := 0; chunkIdx < decoder.ChunkCount(); chunkIdx++ {
+		chunk, err := decoder.ReadChunk(chunkIdx)
+		if err != nil {
+			return nil, fmt.Errorf("streaming converter: reading chunk %d: %w", chunkIdx, err)
+		}
+
+		for _, batch := range chunk.Batches {
+			records, err := extractRecordsFromBatch(batch.Data, partition, currentOffset)
+			if err != nil {
+				return nil, fmt.Errorf("streaming converter: extracting records at offset %d: %w", currentOffset, err)
+			}
+
+			for _, rec := range records {
+				recordBatch = append(recordBatch, rec)
+				currentOffset++
+
+				if len(recordBatch) >= cfg.BatchSize {
+					if err := writer.WriteRecords(recordBatch); err != nil {
+						return nil, fmt.Errorf("streaming converter: writing records: %w", err)
+					}
+					recordBatch = recordBatch[:0]
+				}
+			}
+		}
+	}
+
+	if len(recordBatch) > 0 {
+		if err := writer.WriteRecords(recordBatch); err != nil {
+			return nil, fmt.Errorf("streaming converter: writing final records: %w", err)
+		}
+	}
+
+	parquetData, stats, err := writer.Close()
+	if err != nil {
+		return nil, fmt.Errorf("streaming converter: closing writer: %w", err)
+	}
+
+	return &ConvertResult{
+		ParquetData: parquetData,
+		Stats:       stats,
+		RecordCount: stats.RecordCount,
+	}, nil
+}
+
+// StoreRangeReader adapts objectstore.Store to wal.RangeReader interface.
+// It provides byte-range reads from object storage for streaming WAL decoding.
+type StoreRangeReader struct {
+	ctx   context.Context
+	store objectstore.Store
+	key   string
+	mu    sync.Mutex
+}
+
+// NewStoreRangeReader creates a new range reader backed by object storage.
+func NewStoreRangeReader(ctx context.Context, store objectstore.Store, key string) *StoreRangeReader {
+	return &StoreRangeReader{
+		ctx:   ctx,
+		store: store,
+		key:   key,
+	}
+}
+
+// ReadRange implements wal.RangeReader for object storage.
+func (r *StoreRangeReader) ReadRange(start, end int64) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rc, err := r.store.GetRange(r.ctx, r.key, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("store range read [%d:%d]: %w", start, end, err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, fmt.Errorf("reading range data: %w", err)
+	}
+
+	return data, nil
+}
+
+// StreamingConvertWALFromBytes converts WAL data to Parquet in a streaming fashion.
+// This is a convenience function for when WAL bytes are already in memory
+// but you want to process them in streaming mode for consistent behavior.
+func StreamingConvertWALFromBytes(walData []byte, partition int32, startOffset int64, cfg StreamingConvertConfig) (*ConvertResult, error) {
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 1000
+	}
+
+	rangeReader := wal.NewBytesRangeReader(walData)
+	decoder, err := wal.NewStreamingDecoder(rangeReader)
+	if err != nil {
+		return nil, fmt.Errorf("streaming converter: creating decoder: %w", err)
+	}
+
+	if decoder.ChunkCount() == 0 {
+		return nil, errors.New("streaming converter: WAL has no chunks")
+	}
+
+	writer := NewWriter()
+	recordBatch := make([]Record, 0, cfg.BatchSize)
+	currentOffset := startOffset
+
+	for chunkIdx := 0; chunkIdx < decoder.ChunkCount(); chunkIdx++ {
+		chunk, err := decoder.ReadChunk(chunkIdx)
+		if err != nil {
+			return nil, fmt.Errorf("streaming converter: reading chunk %d: %w", chunkIdx, err)
+		}
+
+		for _, batch := range chunk.Batches {
+			records, err := extractRecordsFromBatch(batch.Data, partition, currentOffset)
+			if err != nil {
+				return nil, fmt.Errorf("streaming converter: extracting records at offset %d: %w", currentOffset, err)
+			}
+
+			for _, rec := range records {
+				recordBatch = append(recordBatch, rec)
+				currentOffset++
+
+				if len(recordBatch) >= cfg.BatchSize {
+					if err := writer.WriteRecords(recordBatch); err != nil {
+						return nil, fmt.Errorf("streaming converter: writing records: %w", err)
+					}
+					recordBatch = recordBatch[:0]
+				}
+			}
+		}
+	}
+
+	if len(recordBatch) > 0 {
+		if err := writer.WriteRecords(recordBatch); err != nil {
+			return nil, fmt.Errorf("streaming converter: writing final records: %w", err)
+		}
+	}
+
+	parquetData, stats, err := writer.Close()
+	if err != nil {
+		return nil, fmt.Errorf("streaming converter: closing writer: %w", err)
+	}
+
+	return &ConvertResult{
+		ParquetData: parquetData,
+		Stats:       stats,
+		RecordCount: stats.RecordCount,
+	}, nil
 }
