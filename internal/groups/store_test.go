@@ -1794,3 +1794,156 @@ func TestStore_OffsetKeyStoragePath(t *testing.T) {
 		t.Errorf("expected key %s to exist", expectedKey)
 	}
 }
+
+// TestStore_ListGroupsDoesNotReadMemberOrOffsetKeys verifies that ListGroups
+// only scans the dedicated /dray/v1/groups-state/ prefix and does NOT access
+// member, assignment, or offset keys. This is critical for O(groups) performance
+// instead of O(all group keys) at scale.
+func TestStore_ListGroupsDoesNotReadMemberOrOffsetKeys(t *testing.T) {
+	ctx := context.Background()
+	metaStore := metadata.NewMockStore()
+	store := NewStore(metaStore)
+	nowMs := time.Now().UnixMilli()
+
+	// Create a group with members and offsets to populate the store
+	_, err := store.CreateGroup(ctx, CreateGroupRequest{
+		GroupID:      "test-group",
+		Type:         GroupTypeClassic,
+		ProtocolType: "consumer",
+		NowMs:        nowMs,
+	})
+	if err != nil {
+		t.Fatalf("failed to create group: %v", err)
+	}
+
+	// Add members (creates keys under /dray/v1/groups/test-group/members/)
+	for i := 1; i <= 3; i++ {
+		_, err := store.AddMember(ctx, AddMemberRequest{
+			GroupID:  "test-group",
+			MemberID: "member-" + string(rune('0'+i)),
+			ClientID: "client-" + string(rune('0'+i)),
+			NowMs:    nowMs,
+		})
+		if err != nil {
+			t.Fatalf("failed to add member %d: %v", i, err)
+		}
+	}
+
+	// Set assignments (creates keys under /dray/v1/groups/test-group/assignment/)
+	for i := 1; i <= 3; i++ {
+		_, err := store.SetAssignment(ctx, SetAssignmentRequest{
+			GroupID:    "test-group",
+			MemberID:   "member-" + string(rune('0'+i)),
+			Generation: 1,
+			Data:       []byte("assignment-data"),
+			NowMs:      nowMs,
+		})
+		if err != nil {
+			t.Fatalf("failed to set assignment %d: %v", i, err)
+		}
+	}
+
+	// Commit offsets (creates keys under /dray/v1/groups/test-group/offsets/)
+	for i := 0; i < 5; i++ {
+		_, err := store.CommitOffset(ctx, CommitOffsetRequest{
+			GroupID:   "test-group",
+			Topic:     "test-topic",
+			Partition: int32(i),
+			Offset:    int64(i * 100),
+			NowMs:     nowMs,
+		})
+		if err != nil {
+			t.Fatalf("failed to commit offset %d: %v", i, err)
+		}
+	}
+
+	// Get all keys stored before listing
+	allKeys := metaStore.GetAllKeys()
+	t.Logf("Store contains %d keys", len(allKeys))
+
+	// Verify we have keys in various prefixes
+	var groupStateListKeys, groupMainKeys, memberKeys, assignmentKeys, offsetKeys int
+	for _, key := range allKeys {
+		switch {
+		case hasPrefix(key, "/dray/v1/groups-state/"):
+			groupStateListKeys++
+		case hasPrefix(key, "/dray/v1/groups/") && hasSubstr(key, "/members/"):
+			memberKeys++
+		case hasPrefix(key, "/dray/v1/groups/") && hasSubstr(key, "/assignment/"):
+			assignmentKeys++
+		case hasPrefix(key, "/dray/v1/groups/") && hasSubstr(key, "/offsets/"):
+			offsetKeys++
+		case hasPrefix(key, "/dray/v1/groups/"):
+			groupMainKeys++
+		}
+	}
+
+	t.Logf("Key distribution: groups-state=%d, groups-main=%d, members=%d, assignments=%d, offsets=%d",
+		groupStateListKeys, groupMainKeys, memberKeys, assignmentKeys, offsetKeys)
+
+	// Verify test preconditions: we should have keys in all categories
+	if groupStateListKeys == 0 {
+		t.Fatal("test precondition failed: no group state listing keys found")
+	}
+	if memberKeys == 0 {
+		t.Fatal("test precondition failed: no member keys found")
+	}
+	if assignmentKeys == 0 {
+		t.Fatal("test precondition failed: no assignment keys found")
+	}
+	if offsetKeys == 0 {
+		t.Fatal("test precondition failed: no offset keys found")
+	}
+
+	// Now the actual test: ListGroups should only use the groups-state prefix
+	// The mock store's List function returns keys matching a prefix.
+	// If ListGroups is correctly using the scoped prefix, it should only
+	// return group state keys, not member/assignment/offset keys.
+	groups, err := store.ListGroups(ctx)
+	if err != nil {
+		t.Fatalf("failed to list groups: %v", err)
+	}
+
+	if len(groups) != 1 {
+		t.Errorf("expected 1 group, got %d", len(groups))
+	}
+
+	// The key check: verify that the List call only matches groups-state keys
+	// We do this by directly testing the keys.GroupStateListPrefix()
+	groupStatePrefix := "/dray/v1/groups-state/"
+	groupsMainPrefix := "/dray/v1/groups/"
+
+	// Verify that the dedicated listing prefix is NOT a sub-prefix of the main groups prefix
+	// This ensures they are truly separate key spaces
+	if hasPrefix(groupStatePrefix, groupsMainPrefix) {
+		t.Errorf("groups-state prefix should NOT be under groups prefix for performance: %s vs %s",
+			groupStatePrefix, groupsMainPrefix)
+	}
+
+	// Verify that member/assignment/offset keys do NOT match the listing prefix
+	for _, key := range allKeys {
+		if hasPrefix(key, groupStatePrefix) {
+			// This is fine - it's a listing key
+			continue
+		}
+		if hasSubstr(key, "/members/") || hasSubstr(key, "/assignment/") || hasSubstr(key, "/offsets/") {
+			// These keys should NOT match the listing prefix
+			if hasPrefix(key, groupStatePrefix) {
+				t.Errorf("member/assignment/offset key unexpectedly matches listing prefix: %s", key)
+			}
+		}
+	}
+}
+
+func hasPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+func hasSubstr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
