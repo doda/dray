@@ -3928,7 +3928,7 @@
       "Add tests for the new state transition",
       "Run compaction tests and fix any failures"
     ],
-    "completed": false,
+    "completed": true,
     "depends_on": [],
     "scope": [
       "internal/compaction/saga.go"

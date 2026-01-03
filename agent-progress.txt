@@ -2362,3 +2362,31 @@ Start with project-setup, then follow spec phases:
   - IcebergDataFileID is set from job when Iceberg commit succeeds
   - Backwards compatible: existing code without IcebergDataFileID continues to work
 - **No blockers**
+
+---
+## 2026-01-03: Task compaction-saga-add-wal-gc-ready-state - PASS
+- **Task**: Add WAL_GC_READY state to compaction saga per SPEC 11.6
+- **Implementation**:
+  - Added `JobStateWALGCReady` constant between INDEX_SWAPPED and DONE
+  - Updated state transition logic: INDEX_SWAPPED -> WAL_GC_READY -> DONE
+  - Added `MarkWALGCReady()` method to saga manager
+  - Updated `IsRecoverable()` to include WAL_GC_READY as a recoverable state
+  - Updated header comments to reflect new state machine
+- **Key files changed**:
+  - `internal/compaction/saga.go` (state constant, transitions, method)
+  - `internal/compaction/saga_test.go` (unit tests for new state)
+  - `tests/integration/compaction_crash_recovery_test.go` (integration tests)
+- **Tests added**:
+  - TestMarkWALGCReady - verifies basic transition to WAL_GC_READY
+  - TestMarkWALGCReady_CannotSkip - verifies INDEX_SWAPPED cannot skip to DONE
+  - Updated existing tests for new state machine path
+- **Verification**:
+  - `go test ./internal/compaction/...` - all tests pass
+  - `go test ./tests/integration/...` - all integration tests pass  
+  - `go test ./...` - full test suite passes
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - WAL_GC_READY state exists per SPEC 11.6 to allow WAL GC scheduling
+  - State is recoverable (not terminal) - compactors can resume from it
+  - Can transition from WAL_GC_READY to DONE or FAILED
+- **No blockers or follow-ups identified**
