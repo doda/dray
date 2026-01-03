@@ -1639,3 +1639,30 @@ Start with project-setup, then follow spec phases:
   - `go test ./internal/groups/...` - all 143 tests pass
   - `./init.sh --quick` - SUCCESS
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - iceberg-catalog-remove-files-support
+
+- **Task**: iceberg-catalog-remove-files-support (PASS)
+- **Summary**: Added Iceberg catalog support for file removal/replacement to enable Parquet rewrite compactions.
+- **Key findings**:
+  - Catalog interface and ReplaceFiles implementation were already present in iceberg-go library wrapper
+  - Missing piece was `ConfirmParquetIcebergRemoval` helper and IcebergEnabled flag propagation to GC
+  - SwapRequest needed IcebergEnabled field to mark GC candidates properly during rewrite compaction
+- **Changes made**:
+  - Added `ConfirmParquetIcebergRemoval` function in `internal/gc/parquet_gc.go`
+  - Added `IcebergEnabled` field to `SwapRequest` in `internal/compaction/swap.go`
+  - Updated swap logic to propagate IcebergEnabled to ParquetGCCandidates
+  - Added tests for Iceberg removal confirmation and GC blocking behavior
+  - Added swap tests for IcebergEnabled flag propagation
+- **Files modified**:
+  - `internal/gc/parquet_gc.go` (added ConfirmParquetIcebergRemoval function)
+  - `internal/gc/parquet_gc_test.go` (added Iceberg removal tests)
+  - `internal/compaction/swap.go` (added IcebergEnabled field)
+  - `internal/compaction/swap_test.go` (added IcebergEnabled tests)
+  - `task_list.json` (marked task completed)
+- **Verification**: 
+  - `go test ./internal/gc -count=1` - all 55 tests pass
+  - `go test ./internal/compaction/... -count=1` - all tests pass
+  - `go test ./internal/iceberg/... -count=1` - all tests pass
+  - `./init.sh --quick` - SUCCESS
+- **No blockers. Follow-up**: Wire compaction/Iceberg commit flow to call ConfirmParquetIcebergRemoval

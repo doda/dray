@@ -51,6 +51,10 @@ type SwapRequest struct {
 	// GracePeriodMs is the grace period before old Parquet files can be deleted.
 	// If 0, defaults to 10 minutes.
 	GracePeriodMs int64
+
+	// IcebergEnabled indicates the stream has Iceberg metadata enabled.
+	// When true, replaced Parquet files need Iceberg removal confirmation before GC.
+	IcebergEnabled bool
 }
 
 // SwapResult contains the result of the atomic index swap.
@@ -269,9 +273,10 @@ func (s *IndexSwapper) Swap(ctx context.Context, req SwapRequest) (*SwapResult, 
 
 		for _, entry := range parquetEntries {
 			result.ParquetGCCandidates = append(result.ParquetGCCandidates, ParquetGCCandidate{
-				Path:        entry.ParquetPath,
-				CreatedAtMs: entry.CreatedAtMs,
-				SizeBytes:   int64(entry.ParquetSizeBytes),
+				Path:           entry.ParquetPath,
+				CreatedAtMs:    entry.CreatedAtMs,
+				SizeBytes:      int64(entry.ParquetSizeBytes),
+				IcebergEnabled: req.IcebergEnabled,
 			})
 		}
 	}
