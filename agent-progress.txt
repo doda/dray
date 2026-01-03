@@ -2194,3 +2194,28 @@ Start with project-setup, then follow spec phases:
   - BatchSize controls memory: records flushed when batch reaches threshold
   - StoreRangeReader enables streaming from object storage via GetRange()
 - **No blockers or follow-ups identified**
+
+## Session: 2026-01-03 - optimize-compaction-index-swap-scans
+
+- **Task**: optimize-compaction-index-swap-scans (PASS)
+- **Summary**: Optimized IndexSwapper to avoid O(N) index scans by using targeted range queries.
+- **Changes made**:
+  - Refactored `getPreviousCumulativeSize` to use targeted range query with `limit=1` instead of scanning all entries from offset 0
+  - Refactored `SwapFromJob` to use bounded range query `[SourceStartOffset+1, SourceEndOffset+1)` instead of listing all entries
+  - Added `listCallTrackingStore` wrapper for testing List call patterns
+  - Added `TestIndexSwapper_BoundedListCalls` - verifies bounded queries with 1000 entries (only 4 results scanned)
+  - Added `TestIndexSwapper_Swap_BoundedCumulativeSizeLookup` - verifies cumulative size uses limit=1
+- **Files modified**:
+  - `internal/compaction/swap.go` (refactored getPreviousCumulativeSize and SwapFromJob)
+  - `internal/compaction/swap_test.go` (added listCallTrackingStore and 2 bounded query tests)
+  - `task_list.json` (marked task completed)
+- **Verification**:
+  - `go test ./internal/compaction/...` - all 74 tests pass
+  - `go test ./internal/index/...` - all tests pass
+  - `./init.sh --quick` - SUCCESS
+- **Technical details**:
+  - Keys are ordered by endOffset: `/dray/v1/streams/<streamId>/offset-index/<offsetEndZ>/<cumulativeSizeZ>`
+  - getPreviousCumulativeSize now queries [startOffset, startOffset+1) with limit=1
+  - SwapFromJob queries [SourceStartOffset+1, SourceEndOffset+1) to get only relevant entries
+  - Tests verify that with 1000 entries, only a small bounded number of results are scanned
+- **No blockers or follow-ups identified**
