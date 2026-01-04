@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/dray-io/dray/internal/projection"
 	"gopkg.in/yaml.v3"
 )
 
@@ -81,15 +82,16 @@ type WALConfig struct {
 }
 
 type CompactionConfig struct {
-	Enabled                        bool  `yaml:"enabled" env:"DRAY_COMPACTION_ENABLED"`
-	MaxFilesToMerge                int   `yaml:"maxFilesToMerge" env:"DRAY_COMPACTION_MAX_FILES"`
-	MinAgeMs                       int64 `yaml:"minAgeMs" env:"DRAY_COMPACTION_MIN_AGE_MS"`
-	ParquetSmallFileThresholdBytes int64 `yaml:"parquetSmallFileThresholdBytes" env:"DRAY_COMPACTION_PARQUET_SMALL_FILE_THRESHOLD_BYTES"`
-	ParquetTargetFileSizeBytes     int64 `yaml:"parquetTargetFileSizeBytes" env:"DRAY_COMPACTION_PARQUET_TARGET_FILE_SIZE_BYTES"`
-	ParquetMaxMergeBytes           int64 `yaml:"parquetMaxMergeBytes" env:"DRAY_COMPACTION_PARQUET_MAX_MERGE_BYTES"`
-	ParquetMinFiles                int   `yaml:"parquetMinFiles" env:"DRAY_COMPACTION_PARQUET_MIN_FILES"`
-	ParquetMaxFiles                int   `yaml:"parquetMaxFiles" env:"DRAY_COMPACTION_PARQUET_MAX_FILES"`
-	ParquetMinAgeMs                int64 `yaml:"parquetMinAgeMs" env:"DRAY_COMPACTION_PARQUET_MIN_AGE_MS"`
+	Enabled                        bool                         `yaml:"enabled" env:"DRAY_COMPACTION_ENABLED"`
+	MaxFilesToMerge                int                          `yaml:"maxFilesToMerge" env:"DRAY_COMPACTION_MAX_FILES"`
+	MinAgeMs                       int64                        `yaml:"minAgeMs" env:"DRAY_COMPACTION_MIN_AGE_MS"`
+	ParquetSmallFileThresholdBytes int64                        `yaml:"parquetSmallFileThresholdBytes" env:"DRAY_COMPACTION_PARQUET_SMALL_FILE_THRESHOLD_BYTES"`
+	ParquetTargetFileSizeBytes     int64                        `yaml:"parquetTargetFileSizeBytes" env:"DRAY_COMPACTION_PARQUET_TARGET_FILE_SIZE_BYTES"`
+	ParquetMaxMergeBytes           int64                        `yaml:"parquetMaxMergeBytes" env:"DRAY_COMPACTION_PARQUET_MAX_MERGE_BYTES"`
+	ParquetMinFiles                int                          `yaml:"parquetMinFiles" env:"DRAY_COMPACTION_PARQUET_MIN_FILES"`
+	ParquetMaxFiles                int                          `yaml:"parquetMaxFiles" env:"DRAY_COMPACTION_PARQUET_MAX_FILES"`
+	ParquetMinAgeMs                int64                        `yaml:"parquetMinAgeMs" env:"DRAY_COMPACTION_PARQUET_MIN_AGE_MS"`
+	ValueProjections               []projection.TopicProjection `yaml:"valueProjections"`
 }
 
 type IcebergConfig struct {
@@ -246,6 +248,8 @@ func LoadFromPathNoValidate(path string) (*Config, error) {
 func (c *Config) Validate() error {
 	var errs []error
 
+	c.Compaction.ValueProjections = projection.Normalize(c.Compaction.ValueProjections)
+
 	if strings.TrimSpace(c.ClusterID) == "" {
 		errs = append(errs, errors.New("clusterId is required"))
 	}
@@ -324,6 +328,53 @@ func (c *Config) Validate() error {
 		}
 		if c.Compaction.ParquetMinAgeMs < 0 {
 			errs = append(errs, errors.New("compaction.parquetMinAgeMs cannot be negative"))
+		}
+		if len(c.Compaction.ValueProjections) > 0 {
+			topics := make(map[string]struct{}, len(c.Compaction.ValueProjections))
+			reserved := map[string]struct{}{
+				"partition":      {},
+				"offset":         {},
+				"timestamp_ms":   {},
+				"key":            {},
+				"value":          {},
+				"headers":        {},
+				"producer_id":    {},
+				"producer_epoch": {},
+				"base_sequence":  {},
+				"attributes":     {},
+			}
+			for _, proj := range c.Compaction.ValueProjections {
+				if proj.Topic == "" {
+					errs = append(errs, errors.New("compaction.valueProjections.topic is required"))
+					continue
+				}
+				if _, exists := topics[proj.Topic]; exists {
+					errs = append(errs, fmt.Errorf("compaction.valueProjections has duplicate topic %q", proj.Topic))
+				}
+				topics[proj.Topic] = struct{}{}
+
+				if !projection.IsValidFormat(proj.Format) {
+					errs = append(errs, fmt.Errorf("compaction.valueProjections[%s].format must be json; got %q", proj.Topic, proj.Format))
+				}
+
+				fields := make(map[string]struct{}, len(proj.Fields))
+				for _, field := range proj.Fields {
+					if field.Name == "" {
+						errs = append(errs, fmt.Errorf("compaction.valueProjections[%s].fields.name is required", proj.Topic))
+						continue
+					}
+					if _, exists := reserved[field.Name]; exists {
+						errs = append(errs, fmt.Errorf("compaction.valueProjections[%s].fields.name %q conflicts with base schema", proj.Topic, field.Name))
+					}
+					if _, exists := fields[field.Name]; exists {
+						errs = append(errs, fmt.Errorf("compaction.valueProjections[%s].fields has duplicate name %q", proj.Topic, field.Name))
+					}
+					fields[field.Name] = struct{}{}
+					if !projection.IsValidFieldType(field.Type) {
+						errs = append(errs, fmt.Errorf("compaction.valueProjections[%s].fields[%s].type is invalid: %q", proj.Topic, field.Name, field.Type))
+					}
+				}
+			}
 		}
 	}
 

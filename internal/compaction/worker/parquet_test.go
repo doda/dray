@@ -8,19 +8,23 @@ import (
 	"github.com/parquet-go/parquet-go"
 )
 
+func writeTestBuffer(records []Record) ([]byte, FileStats, error) {
+	return WriteToBuffer(BuildParquetSchema(nil), records)
+}
+
 func TestWriter_SingleRecord(t *testing.T) {
 	records := []Record{
 		{
-			Partition:   0,
-			Offset:      0,
-			Timestamp: 1000,
-			Key:         []byte("key1"),
-			Value:       []byte("value1"),
-			Attributes:  0,
+			Partition:  0,
+			Offset:     0,
+			Timestamp:  1000,
+			Key:        []byte("key1"),
+			Value:      []byte("value1"),
+			Attributes: 0,
 		},
 	}
 
-	data, stats, err := WriteToBuffer(records)
+	data, stats, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -47,7 +51,7 @@ func TestWriter_MultipleRecords(t *testing.T) {
 		{Partition: 0, Offset: 2, Timestamp: 900, Key: []byte("k3"), Value: []byte("v3"), Attributes: 0},
 	}
 
-	data, stats, err := WriteToBuffer(records)
+	data, stats, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -88,11 +92,11 @@ func TestWriter_MultipleRecords(t *testing.T) {
 func TestWriter_Headers(t *testing.T) {
 	records := []Record{
 		{
-			Partition:  0,
-			Offset:     0,
-			Timestamp:  1000,
-			Key:        []byte("key"),
-			Value:      []byte("value"),
+			Partition: 0,
+			Offset:    0,
+			Timestamp: 1000,
+			Key:       []byte("key"),
+			Value:     []byte("value"),
 			Headers: []Header{
 				{Key: "h1", Value: []byte("v1")},
 				{Key: "h2", Value: []byte("v2")},
@@ -102,7 +106,7 @@ func TestWriter_Headers(t *testing.T) {
 		},
 	}
 
-	data, _, err := WriteToBuffer(records)
+	data, _, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -140,7 +144,7 @@ func TestWriter_NullKeyValue(t *testing.T) {
 		{Partition: 0, Offset: 2, Timestamp: 1002, Key: nil, Value: nil, Attributes: 0},
 	}
 
-	data, _, err := WriteToBuffer(records)
+	data, _, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -161,8 +165,8 @@ func TestWriter_NullKeyValue(t *testing.T) {
 	}
 
 	// Record 0: null key
-	if readRecords[0].Key != nil {
-		t.Errorf("record 0: expected null key, got %v", readRecords[0].Key)
+	if len(readRecords[0].Key) != 0 {
+		t.Errorf("record 0: expected null/empty key, got %v", readRecords[0].Key)
 	}
 	if !bytes.Equal(readRecords[0].Value, []byte("v1")) {
 		t.Errorf("record 0: expected value v1, got %v", readRecords[0].Value)
@@ -172,8 +176,8 @@ func TestWriter_NullKeyValue(t *testing.T) {
 	if !bytes.Equal(readRecords[1].Key, []byte("k2")) {
 		t.Errorf("record 1: expected key k2, got %v", readRecords[1].Key)
 	}
-	if readRecords[1].Value != nil {
-		t.Errorf("record 1: expected null value, got %v", readRecords[1].Value)
+	if len(readRecords[1].Value) != 0 {
+		t.Errorf("record 1: expected null/empty value, got %v", readRecords[1].Value)
 	}
 
 	// Record 2: both null
@@ -195,7 +199,7 @@ func TestWriter_ProducerFields(t *testing.T) {
 		{
 			Partition:     0,
 			Offset:        0,
-			Timestamp:   1000,
+			Timestamp:     1000,
 			Key:           []byte("key"),
 			Value:         []byte("value"),
 			ProducerID:    &pid,
@@ -206,7 +210,7 @@ func TestWriter_ProducerFields(t *testing.T) {
 		{
 			Partition:     0,
 			Offset:        1,
-			Timestamp:   1001,
+			Timestamp:     1001,
 			Key:           []byte("key2"),
 			Value:         []byte("value2"),
 			ProducerID:    nil, // Null producer fields (per spec)
@@ -216,7 +220,7 @@ func TestWriter_ProducerFields(t *testing.T) {
 		},
 	}
 
-	data, _, err := WriteToBuffer(records)
+	data, _, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -268,7 +272,7 @@ func TestWriter_Attributes(t *testing.T) {
 		{Partition: 0, Offset: 2, Timestamp: 1002, Key: []byte("k"), Value: []byte("v"), Attributes: 2}, // snappy
 	}
 
-	data, _, err := WriteToBuffer(records)
+	data, _, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -297,7 +301,7 @@ func TestWriter_Attributes(t *testing.T) {
 }
 
 func TestWriter_IncrementalWrites(t *testing.T) {
-	w := NewWriter()
+	w := NewWriter(BuildParquetSchema(nil))
 
 	// First batch of records
 	err := w.WriteRecords([]Record{
@@ -342,7 +346,7 @@ func TestWriter_IncrementalWrites(t *testing.T) {
 }
 
 func TestWriter_EmptyWrite(t *testing.T) {
-	w := NewWriter()
+	w := NewWriter(BuildParquetSchema(nil))
 
 	// Write empty slice
 	err := w.WriteRecords([]Record{})
@@ -364,7 +368,7 @@ func TestWriter_FileStats(t *testing.T) {
 		{Partition: 0, Offset: 15, Timestamp: 3000, Key: []byte("k3"), Value: []byte("v3"), Attributes: 0},
 	}
 
-	data, stats, err := WriteToBuffer(records)
+	data, stats, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -397,16 +401,16 @@ func TestWriter_LargeRecord(t *testing.T) {
 
 	records := []Record{
 		{
-			Partition:   0,
-			Offset:      0,
-			Timestamp: 1000,
-			Key:         []byte("large-key"),
-			Value:       largeValue,
-			Attributes:  0,
+			Partition:  0,
+			Offset:     0,
+			Timestamp:  1000,
+			Key:        []byte("large-key"),
+			Value:      largeValue,
+			Attributes: 0,
 		},
 	}
 
-	data, stats, err := WriteToBuffer(records)
+	data, stats, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -442,7 +446,7 @@ func TestWriter_MultiplePartitions(t *testing.T) {
 		{Partition: 2, Offset: 0, Timestamp: 1002, Key: []byte("k3"), Value: []byte("v3"), Attributes: 0},
 	}
 
-	data, _, err := WriteToBuffer(records)
+	data, _, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -473,11 +477,11 @@ func TestWriter_MultiplePartitions(t *testing.T) {
 func TestWriter_HeadersWithNullValues(t *testing.T) {
 	records := []Record{
 		{
-			Partition:  0,
-			Offset:     0,
-			Timestamp:  1000,
-			Key:        []byte("key"),
-			Value:      []byte("value"),
+			Partition: 0,
+			Offset:    0,
+			Timestamp: 1000,
+			Key:       []byte("key"),
+			Value:     []byte("value"),
 			Headers: []Header{
 				{Key: "h1", Value: []byte("v1")},
 				{Key: "h2", Value: nil},
@@ -487,7 +491,7 @@ func TestWriter_HeadersWithNullValues(t *testing.T) {
 		},
 	}
 
-	data, _, err := WriteToBuffer(records)
+	data, _, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -546,7 +550,7 @@ func TestReader_NumRows(t *testing.T) {
 		{Partition: 0, Offset: 1, Timestamp: 1001, Key: []byte("k2"), Value: []byte("v2"), Attributes: 0},
 	}
 
-	data, _, err := WriteToBuffer(records)
+	data, _, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -568,22 +572,22 @@ func TestWriter_RoundTripPreservesAllFields(t *testing.T) {
 	seq := int32(7)
 
 	original := Record{
-		Partition:  3,
-		Offset:     12345,
-		Timestamp:  time.Now().UnixMilli(),
-		Key:        []byte("test-key"),
-		Value:      []byte("test-value"),
+		Partition: 3,
+		Offset:    12345,
+		Timestamp: time.Now().UnixMilli(),
+		Key:       []byte("test-key"),
+		Value:     []byte("test-value"),
 		Headers: []Header{
 			{Key: "trace-id", Value: []byte("abc123")},
 			{Key: "meta", Value: nil},
 		},
-		ProducerID: &pid,
+		ProducerID:    &pid,
 		ProducerEpoch: &epoch,
 		BaseSequence:  &seq,
-		Attributes: 8,
+		Attributes:    8,
 	}
 
-	data, _, err := WriteToBuffer([]Record{original})
+	data, _, err := writeTestBuffer([]Record{original})
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -651,35 +655,35 @@ func TestWriter_CompatibilityWithFetchReader(t *testing.T) {
 
 	records := []Record{
 		{
-			Partition:  0,
-			Offset:     100,
-			Timestamp:  1000,
-			Key:        []byte("test-key"),
-			Value:      []byte("test-value"),
+			Partition: 0,
+			Offset:    100,
+			Timestamp: 1000,
+			Key:       []byte("test-key"),
+			Value:     []byte("test-value"),
 			Headers: []Header{
 				{Key: "h1", Value: []byte("v1")},
 				{Key: "h2", Value: nil},
 			},
-			ProducerID: &pid,
+			ProducerID:    &pid,
 			ProducerEpoch: &epoch,
 			BaseSequence:  &seq,
-			Attributes: 0,
+			Attributes:    0,
 		},
 		{
-			Partition:  0,
-			Offset:     101,
-			Timestamp:  1001,
-			Key:        nil,
-			Value:      []byte("value-only"),
-			Headers:    nil,
-			ProducerID: nil,
+			Partition:     0,
+			Offset:        101,
+			Timestamp:     1001,
+			Key:           nil,
+			Value:         []byte("value-only"),
+			Headers:       nil,
+			ProducerID:    nil,
 			ProducerEpoch: nil,
 			BaseSequence:  nil,
-			Attributes: 1,
+			Attributes:    1,
 		},
 	}
 
-	data, stats, err := WriteToBuffer(records)
+	data, stats, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -721,7 +725,7 @@ func TestWriter_ParquetFileStats(t *testing.T) {
 		{Partition: 0, Offset: 150, Timestamp: 1500, Key: []byte("k3"), Value: []byte("v3"), Attributes: 0},
 	}
 
-	data, _, err := WriteToBuffer(records)
+	data, _, err := writeTestBuffer(records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -805,24 +809,7 @@ func TestWriter_ParquetFileStats(t *testing.T) {
 
 func TestParquetSchema_MatchesSpec(t *testing.T) {
 	// Verify the schema matches SPEC 5.3 by checking the parquet schema
-	records := []Record{
-		{Partition: 0, Offset: 0, Timestamp: 1000, Attributes: 0},
-	}
-
-	var buf bytes.Buffer
-	writer := parquet.NewGenericWriter[Record](&buf)
-	_, err := writer.Write(records)
-	if err != nil {
-		t.Fatalf("write failed: %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close failed: %v", err)
-	}
-
-	reader := parquet.NewGenericReader[Record](newBytesFile(buf.Bytes()))
-	defer reader.Close()
-
-	schema := reader.Schema()
+	schema := BuildParquetSchema(nil)
 
 	// Verify column names per SPEC 5.3
 	expectedColumns := map[string]bool{

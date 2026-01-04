@@ -759,8 +759,8 @@ func TestCreateTopicsHandler_IcebergTableProperties(t *testing.T) {
 	}
 
 	// Verify dray.schema_version property
-	if props[catalog.PropertyDraySchemaVersion] != "1" {
-		t.Errorf("expected dray.schema_version = '1', got %q", props[catalog.PropertyDraySchemaVersion])
+	if props[catalog.PropertyDraySchemaVersion] != "2" {
+		t.Errorf("expected dray.schema_version = '2', got %q", props[catalog.PropertyDraySchemaVersion])
 	}
 }
 

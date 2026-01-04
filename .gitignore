@@ -1,6 +1,7 @@
 # Binaries
 bin/
 drayd
+drayd-linux
 *.exe
 *.exe~
 *.dll

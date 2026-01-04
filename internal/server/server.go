@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/dray-io/dray/internal/auth"
@@ -367,6 +368,10 @@ func (s *Server) handleConn(conn net.Conn) {
 				logger.Debug("read timeout")
 				return
 			}
+			if isConnReset(err) {
+				logger.Debug("connection reset by peer")
+				return
+			}
 			logger.Warnf("read error", map[string]any{"error": err.Error()})
 			return
 		}
@@ -476,6 +481,16 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.inflightWg.Done()
 		reqLogger.Debug("response sent")
 	}
+}
+
+func isConnReset(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	return strings.Contains(err.Error(), "connection reset by peer")
 }
 
 // readRequest reads a Kafka request from the connection.

@@ -33,6 +33,7 @@ import (
 //   - Missing records (partial index where some WAL entries are gone but Parquet not yet inserted)
 //   - Duplicate records (both WAL and Parquet entries visible)
 //   - Incomplete data (fewer records than expected)
+//
 // 5. Verifies all records are returned correctly after compaction
 func TestInvariantI5_CompactionIndexSwapAtomicity(t *testing.T) {
 	metaStore := metadata.NewMockStore()
@@ -845,8 +846,8 @@ func runCompactionWALOnly(t *testing.T, ctx context.Context, streamID string, me
 		return
 	}
 
-	converter := worker.NewConverter(objStore)
-	convertResult, err := converter.Convert(ctx, walEntries, partition)
+	converter := worker.NewConverter(objStore, nil)
+	convertResult, err := converter.Convert(ctx, walEntries, partition, "", nil)
 	if err != nil {
 		t.Fatalf("failed to convert WAL to Parquet: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"github.com/dray-io/dray/internal/iceberg/catalog"
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/logging"
+	"github.com/dray-io/dray/internal/projection"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
@@ -34,6 +35,8 @@ type CreateTopicsHandlerConfig struct {
 	// IcebergNamespace is the Iceberg namespace for tables.
 	// Defaults to ["dray"] if not specified.
 	IcebergNamespace []string
+	// ValueProjections defines optional projected columns per topic.
+	ValueProjections []projection.TopicProjection
 }
 
 // CreateTopicsHandler handles CreateTopics (key 19) requests.
@@ -61,17 +64,18 @@ func NewCreateTopicsHandler(
 	var tableCreator *catalog.TableCreator
 	if cfg.IcebergEnabled && icebergCatalog != nil {
 		tableCreator = catalog.NewTableCreator(catalog.TableCreatorConfig{
-			Catalog:   icebergCatalog,
-			Namespace: cfg.IcebergNamespace,
-			ClusterID: cfg.ClusterID,
+			Catalog:          icebergCatalog,
+			Namespace:        cfg.IcebergNamespace,
+			ClusterID:        cfg.ClusterID,
+			ValueProjections: cfg.ValueProjections,
 		})
 	}
 
 	return &CreateTopicsHandler{
-		cfg:          cfg,
-		topicStore:   topicStore,
+		cfg:           cfg,
+		topicStore:    topicStore,
 		streamManager: streamManager,
-		tableCreator: tableCreator,
+		tableCreator:  tableCreator,
 	}
 }
 
