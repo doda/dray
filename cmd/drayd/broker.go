@@ -378,6 +378,7 @@ func (b *Broker) createHandler() server.Handler {
 		createTopics: protocol.NewCreateTopicsHandler(
 			protocol.CreateTopicsHandlerConfig{
 				DefaultPartitions: 1,
+				ValueProjections:  cfg.Compaction.ValueProjections,
 			},
 			b.topicStore,
 			b.streamManager,

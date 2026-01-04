@@ -68,6 +68,14 @@ func (c *IcebergCatalog) LoadTable(ctx context.Context, identifier TableIdentifi
 
 // CreateTableIfMissing creates a table if it doesn't exist, or returns the existing table.
 func (c *IcebergCatalog) CreateTableIfMissing(ctx context.Context, identifier TableIdentifier, opts CreateTableOptions) (Table, error) {
+	existing, err := c.LoadTable(ctx, identifier)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, ErrTableNotFound) {
+		return nil, err
+	}
+
 	tbl, err := c.cat.CreateTable(ctx, identifier, opts.Schema,
 		icecatalog.WithLocation(opts.Location),
 		icecatalog.WithPartitionSpec(opts.PartitionSpec),

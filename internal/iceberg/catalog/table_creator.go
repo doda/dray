@@ -2,15 +2,18 @@ package catalog
 
 import (
 	"context"
+
+	"github.com/dray-io/dray/internal/projection"
 )
 
 // TableCreator handles Iceberg table creation for Dray topics.
 // This implements the stream-table duality by creating an Iceberg table
 // whenever a Kafka topic is created, per SPEC.md section 4.3.
 type TableCreator struct {
-	catalog   Catalog
-	namespace []string
-	clusterID string
+	catalog     Catalog
+	namespace   []string
+	clusterID   string
+	projByTopic map[string]projection.TopicProjection
 }
 
 // TableCreatorConfig configures the TableCreator.
@@ -24,6 +27,9 @@ type TableCreatorConfig struct {
 
 	// ClusterID is the Dray cluster identifier stored in table properties.
 	ClusterID string
+
+	// ValueProjections defines optional projected columns per topic.
+	ValueProjections []projection.TopicProjection
 }
 
 // NewTableCreator creates a new TableCreator.
@@ -34,9 +40,10 @@ func NewTableCreator(cfg TableCreatorConfig) *TableCreator {
 	}
 
 	return &TableCreator{
-		catalog:   cfg.Catalog,
-		namespace: namespace,
-		clusterID: cfg.ClusterID,
+		catalog:     cfg.Catalog,
+		namespace:   namespace,
+		clusterID:   cfg.ClusterID,
+		projByTopic: projection.ByTopic(projection.Normalize(cfg.ValueProjections)),
 	}
 }
 
@@ -58,10 +65,15 @@ func (c *TableCreator) CreateTableForTopic(ctx context.Context, topicName string
 	identifier := NewTableIdentifier(c.namespace, topicName)
 
 	spec := DefaultPartitionSpec()
+	var projections []projection.FieldSpec
+	if proj, ok := c.projByTopic[topicName]; ok {
+		projections = proj.Fields
+	}
+	schema := SchemaWithProjections(projections)
 	opts := CreateTableOptions{
-		Schema:        DefaultSchema(),
+		Schema:        schema,
 		PartitionSpec: &spec,
-		Properties:    DefaultTableProperties(topicName, c.clusterID),
+		Properties:    TablePropertiesForSchema(topicName, c.clusterID, schema),
 	}
 
 	return c.catalog.CreateTableIfMissing(ctx, identifier, opts)

@@ -14,10 +14,12 @@ import (
 
 	"github.com/golang/snappy"
 	"github.com/klauspost/compress/zstd"
+	"github.com/parquet-go/parquet-go"
 	"github.com/pierrec/lz4/v4"
 
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/objectstore"
+	"github.com/dray-io/dray/internal/projection"
 	"github.com/dray-io/dray/internal/wal"
 )
 
@@ -26,12 +28,24 @@ var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
 
 // Converter reads WAL entries for a stream and converts them to Parquet.
 type Converter struct {
-	store objectstore.Store
+	store       objectstore.Store
+	projections map[string]projection.TopicProjection
 }
 
 // NewConverter creates a new WAL-to-Parquet converter.
-func NewConverter(store objectstore.Store) *Converter {
-	return &Converter{store: store}
+func NewConverter(store objectstore.Store, projections []projection.TopicProjection) *Converter {
+	return &Converter{
+		store:       store,
+		projections: projection.ByTopic(projection.Normalize(projections)),
+	}
+}
+
+// ProjectionFields returns the configured projected fields for a topic.
+func (c *Converter) ProjectionFields(topicName string) []projection.FieldSpec {
+	if proj, ok := c.projections[topicName]; ok {
+		return proj.Fields
+	}
+	return nil
 }
 
 // ConvertResult contains the result of a WAL-to-Parquet conversion.
@@ -55,7 +69,7 @@ const (
 
 // Convert reads WAL entries for the given index entries and converts them to Parquet.
 // All entries must be WAL type and belong to the same stream.
-func (c *Converter) Convert(ctx context.Context, entries []*index.IndexEntry, partition int32) (*ConvertResult, error) {
+func (c *Converter) Convert(ctx context.Context, entries []*index.IndexEntry, partition int32, topicName string, schema *parquet.Schema) (*ConvertResult, error) {
 	if len(entries) == 0 {
 		return nil, errors.New("converter: no entries to convert")
 	}
@@ -71,11 +85,15 @@ func (c *Converter) Convert(ctx context.Context, entries []*index.IndexEntry, pa
 		}
 	}
 
+	// Prepare projection settings for this topic.
+	projectionFields := c.ProjectionFields(topicName)
+	projector := newRecordProjector(projectionFields)
+
 	// Collect all records from all WAL entries
 	var allRecords []Record
 
 	for _, entry := range entries {
-		records, err := c.extractRecordsFromEntry(ctx, entry, partition)
+		records, err := c.extractRecordsFromEntry(ctx, entry, partition, projector)
 		if err != nil {
 			return nil, fmt.Errorf("converter: processing entry at offset %d: %w", entry.StartOffset, err)
 		}
@@ -86,8 +104,12 @@ func (c *Converter) Convert(ctx context.Context, entries []*index.IndexEntry, pa
 		return nil, errors.New("converter: no records extracted from WAL entries")
 	}
 
-	// Write records to Parquet
-	parquetData, stats, err := WriteToBuffer(allRecords)
+	// Write records to Parquet.
+	parquetSchema := schema
+	if parquetSchema == nil {
+		parquetSchema = BuildParquetSchema(projectionFields)
+	}
+	parquetData, stats, err := WriteToBuffer(parquetSchema, allRecords)
 	if err != nil {
 		return nil, fmt.Errorf("converter: writing parquet: %w", err)
 	}
@@ -100,7 +122,7 @@ func (c *Converter) Convert(ctx context.Context, entries []*index.IndexEntry, pa
 }
 
 // extractRecordsFromEntry reads a single WAL entry and extracts all records.
-func (c *Converter) extractRecordsFromEntry(ctx context.Context, entry *index.IndexEntry, partition int32) ([]Record, error) {
+func (c *Converter) extractRecordsFromEntry(ctx context.Context, entry *index.IndexEntry, partition int32, projector *recordProjector) ([]Record, error) {
 	// Range-read the chunk data from object storage
 	startByte := int64(entry.ChunkOffset)
 	endByte := startByte + int64(entry.ChunkLength) - 1
@@ -131,7 +153,7 @@ func (c *Converter) extractRecordsFromEntry(ctx context.Context, entry *index.In
 	currentOffset := entry.StartOffset
 
 	for _, batchData := range batches {
-		records, err := extractRecordsFromBatch(batchData, partition, currentOffset)
+		records, err := extractRecordsFromBatch(batchData, partition, currentOffset, projector)
 		if err != nil {
 			return nil, fmt.Errorf("extracting records at offset %d: %w", currentOffset, err)
 		}
@@ -205,7 +227,7 @@ func validateBatchCRC(batchData []byte) error {
 
 // extractRecordsFromBatch parses a Kafka record batch and extracts individual records.
 // It validates the batch CRC and handles decompression if the batch is compressed.
-func extractRecordsFromBatch(batchData []byte, partition int32, baseOffset int64) ([]Record, error) {
+func extractRecordsFromBatch(batchData []byte, partition int32, baseOffset int64, projector *recordProjector) ([]Record, error) {
 	if len(batchData) < 61 {
 		return nil, errors.New("batch too small")
 	}
@@ -267,7 +289,7 @@ func extractRecordsFromBatch(batchData []byte, partition int32, baseOffset int64
 			return nil, fmt.Errorf("unexpected end of records at index %d", i)
 		}
 
-		rec, bytesRead, err := parseRecord(recordsData[offset:], partition, baseOffset+int64(i), firstTimestamp, producerID, producerEpoch, baseSequence, attributes)
+		rec, bytesRead, err := parseRecord(recordsData[offset:], partition, baseOffset+int64(i), firstTimestamp, producerID, producerEpoch, baseSequence, attributes, projector)
 		if err != nil {
 			return nil, fmt.Errorf("parsing record %d: %w", i, err)
 		}
@@ -322,7 +344,7 @@ func decompressRecords(data []byte, compressionType int) ([]byte, error) {
 // - value (bytes)
 // - headerCount (varint)
 // - headers...
-func parseRecord(data []byte, partition int32, offset int64, firstTimestamp int64, producerID int64, producerEpoch int16, baseSequence int32, batchAttributes int16) (Record, int, error) {
+func parseRecord(data []byte, partition int32, offset int64, firstTimestamp int64, producerID int64, producerEpoch int16, baseSequence int32, batchAttributes int16, projector *recordProjector) (Record, int, error) {
 	pos := 0
 
 	// Read record length (varint)
@@ -458,6 +480,8 @@ func parseRecord(data []byte, partition int32, offset int64, firstTimestamp int6
 		Attributes: int32(batchAttributes),
 	}
 
+	rec.Projected = projectValue(value, rec.Timestamp, projector)
+
 	// Set producer fields if idempotent producer was used
 	if producerID >= 0 {
 		rec.ProducerID = &producerID
@@ -525,7 +549,7 @@ func readVarint(data []byte) (int64, int) {
 
 // ConvertWALToParquet is a convenience function that converts WAL data directly to Parquet.
 // This is useful when you have the WAL bytes in memory (e.g., for testing).
-func ConvertWALToParquet(walData []byte, partition int32, startOffset int64) (*ConvertResult, error) {
+func ConvertWALToParquet(walData []byte, partition int32, startOffset int64, projectionFields []projection.FieldSpec) (*ConvertResult, error) {
 	// Decode the WAL
 	decoded, err := wal.DecodeFromBytes(walData)
 	if err != nil {
@@ -536,13 +560,15 @@ func ConvertWALToParquet(walData []byte, partition int32, startOffset int64) (*C
 		return nil, errors.New("WAL has no chunks")
 	}
 
+	projector := newRecordProjector(projectionFields)
+
 	// Convert all chunks to records
 	var allRecords []Record
 	currentOffset := startOffset
 
 	for _, chunk := range decoded.Chunks {
 		for _, batch := range chunk.Batches {
-			records, err := extractRecordsFromBatch(batch.Data, partition, currentOffset)
+			records, err := extractRecordsFromBatch(batch.Data, partition, currentOffset, projector)
 			if err != nil {
 				return nil, fmt.Errorf("extracting records: %w", err)
 			}
@@ -556,7 +582,8 @@ func ConvertWALToParquet(walData []byte, partition int32, startOffset int64) (*C
 	}
 
 	// Write to Parquet
-	parquetData, stats, err := WriteToBuffer(allRecords)
+	parquetSchema := BuildParquetSchema(projectionFields)
+	parquetData, stats, err := WriteToBuffer(parquetSchema, allRecords)
 	if err != nil {
 		return nil, fmt.Errorf("writing parquet: %w", err)
 	}

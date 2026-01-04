@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/apache/iceberg-go"
+	"github.com/dray-io/dray/internal/projection"
 )
 
 // Dray schema field IDs. These are stable and should not change.
@@ -25,8 +26,18 @@ const (
 	FieldIDHeaderValue    = 13
 )
 
-// DefaultSchema returns the default Dray table schema as defined in SPEC.md section 5.3.
+const (
+	ProjectionFieldIDBase   = 100
+	ProjectionFieldIDStride = 2
+)
+
+// DefaultSchema returns the base Dray table schema as defined in SPEC.md section 5.3.
 func DefaultSchema() *iceberg.Schema {
+	return SchemaWithProjections(nil)
+}
+
+// SchemaWithProjections builds a schema with optional projected columns.
+func SchemaWithProjections(fields []projection.FieldSpec) *iceberg.Schema {
 	headersType := &iceberg.ListType{
 		ElementID: FieldIDHeadersElement,
 		Element: &iceberg.StructType{
@@ -48,7 +59,7 @@ func DefaultSchema() *iceberg.Schema {
 		ElementRequired: false,
 	}
 
-	return iceberg.NewSchema(0,
+	nested := []iceberg.NestedField{
 		iceberg.NestedField{
 			ID:       FieldIDPartition,
 			Name:     "partition",
@@ -126,7 +137,17 @@ func DefaultSchema() *iceberg.Schema {
 			Required: false,
 			Doc:      "Record CRC32C for debugging/validation (optional)",
 		},
-	)
+	}
+
+	for i, field := range fields {
+		if field.Name == "" {
+			continue
+		}
+		fieldID := ProjectionFieldIDBase + (i * ProjectionFieldIDStride)
+		nested = append(nested, projectionField(field, fieldID))
+	}
+
+	return iceberg.NewSchema(0, nested...)
 }
 
 // DefaultPartitionSpec returns the default partition spec for Dray tables.
@@ -140,11 +161,14 @@ func DefaultPartitionSpec() iceberg.PartitionSpec {
 	})
 }
 
-// DefaultNameMapping returns the JSON name mapping for Iceberg tables.
-// This is required because parquet-go doesn't write Iceberg field IDs to parquet files.
+// NameMappingForSchema returns the JSON name mapping for the provided schema.
+// This is only needed when Parquet files do not include Iceberg field IDs.
 // The name mapping tells Iceberg how to map column names to field IDs.
-func DefaultNameMapping() string {
-	mapping := DefaultSchema().NameMapping()
+func NameMappingForSchema(schema *iceberg.Schema) string {
+	if schema == nil {
+		return ""
+	}
+	mapping := schema.NameMapping()
 	payload, err := json.Marshal(mapping)
 	if err != nil {
 		return ""
@@ -152,12 +176,59 @@ func DefaultNameMapping() string {
 	return string(payload)
 }
 
+// DefaultNameMapping returns the JSON name mapping for the default schema.
+func DefaultNameMapping() string {
+	return NameMappingForSchema(DefaultSchema())
+}
+
+// TablePropertiesForSchema returns the table properties for a given schema.
+func TablePropertiesForSchema(topicName, clusterID string, schema *iceberg.Schema) TableProperties {
+	return TableProperties{
+		PropertyDrayTopic:         topicName,
+		PropertyDrayClusterID:     clusterID,
+		PropertyDraySchemaVersion: "2",
+	}
+}
+
 // DefaultTableProperties returns the default table properties for a Dray table.
 func DefaultTableProperties(topicName, clusterID string) TableProperties {
-	return TableProperties{
-		PropertyDrayTopic:            topicName,
-		PropertyDrayClusterID:        clusterID,
-		PropertyDraySchemaVersion:    "1",
-		PropertySchemaNameMappingDef: DefaultNameMapping(),
+	return TablePropertiesForSchema(topicName, clusterID, DefaultSchema())
+}
+
+func projectionField(field projection.FieldSpec, fieldID int) iceberg.NestedField {
+	switch field.Type {
+	case projection.FieldTypeString:
+		return iceberg.NestedField{ID: fieldID, Name: field.Name, Type: iceberg.PrimitiveTypes.String, Required: false}
+	case projection.FieldTypeInt32:
+		return iceberg.NestedField{ID: fieldID, Name: field.Name, Type: iceberg.PrimitiveTypes.Int32, Required: false}
+	case projection.FieldTypeInt64:
+		return iceberg.NestedField{ID: fieldID, Name: field.Name, Type: iceberg.PrimitiveTypes.Int64, Required: false}
+	case projection.FieldTypeBool:
+		return iceberg.NestedField{ID: fieldID, Name: field.Name, Type: iceberg.PrimitiveTypes.Bool, Required: false}
+	case projection.FieldTypeTimestampMs:
+		return iceberg.NestedField{ID: fieldID, Name: field.Name, Type: iceberg.PrimitiveTypes.TimestampTz, Required: false}
+	case projection.FieldTypeStringList:
+		return iceberg.NestedField{
+			ID:       fieldID,
+			Name:     field.Name,
+			Type:     &iceberg.ListType{ElementID: fieldID + 1, Element: iceberg.PrimitiveTypes.String, ElementRequired: false},
+			Required: false,
+		}
+	case projection.FieldTypeInt64List:
+		return iceberg.NestedField{
+			ID:       fieldID,
+			Name:     field.Name,
+			Type:     &iceberg.ListType{ElementID: fieldID + 1, Element: iceberg.PrimitiveTypes.Int64, ElementRequired: false},
+			Required: false,
+		}
+	case projection.FieldTypeBoolList:
+		return iceberg.NestedField{
+			ID:       fieldID,
+			Name:     field.Name,
+			Type:     &iceberg.ListType{ElementID: fieldID + 1, Element: iceberg.PrimitiveTypes.Bool, ElementRequired: false},
+			Required: false,
+		}
+	default:
+		return iceberg.NestedField{ID: fieldID, Name: field.Name, Type: iceberg.PrimitiveTypes.String, Required: false}
 	}
 }

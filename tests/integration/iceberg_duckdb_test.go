@@ -14,9 +14,9 @@ import (
 	"github.com/apache/iceberg-go"
 	icecatalog "github.com/apache/iceberg-go/catalog"
 	_ "github.com/apache/iceberg-go/catalog/sql"
-	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/dray-io/dray/internal/compaction/worker"
 	"github.com/dray-io/dray/internal/iceberg/catalog"
+	_ "github.com/duckdb/duckdb-go/v2"
 	_ "modernc.org/sqlite"
 )
 
@@ -175,7 +175,7 @@ func createDuckDBTable(t *testing.T, ctx context.Context, cat *catalog.IcebergCa
 func writeParquetFile(t *testing.T, tableLocation, name string, records []worker.Record) string {
 	t.Helper()
 
-	data, _, err := worker.WriteToBuffer(records)
+	data, _, err := worker.WriteToBuffer(worker.BuildParquetSchema(nil), records)
 	if err != nil {
 		t.Fatalf("write parquet buffer failed: %v", err)
 	}

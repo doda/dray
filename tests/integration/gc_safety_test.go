@@ -643,8 +643,8 @@ func runGCSafetyCompaction(t *testing.T, ctx context.Context, streamID string, m
 	}
 
 	// Convert WAL to Parquet
-	converter := worker.NewConverter(objStore)
-	convertResult, err := converter.Convert(ctx, walEntries, partition)
+	converter := worker.NewConverter(objStore, nil)
+	convertResult, err := converter.Convert(ctx, walEntries, partition, "", nil)
 	if err != nil {
 		t.Fatalf("failed to convert WAL to Parquet: %v", err)
 	}
@@ -726,8 +726,8 @@ func runGCSafetyCompactionWALOnly(t *testing.T, ctx context.Context, streamID st
 	}
 
 	// Convert WAL to Parquet
-	converter := worker.NewConverter(objStore)
-	convertResult, err := converter.Convert(ctx, walEntries, partition)
+	converter := worker.NewConverter(objStore, nil)
+	convertResult, err := converter.Convert(ctx, walEntries, partition, "", nil)
 	if err != nil {
 		t.Fatalf("failed to convert WAL to Parquet: %v", err)
 	}
@@ -987,7 +987,7 @@ func (m *gcSafetyTestObjectStore) GetRange(ctx context.Context, key string, star
 	if end < 0 || end >= int64(len(data)) {
 		end = int64(len(data)) - 1
 	}
-	return io.NopCloser(bytes.NewReader(data[start:end+1])), nil
+	return io.NopCloser(bytes.NewReader(data[start : end+1])), nil
 }
 
 func (m *gcSafetyTestObjectStore) Head(ctx context.Context, key string) (objectstore.ObjectMeta, error) {

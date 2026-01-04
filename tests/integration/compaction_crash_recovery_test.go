@@ -96,8 +96,8 @@ func TestCrashRecovery_AfterParquetWritten(t *testing.T) {
 		}
 	}
 
-	converter := worker.NewConverter(objStore)
-	convertResult, err := converter.Convert(ctx, walEntries, 0)
+	converter := worker.NewConverter(objStore, nil)
+	convertResult, err := converter.Convert(ctx, walEntries, 0, "", nil)
 	if err != nil {
 		t.Fatalf("failed to convert WAL to Parquet: %v", err)
 	}
@@ -286,8 +286,8 @@ func TestCrashRecovery_AfterIcebergCommitted(t *testing.T) {
 		}
 	}
 
-	converter := worker.NewConverter(objStore)
-	convertResult, err := converter.Convert(ctx, walEntries, 0)
+	converter := worker.NewConverter(objStore, nil)
+	convertResult, err := converter.Convert(ctx, walEntries, 0, "", nil)
 	if err != nil {
 		t.Fatalf("failed to convert: %v", err)
 	}
@@ -454,8 +454,8 @@ func TestCrashRecovery_AfterIndexSwapped(t *testing.T) {
 		}
 	}
 
-	converter := worker.NewConverter(objStore)
-	convertResult, err := converter.Convert(ctx, walEntries, 0)
+	converter := worker.NewConverter(objStore, nil)
+	convertResult, err := converter.Convert(ctx, walEntries, 0, "", nil)
 	if err != nil {
 		t.Fatalf("failed to convert: %v", err)
 	}
@@ -648,8 +648,8 @@ func TestCrashRecovery_NoDataLossOrDuplication(t *testing.T) {
 	}
 
 	// Convert and write Parquet
-	converter := worker.NewConverter(objStore)
-	convertResult, err := converter.Convert(ctx, walEntries, 0)
+	converter := worker.NewConverter(objStore, nil)
+	convertResult, err := converter.Convert(ctx, walEntries, 0, "", nil)
 	if err != nil {
 		t.Fatalf("failed to convert: %v", err)
 	}

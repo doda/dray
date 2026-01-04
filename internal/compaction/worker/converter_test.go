@@ -327,7 +327,7 @@ func TestConvertWALToParquet_SimpleRecord(t *testing.T) {
 	batch := buildTestRecordBatch(records, 1000, 0)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestConvertWALToParquet_MultipleRecords(t *testing.T) {
 	batch := buildTestRecordBatch(records, 1000, 0)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 5, 100)
+	result, err := ConvertWALToParquet(walData, 5, 100, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestConvertWALToParquet_NullKeyValue(t *testing.T) {
 	batch := buildTestRecordBatch(records, 1000, 0)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}
@@ -436,13 +436,13 @@ func TestConvertWALToParquet_NullKeyValue(t *testing.T) {
 	}
 
 	// Record 0: null key
-	if readRecords[0].Key != nil {
-		t.Errorf("record 0: expected null key, got %v", readRecords[0].Key)
+	if len(readRecords[0].Key) != 0 {
+		t.Errorf("record 0: expected null/empty key, got %v", readRecords[0].Key)
 	}
 
 	// Record 1: null value
-	if readRecords[1].Value != nil {
-		t.Errorf("record 1: expected null value, got %v", readRecords[1].Value)
+	if len(readRecords[1].Value) != 0 {
+		t.Errorf("record 1: expected null/empty value, got %v", readRecords[1].Value)
 	}
 }
 
@@ -462,7 +462,7 @@ func TestConvertWALToParquet_WithHeaders(t *testing.T) {
 	batch := buildTestRecordBatch(records, 1000, 0)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestConvertWALToParquet_GzipCompression(t *testing.T) {
 	batch := buildCompressedTestRecordBatch(records, 1000, 0, compressionGzip)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet with gzip failed: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestConvertWALToParquet_SnappyCompression(t *testing.T) {
 	batch := buildCompressedTestRecordBatch(records, 1000, 0, compressionSnappy)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet with snappy failed: %v", err)
 	}
@@ -566,7 +566,7 @@ func TestConvertWALToParquet_Lz4Compression(t *testing.T) {
 	batch := buildCompressedTestRecordBatch(records, 1000, 0, compressionLz4)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet with lz4 failed: %v", err)
 	}
@@ -583,7 +583,7 @@ func TestConvertWALToParquet_ZstdCompression(t *testing.T) {
 	batch := buildCompressedTestRecordBatch(records, 1000, 0, compressionZstd)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet with zstd failed: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestConvertWALToParquet_MultipleBatches(t *testing.T) {
 
 	walData := buildTestWAL([][]byte{batch1, batch2}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}
@@ -646,7 +646,7 @@ func TestConvertWALToParquet_Partition(t *testing.T) {
 	walData := buildTestWAL([][]byte{batch}, 123)
 
 	// Convert with partition 42
-	result, err := ConvertWALToParquet(walData, 42, 0)
+	result, err := ConvertWALToParquet(walData, 42, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}
@@ -680,7 +680,7 @@ func TestConvertWALToParquet_LargeValue(t *testing.T) {
 	batch := buildTestRecordBatch(records, 1000, 0)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}
@@ -726,7 +726,7 @@ func TestReadVarint(t *testing.T) {
 
 func TestExtractRecordsFromBatch_InvalidBatch(t *testing.T) {
 	// Batch too small
-	_, err := extractRecordsFromBatch(make([]byte, 10), 0, 0)
+	_, err := extractRecordsFromBatch(make([]byte, 10), 0, 0, nil)
 	if err == nil {
 		t.Error("expected error for small batch")
 	}
@@ -735,7 +735,7 @@ func TestExtractRecordsFromBatch_InvalidBatch(t *testing.T) {
 	batch := make([]byte, 61)
 	batch[16] = 2 // magic
 	// recordCount at 57:61 is already 0
-	_, err = extractRecordsFromBatch(batch, 0, 0)
+	_, err = extractRecordsFromBatch(batch, 0, 0, nil)
 	if err == nil {
 		t.Error("expected error for zero record count")
 	}
@@ -822,7 +822,7 @@ func TestConvertWALToParquet_EmptyWAL(t *testing.T) {
 	walObj := wal.NewWAL(uuid.New(), 0, 1000)
 	data, _ := wal.EncodeToBytes(walObj)
 
-	_, err := ConvertWALToParquet(data, 0, 0)
+	_, err := ConvertWALToParquet(data, 0, 0, nil)
 	if err == nil {
 		t.Error("expected error for empty WAL")
 	}
@@ -841,7 +841,7 @@ func TestConvertWALToParquet_HeaderWithNullValue(t *testing.T) {
 	batch := buildTestRecordBatch(records, 1000, 0)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}
@@ -861,8 +861,8 @@ func TestConvertWALToParquet_HeaderWithNullValue(t *testing.T) {
 		t.Fatalf("expected 1 header, got %d", len(readRecords[0].Headers))
 	}
 
-	if readRecords[0].Headers[0].Value != nil {
-		t.Errorf("expected null header value, got %v", readRecords[0].Headers[0].Value)
+	if len(readRecords[0].Headers[0].Value) != 0 {
+		t.Errorf("expected null/empty header value, got %v", readRecords[0].Headers[0].Value)
 	}
 }
 
@@ -875,7 +875,7 @@ func TestFileStats(t *testing.T) {
 	batch := buildTestRecordBatch(records, 1000, 0)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 50)
+	result, err := ConvertWALToParquet(walData, 0, 50, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}

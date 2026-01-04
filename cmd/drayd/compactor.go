@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/apache/iceberg-go"
 	"github.com/dray-io/dray/internal/compaction"
 	"github.com/dray-io/dray/internal/compaction/planner"
 	"github.com/dray-io/dray/internal/compaction/worker"
@@ -25,6 +27,8 @@ import (
 	"github.com/dray-io/dray/internal/objectstore/s3"
 	"github.com/dray-io/dray/internal/server"
 	"github.com/dray-io/dray/internal/topics"
+	iceio "github.com/apache/iceberg-go/io"
+	"github.com/parquet-go/parquet-go"
 )
 
 // CompactorOptions contains the configuration for creating a compactor.
@@ -76,6 +80,32 @@ const (
 	planKindWAL planKind = iota
 	planKindParquetRewrite
 )
+
+func icebergS3Props(store config.ObjectStoreConfig) iceberg.Properties {
+	props := iceberg.Properties{}
+
+	if endpoint := strings.TrimSpace(store.Endpoint); endpoint != "" {
+		props[iceio.S3EndpointURL] = endpoint
+	}
+
+	region := strings.TrimSpace(store.Region)
+	if region == "" || strings.EqualFold(region, "auto") {
+		region = "us-east-1"
+	}
+	props[iceio.S3Region] = region
+
+	if store.AccessKey != "" {
+		props[iceio.S3AccessKeyID] = store.AccessKey
+	}
+	if store.SecretKey != "" {
+		props[iceio.S3SecretAccessKey] = store.SecretKey
+	}
+
+	// Tigris expects path-style addressing; keep virtual addressing disabled.
+	props[iceio.S3ForceVirtualAddressing] = "false"
+
+	return props
+}
 
 func (k planKind) String() string {
 	switch k {
@@ -252,10 +282,12 @@ func (c *Compactor) Start(ctx context.Context) error {
 		})
 
 		catalogType := strings.ToLower(cfg.Iceberg.CatalogType)
+		icebergProps := icebergS3Props(cfg.ObjectStore)
 		cat, err := catalog.LoadCatalog(ctx, catalog.CatalogConfig{
 			Type:      catalogType,
 			URI:       cfg.Iceberg.CatalogURI,
 			Warehouse: cfg.Iceberg.Warehouse,
+			Props:     icebergProps,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to load Iceberg catalog: %w", err)
@@ -263,8 +295,9 @@ func (c *Compactor) Start(ctx context.Context) error {
 		c.icebergCatalog = cat
 		c.icebergAppender = catalog.NewAppender(catalog.DefaultAppenderConfig(cat))
 		c.icebergTableCreator = catalog.NewTableCreator(catalog.TableCreatorConfig{
-			Catalog:   cat,
-			ClusterID: c.opts.Config.ClusterID,
+			Catalog:          cat,
+			ClusterID:        c.opts.Config.ClusterID,
+			ValueProjections: cfg.Compaction.ValueProjections,
 		})
 	}
 
@@ -278,7 +311,7 @@ func (c *Compactor) Start(ctx context.Context) error {
 	c.indexSwapper = compaction.NewIndexSwapper(c.metaStore)
 
 	// Create converter (nil object store for now - to be replaced with real S3)
-	c.converter = worker.NewConverter(c.objectStore)
+	c.converter = worker.NewConverter(c.objectStore, cfg.Compaction.ValueProjections)
 
 	// Create planner with configuration
 	plannerCfg := planner.Config{
@@ -485,7 +518,22 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 		entries[i] = &plan.Entries[i]
 	}
 
-	convertResult, err := c.converter.Convert(ctx, entries, partition)
+	projectionFields := c.converter.ProjectionFields(topicName)
+	var parquetSchema *parquet.Schema
+	if icebergEnabled && c.icebergTableCreator != nil {
+		table, err := c.icebergTableCreator.CreateTableForTopic(ctx, topicName)
+		if err != nil {
+			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, fmt.Sprintf("ensure iceberg table exists: %v", err))
+			return fmt.Errorf("ensure iceberg table exists: %w", err)
+		}
+		parquetSchema, err = worker.BuildParquetSchemaFromIceberg(table.Schema(), projectionFields)
+		if err != nil {
+			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
+			return fmt.Errorf("build parquet schema: %w", err)
+		}
+	}
+
+	convertResult, err := c.converter.Convert(ctx, entries, partition, topicName, parquetSchema)
 	if err != nil {
 		c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
 		return fmt.Errorf("convert to parquet: %w", err)
@@ -512,12 +560,6 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 	}
 
 	if icebergEnabled && c.icebergAppender != nil {
-		// Ensure table exists (lazy creation)
-		if _, err := c.icebergTableCreator.CreateTableForTopic(ctx, topicName); err != nil {
-			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, fmt.Sprintf("ensure iceberg table exists: %v", err))
-			return fmt.Errorf("ensure iceberg table exists: %w", err)
-		}
-
 		// Commit to Iceberg
 		c.logger.Infof("committing to Iceberg", map[string]any{
 			"topic": topicName,
@@ -618,7 +660,21 @@ func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *p
 		return fmt.Errorf("no records in parquet rewrite plan")
 	}
 
-	parquetData, fileStats, err := worker.WriteToBuffer(records)
+	projectionFields := c.converter.ProjectionFields(topicName)
+	parquetSchema := worker.BuildParquetSchema(projectionFields)
+	if icebergEnabled && c.icebergTableCreator != nil {
+		table, err := c.icebergTableCreator.CreateTableForTopic(ctx, topicName)
+		if err != nil {
+			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, fmt.Sprintf("ensure iceberg table exists: %v", err))
+			return fmt.Errorf("ensure iceberg table exists: %w", err)
+		}
+		parquetSchema, err = worker.BuildParquetSchemaFromIceberg(table.Schema(), projectionFields)
+		if err != nil {
+			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
+			return fmt.Errorf("build parquet schema: %w", err)
+		}
+	}
+	parquetData, fileStats, err := worker.WriteToBuffer(parquetSchema, records)
 	if err != nil {
 		c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
 		return fmt.Errorf("write parquet: %w", err)
@@ -665,11 +721,6 @@ func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *p
 	}
 
 	if icebergEnabled && c.icebergAppender != nil {
-		if _, err := c.icebergTableCreator.CreateTableForTopic(ctx, topicName); err != nil {
-			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, fmt.Sprintf("ensure iceberg table exists: %v", err))
-			return fmt.Errorf("ensure iceberg table exists: %w", err)
-		}
-
 		dfStats := catalog.DefaultDataFileStats(partition, plan.StartOffset, plan.EndOffset-1,
 			fileStats.MinTimestamp, fileStats.MaxTimestamp, fileStats.RecordCount)
 		addedFile := catalog.BuildDataFileFromStats(parquetPath, partition,
@@ -758,25 +809,236 @@ func (c *Compactor) readParquetRecords(ctx context.Context, entries []index.Inde
 			return nil, err
 		}
 
-		reader, err := worker.NewReader(data)
-		if err != nil {
-			return nil, err
+		reader := parquet.NewReader(bytes.NewReader(data))
+		schema := reader.Schema()
+		rowBuf := make([]parquet.Row, 1)
+		for {
+			n, readErr := reader.ReadRows(rowBuf)
+			if n > 0 {
+				rowMap := make(map[string]any)
+				if err := schema.Reconstruct(&rowMap, rowBuf[0]); err != nil {
+					reader.Close()
+					return nil, err
+				}
+				rec, err := recordFromMap(rowMap, partition)
+				if err != nil {
+					reader.Close()
+					return nil, err
+				}
+				records = append(records, rec)
+			}
+			if readErr != nil {
+				if readErr == io.EOF {
+					break
+				}
+				reader.Close()
+				return nil, readErr
+			}
 		}
-		parquetRecords, err := reader.ReadAll()
 		reader.Close()
-		if err != nil {
-			return nil, err
-		}
-
-		// Ensure records have expected partition value.
-		for i := range parquetRecords {
-			parquetRecords[i].Partition = partition
-		}
-
-		records = append(records, parquetRecords...)
 	}
 
 	return records, nil
+}
+
+var baseRecordFields = map[string]struct{}{
+	"partition":      {},
+	"offset":         {},
+	"timestamp_ms":   {},
+	"key":            {},
+	"value":          {},
+	"headers":        {},
+	"producer_id":    {},
+	"producer_epoch": {},
+	"base_sequence":  {},
+	"attributes":     {},
+}
+
+func recordFromMap(row map[string]any, partition int32) (worker.Record, error) {
+	rec := worker.Record{
+		Partition: partition,
+	}
+
+	if value, ok := row["offset"]; ok {
+		offset, ok := coerceInt64(value)
+		if !ok {
+			return worker.Record{}, fmt.Errorf("invalid offset value")
+		}
+		rec.Offset = offset
+	} else {
+		return worker.Record{}, fmt.Errorf("missing offset value")
+	}
+
+	if value, ok := row["timestamp_ms"]; ok {
+		ts, ok := coerceTimestampMs(value)
+		if !ok {
+			return worker.Record{}, fmt.Errorf("invalid timestamp_ms value")
+		}
+		rec.Timestamp = ts
+	} else {
+		return worker.Record{}, fmt.Errorf("missing timestamp_ms value")
+	}
+
+	if value, ok := row["partition"]; ok {
+		if parsed, ok := coerceInt32(value); ok {
+			rec.Partition = parsed
+		}
+	}
+
+	rec.Key = coerceBytes(row["key"])
+	rec.Value = coerceBytes(row["value"])
+	rec.Headers = coerceHeaders(row["headers"])
+	rec.ProducerID = coerceOptionalInt64(row["producer_id"])
+	rec.ProducerEpoch = coerceOptionalInt32(row["producer_epoch"])
+	rec.BaseSequence = coerceOptionalInt32(row["base_sequence"])
+	rec.Attributes = coerceInt32Default(row["attributes"])
+
+	projected := make(map[string]any)
+	for key, value := range row {
+		if _, ok := baseRecordFields[key]; ok {
+			continue
+		}
+		projected[key] = value
+	}
+	if len(projected) > 0 {
+		rec.Projected = projected
+	}
+
+	return rec, nil
+}
+
+func coerceInt64(value any) (int64, bool) {
+	const maxInt64 = int64(^uint64(0) >> 1)
+	switch v := value.(type) {
+	case int64:
+		return v, true
+	case int32:
+		return int64(v), true
+	case int:
+		return int64(v), true
+	case uint64:
+		if v > uint64(maxInt64) {
+			return 0, false
+		}
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	case float32:
+		return int64(v), true
+	default:
+		return 0, false
+	}
+}
+
+func coerceInt32(value any) (int32, bool) {
+	parsed, ok := coerceInt64(value)
+	if !ok {
+		return 0, false
+	}
+	if parsed > int64(int32(^uint32(0)>>1)) || parsed < int64(-int32(^uint32(0)>>1)-1) {
+		return 0, false
+	}
+	return int32(parsed), true
+}
+
+func coerceInt32Default(value any) int32 {
+	if parsed, ok := coerceInt32(value); ok {
+		return parsed
+	}
+	return 0
+}
+
+func coerceOptionalInt64(value any) *int64 {
+	if value == nil {
+		return nil
+	}
+	if parsed, ok := coerceInt64(value); ok {
+		return &parsed
+	}
+	return nil
+}
+
+func coerceOptionalInt32(value any) *int32 {
+	if value == nil {
+		return nil
+	}
+	if parsed, ok := coerceInt32(value); ok {
+		return &parsed
+	}
+	return nil
+}
+
+func coerceTimestampMs(value any) (int64, bool) {
+	switch v := value.(type) {
+	case time.Time:
+		return v.UnixMilli(), true
+	case *time.Time:
+		if v == nil {
+			return 0, false
+		}
+		return v.UnixMilli(), true
+	default:
+		return coerceInt64(value)
+	}
+}
+
+func coerceBytes(value any) []byte {
+	switch v := value.(type) {
+	case []byte:
+		return v
+	case string:
+		return []byte(v)
+	default:
+		return nil
+	}
+}
+
+func coerceHeaders(value any) []worker.Header {
+	if value == nil {
+		return nil
+	}
+	switch v := value.(type) {
+	case []worker.Header:
+		return v
+	case []map[string]any:
+		headers := make([]worker.Header, 0, len(v))
+		for _, item := range v {
+			headers = append(headers, headerFromMap(item))
+		}
+		return headers
+	case []any:
+		headers := make([]worker.Header, 0, len(v))
+		for _, item := range v {
+			switch typed := item.(type) {
+			case map[string]any:
+				headers = append(headers, headerFromMap(typed))
+			case map[string]string:
+				headers = append(headers, worker.Header{
+					Key:   typed["key"],
+					Value: []byte(typed["value"]),
+				})
+			}
+		}
+		return headers
+	default:
+		return nil
+	}
+}
+
+func headerFromMap(item map[string]any) worker.Header {
+	return worker.Header{
+		Key:   coerceString(item["key"]),
+		Value: coerceBytes(item["value"]),
+	}
+}
+
+func coerceString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	default:
+		return ""
+	}
 }
 
 func parquetIndexKeys(entries []index.IndexEntry) ([]string, error) {
@@ -856,6 +1118,14 @@ func (c *Compactor) recoverJob(ctx context.Context, job *compaction.Job) {
 		swapResult, err := c.indexSwapper.SwapFromJob(ctx, job, job.ParquetPath,
 			job.ParquetSizeBytes, job.ParquetRecordCount, metaDomain)
 		if err != nil {
+			if errors.Is(err, compaction.ErrNoEntriesToSwap) {
+				c.logger.Warnf("recovery: no index entries to swap, marking job failed", map[string]any{
+					"streamId": job.StreamID,
+					"jobId":    job.JobID,
+				})
+				c.sagaManager.MarkFailed(ctx, job.StreamID, job.JobID, "recovery: no index entries to swap")
+				return
+			}
 			c.logger.Warnf("recovery: index swap failed", map[string]any{"error": err.Error()})
 			return
 		}
