@@ -3624,11 +3624,11 @@
       "Add a test that closes the client during a long-poll fetch and asserts the handler exits early",
       "Run protocol/server tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/server",
       "internal/protocol"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "reduce-fetch-per-partition-logging",
@@ -3639,10 +3639,10 @@
       "Add or update logging tests if present",
       "Run protocol tests and ensure logs remain useful"
     ],
+    "completed": true,
     "scope": [
       "internal/protocol/fetch.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "preallocate-fetch-response-buffer",
@@ -3653,10 +3653,10 @@
       "Add a small unit benchmark or test asserting buffer growth",
       "Run fetch tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/protocol/fetch.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "pool-request-read-buffers",
@@ -3667,10 +3667,10 @@
       "Use pooled buffers in the request read path with safe reset/return",
       "Add a test for buffer reuse safety and run server tests"
     ],
+    "completed": true,
     "scope": [
       "internal/server/server.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "optimize-listoffsets-index-scan",
@@ -3681,11 +3681,11 @@
       "Add a unit test that asserts only a limited number of List calls for large index sizes",
       "Run protocol/index tests and fix failures"
     ],
+    "completed": true,
     "scope": [
       "internal/protocol/list_offsets.go",
       "internal/index/entry.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wire-index-hwm-caches-into-read-paths",
@@ -3696,10 +3696,10 @@
       "Add tests that verify cache hits after warm-up and invalidation on notifications",
       "Run index/protocol tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/index"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "add-backoff-to-index-watchers",
@@ -3710,11 +3710,11 @@
       "Log errors with context and reset backoff on success",
       "Add a unit test simulating stream errors and run index tests"
     ],
+    "completed": true,
     "scope": [
       "internal/index/index_cache.go",
       "internal/index/hwm_cache.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-decoder-optional-footer",
@@ -3725,10 +3725,10 @@
       "Add a unit test that decodes WALs without a footer",
       "Run WAL tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/wal/decoder.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "streaming-wal-decoder",
@@ -3739,10 +3739,10 @@
       "Add a test verifying memory usage stays bounded for large WALs",
       "Run WAL and compaction tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/wal/decoder.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wal-writer-streaming-upload",
@@ -3753,11 +3753,11 @@
       "Add a test that writes a large WAL and asserts multipart usage",
       "Run WAL/objectstore tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/wal/writer.go",
       "internal/wal/staging.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "parquet-timestamp-lookup-uses-stats",
@@ -3768,10 +3768,10 @@
       "Add a test with large Parquet files to assert bounded reads for timestamp lookup",
       "Run fetch tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/fetch/timestamp_scan.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "parquet-fetch-batch-aggregation",
@@ -3782,10 +3782,10 @@
       "Add a test to ensure batch boundaries preserve ordering and offsets",
       "Run fetch tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/fetch/parquet_reader.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "iceberg-datafile-stats-population",
@@ -3796,11 +3796,11 @@
       "Populate stats from Parquet writer metadata when building DataFiles",
       "Add tests asserting stats are present in commits and run Iceberg tests"
     ],
+    "completed": true,
     "scope": [
       "internal/iceberg/catalog",
       "internal/compaction/worker"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "wire-parquet-rewrite-compaction",
@@ -3811,11 +3811,11 @@
       "Add an integration test that creates many small files and verifies rewrite compaction runs",
       "Run compaction tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/compaction/planner",
       "internal/compaction"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "streaming-compaction-conversion",
@@ -3826,10 +3826,10 @@
       "Add a test with large WAL input to validate bounded memory usage",
       "Run compaction tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/compaction/worker"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "optimize-compaction-index-swap-scans",
@@ -3840,10 +3840,10 @@
       "Add a test that asserts only bounded List calls for large indexes",
       "Run compaction/index tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/compaction/swap.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "validate-batch-crc-in-compaction",
@@ -3854,10 +3854,10 @@
       "Add a unit test with corrupted WAL batches that must fail compaction",
       "Run compaction tests and fix any failures"
     ],
+    "completed": true,
     "scope": [
       "internal/compaction/worker/converter.go"
-    ],
-    "completed": true
+    ]
   },
   {
     "id": "parquet-schema-add-record-crc",
@@ -3972,5 +3972,70 @@
     "scope": [
       "tests/integration"
     ]
+  },
+  {
+    "id": "architecture-overview-doc",
+    "category": "docs",
+    "description": "Create an architecture overview document describing Dray components, data flows, and storage/metadata interactions.",
+    "steps": [
+      "Review SPEC.md for system goals, invariants, and data-flow descriptions.",
+      "Scan package docs in internal/*/doc.go (server, protocol, wal, metadata/oxia, objectstore, compaction, fetch, groups, topics, metrics) to map runtime components.",
+      "Write docs/architecture.md covering broker/compactor roles, metadata + object store + Iceberg interactions, and core read/write/compaction flows.",
+      "Include a high-level diagram or ASCII flow blocks and link back to SPEC.md for deeper details."
+    ],
+    "scope": [
+      "docs/architecture.md"
+    ],
+    "completed": false
+  },
+  {
+    "id": "api-docs",
+    "category": "docs",
+    "description": "Document Dray's public APIs including Kafka protocol support, admin CLI commands, and health/metrics endpoints.",
+    "steps": [
+      "Inventory Kafka request/response handlers under internal/protocol/*.go to enumerate supported APIs and versions.",
+      "Document admin CLI subcommands and flags from cmd/drayd/admin.go and cmd/drayd/main.go.",
+      "Document /healthz, /readyz, and /metrics endpoints using internal/server/health.go and internal/metrics/doc.go.",
+      "Write docs/api.md with sections for Kafka wire protocol coverage, admin CLI usage examples, and observability endpoints."
+    ],
+    "scope": [
+      "docs/api.md"
+    ],
+    "completed": false
+  },
+  {
+    "id": "configuration-reference",
+    "category": "docs",
+    "description": "Create a configuration reference documenting YAML structure, defaults, and environment variable overrides.",
+    "steps": [
+      "Extract config fields, defaults, and env var names from internal/config/config.go.",
+      "Describe required vs optional settings (metadata, object store, WAL, compaction, Iceberg, routing, observability).",
+      "Add a full example config YAML and a minimal quickstart config.",
+      "Write docs/configuration.md with tables for fields, types, defaults, and env vars."
+    ],
+    "scope": [
+      "docs/configuration.md"
+    ],
+    "completed": false
+  },
+  {
+    "id": "readme",
+    "category": "docs",
+    "description": "Write a comprehensive README with project overview, build/run instructions, and links to architecture/API/config docs.",
+    "steps": [
+      "Summarize Dray’s purpose and key features using SPEC.md and CLAUDE.md for consistent messaging.",
+      "Add build/run instructions based on cmd/drayd/main.go, Makefile, and init.sh usage.",
+      "Include a quickstart section with sample config and broker/compactor/admin commands.",
+      "Link to docs/architecture.md, docs/api.md, docs/configuration.md, and SPEC.md for deeper reference."
+    ],
+    "depends_on": [
+      "architecture-overview-doc",
+      "api-docs",
+      "configuration-reference"
+    ],
+    "scope": [
+      "README.md"
+    ],
+    "completed": false
   }
 ]
