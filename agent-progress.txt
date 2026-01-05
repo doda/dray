@@ -2494,3 +2494,12 @@ Start with project-setup, then follow spec phases:
 - Tests: ./init.sh > .looper-init.log 2>&1 (PASS).
 - Challenge: go test initial run timed out due to missing PATH/timeout; reran with PATH and longer timeout.
 - Resolution: re-ran go test with PATH set and longer timeout.
+[2026-01-05T23:55:00Z] Task readme: PASS
+- Summary: added comprehensive README with overview, build/run steps, quickstart config, and doc links.
+- Implemented sections for highlights, build, run, quickstart, and verification guidance.
+- Files changed: README.md, task_list.json.
+- Tests: ./init.sh --quick > .looper-init.log 2>&1 (PASS).
+- Tests: ./init.sh > .looper-init.log 2>&1 (PASS).
+- Challenge: ensure CLI examples match drayd flags and admin usage.
+- Resolution: cross-checked cmd/drayd/main.go and cmd/drayd/admin.go for flags.
+- Follow-ups: none.
