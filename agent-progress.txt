@@ -2484,3 +2484,13 @@ Start with project-setup, then follow spec phases:
 - Challenge: none.
 - Resolution: n/a.
 - Follow-ups: none.
+[2026-01-05T23:30:00Z] Task configuration-reference: PASS
+- Summary: documented full configuration reference with defaults, env overrides, and required/optional guidance.
+- Added docs for YAML structure, per-section tables, and value projection rules.
+- Included minimal quickstart and full example configs.
+- Files changed: docs/configuration.md.
+- Files updated: task_list.json marked configuration-reference complete.
+- Tests: PATH="$PATH:/usr/local/go/bin" go test ./... (PASS).
+- Tests: ./init.sh > .looper-init.log 2>&1 (PASS).
+- Challenge: go test initial run timed out due to missing PATH/timeout; reran with PATH and longer timeout.
+- Resolution: re-ran go test with PATH set and longer timeout.
