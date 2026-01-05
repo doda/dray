@@ -2474,3 +2474,13 @@ Start with project-setup, then follow spec phases:
 - Challenges: init.sh failed due to compaction/worker API drift and integration test schema mismatch/timeouts.
 - Resolved by updating schema call sites, adding optionalBytes for nullable fields, using Iceberg-aligned schemas in DuckDB tests, and increasing fetch timeouts.
 - Follow-ups: none noted.
+[2026-01-05T22:45:00Z] Task api-docs: PASS
+- Implemented docs/api.md covering Kafka API version matrix, admin CLI usage/flags, and health/metrics endpoints.
+- Documented SASL API conditional exposure and explicit rejection of transactional/idempotent/inter-broker APIs.
+- Captured admin CLI subcommands and flags for topics, groups, configs, and status; added usage examples.
+- Key files changed: docs/api.md, task_list.json.
+- Verification: ./init.sh --quick > .looper-init.log 2>&1 (PASS).
+- Verification: ./init.sh > .looper-init.log 2>&1 (PASS).
+- Challenge: none.
+- Resolution: n/a.
+- Follow-ups: none.
