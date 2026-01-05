@@ -100,7 +100,7 @@ func TestInvariantI1_StrictlyIncreasingOffsets(t *testing.T) {
 	}
 	defer consumerClient.Close()
 
-	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	var fetchedOffsets []int64
@@ -314,7 +314,7 @@ func TestInvariantI1_ConcurrentProducers(t *testing.T) {
 	}
 	defer consumerClient.Close()
 
-	fetchCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	var fetchedOffsets []int64

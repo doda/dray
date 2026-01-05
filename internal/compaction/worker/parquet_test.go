@@ -874,7 +874,7 @@ func TestWriter_RecordCRC(t *testing.T) {
 		},
 	}
 
-	data, _, err := WriteToBuffer(records)
+	data, _, err := WriteToBuffer(BuildParquetSchema(nil), records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}
@@ -936,7 +936,7 @@ func TestWriter_RoundTripPreservesRecordCRC(t *testing.T) {
 		RecordCRC:     &crc,
 	}
 
-	data, _, err := WriteToBuffer([]Record{original})
+	data, _, err := WriteToBuffer(BuildParquetSchema(nil), []Record{original})
 	if err != nil {
 		t.Fatalf("WriteToBuffer failed: %v", err)
 	}

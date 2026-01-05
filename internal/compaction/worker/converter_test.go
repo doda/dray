@@ -950,7 +950,7 @@ func TestStreamingConvertWALFromBytes_MatchesNonStreaming(t *testing.T) {
 	walData := buildTestWAL([][]byte{batch}, 123)
 
 	// Non-streaming result
-	nonStreamingResult, err := ConvertWALToParquet(walData, 5, 100)
+	nonStreamingResult, err := ConvertWALToParquet(walData, 5, 100, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}
@@ -1357,7 +1357,7 @@ func TestExtractRecordsFromBatch_CRCValidation(t *testing.T) {
 	batch := buildTestRecordBatch(records, 1000, 0)
 
 	// Valid batch should work
-	extractedRecords, err := extractRecordsFromBatch(batch, 0, 0)
+	extractedRecords, err := extractRecordsFromBatch(batch, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("extractRecordsFromBatch failed for valid batch: %v", err)
 	}
@@ -1375,7 +1375,7 @@ func TestExtractRecordsFromBatch_CorruptedBatchFailsExtraction(t *testing.T) {
 	// Corrupt the CRC
 	batch[17] ^= 0xFF
 
-	_, err := extractRecordsFromBatch(batch, 0, 0)
+	_, err := extractRecordsFromBatch(batch, 0, 0, nil)
 	if err == nil {
 		t.Error("expected error for corrupted batch")
 	}
@@ -1397,7 +1397,7 @@ func TestConvertWALToParquet_CorruptedBatchFailsCompaction(t *testing.T) {
 
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	_, err := ConvertWALToParquet(walData, 0, 0)
+	_, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err == nil {
 		t.Error("expected compaction to fail with corrupted batch")
 	}
@@ -1420,7 +1420,7 @@ func TestConvertWALToParquet_CorruptedCRCFieldFailsCompaction(t *testing.T) {
 
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	_, err := ConvertWALToParquet(walData, 0, 0)
+	_, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err == nil {
 		t.Error("expected compaction to fail with corrupted CRC field")
 	}
@@ -1497,7 +1497,7 @@ func TestConvertWALToParquet_CorruptedCompressedBatchFailsCompaction(t *testing.
 
 		walData := buildTestWAL([][]byte{batch}, 123)
 
-		_, err := ConvertWALToParquet(walData, 0, 0)
+		_, err := ConvertWALToParquet(walData, 0, 0, nil)
 		if err == nil {
 			t.Errorf("expected compaction to fail with corrupted compressed batch (type %d)", ct)
 		}
@@ -1521,7 +1521,7 @@ func TestConvertWALToParquet_MultipleBatches_OneCorrupted(t *testing.T) {
 
 	walData := buildTestWAL([][]byte{batch1, batch2}, 123)
 
-	_, err := ConvertWALToParquet(walData, 0, 0)
+	_, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err == nil {
 		t.Error("expected compaction to fail when one batch is corrupted")
 	}
@@ -1539,7 +1539,7 @@ func TestConvertWALToParquet_RecordCRCPopulated(t *testing.T) {
 	batch := buildTestRecordBatch(records, 1000, 0)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}
@@ -1640,7 +1640,7 @@ func TestConvertWALToParquet_RecordCRCWithHeaders(t *testing.T) {
 	batch := buildTestRecordBatch(records, 1000, 0)
 	walData := buildTestWAL([][]byte{batch}, 123)
 
-	result, err := ConvertWALToParquet(walData, 0, 0)
+	result, err := ConvertWALToParquet(walData, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("ConvertWALToParquet failed: %v", err)
 	}
