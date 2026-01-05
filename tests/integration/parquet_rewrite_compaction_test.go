@@ -54,7 +54,7 @@ func TestParquetRewriteCompaction(t *testing.T) {
 		allExpectedRecords = append(allExpectedRecords, records...)
 
 		// Write to Parquet
-		parquetData, _, err := worker.WriteToBuffer(records)
+		parquetData, _, err := worker.WriteToBuffer(worker.BuildParquetSchema(nil), records)
 		if err != nil {
 			t.Fatalf("WriteToBuffer failed: %v", err)
 		}
@@ -208,7 +208,7 @@ func TestParquetRewriteCompaction_NotEnoughFiles(t *testing.T) {
 			}
 		}
 
-		parquetData, _, err := worker.WriteToBuffer(records)
+		parquetData, _, err := worker.WriteToBuffer(worker.BuildParquetSchema(nil), records)
 		if err != nil {
 			t.Fatalf("WriteToBuffer failed: %v", err)
 		}
@@ -284,7 +284,7 @@ func TestParquetRewriteCompaction_DataConsistency(t *testing.T) {
 			originalRecords = append(originalRecords, records[i])
 		}
 
-		parquetData, _, err := worker.WriteToBuffer(records)
+		parquetData, _, err := worker.WriteToBuffer(worker.BuildParquetSchema(nil), records)
 		if err != nil {
 			t.Fatalf("WriteToBuffer failed: %v", err)
 		}

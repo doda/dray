@@ -1057,8 +1057,8 @@ func TestCrashRecovery_AfterCreated(t *testing.T) {
 		}
 	}
 
-	converter := worker.NewConverter(objStore)
-	convertResult, err := converter.Convert(ctx, walEntries, 0)
+	converter := worker.NewConverter(objStore, nil)
+	convertResult, err := converter.Convert(ctx, walEntries, 0, "created-crash-topic", nil)
 	if err != nil {
 		t.Fatalf("failed to convert WAL to Parquet: %v", err)
 	}
@@ -1202,8 +1202,8 @@ func TestCrashRecovery_AfterWALGCReady(t *testing.T) {
 		}
 	}
 
-	converter := worker.NewConverter(objStore)
-	convertResult, err := converter.Convert(ctx, walEntries, 0)
+	converter := worker.NewConverter(objStore, nil)
+	convertResult, err := converter.Convert(ctx, walEntries, 0, "wal-gc-ready-crash-topic", nil)
 	if err != nil {
 		t.Fatalf("failed to convert: %v", err)
 	}

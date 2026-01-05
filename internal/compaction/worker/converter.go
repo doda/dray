@@ -650,7 +650,7 @@ func (c *StreamingConverter) ConvertStreaming(ctx context.Context, entries []*in
 	}
 
 	// Create Parquet writer
-	writer := NewWriter()
+	writer := NewWriter(BuildParquetSchema(nil))
 	recordBatch := make([]Record, 0, cfg.BatchSize)
 	currentOffset := entries[0].StartOffset
 
@@ -681,7 +681,7 @@ func (c *StreamingConverter) ConvertStreaming(ctx context.Context, entries []*in
 
 			// Process batches within the chunk
 			for _, batch := range chunk.Batches {
-				records, err := extractRecordsFromBatch(batch.Data, partition, currentOffset)
+				records, err := extractRecordsFromBatch(batch.Data, partition, currentOffset, nil)
 				if err != nil {
 					return nil, fmt.Errorf("streaming converter: extracting records at offset %d: %w", currentOffset, err)
 				}
@@ -739,7 +739,7 @@ func (c *StreamingConverter) StreamingConvertWAL(ctx context.Context, walPath st
 		return nil, errors.New("streaming converter: WAL has no chunks")
 	}
 
-	writer := NewWriter()
+	writer := NewWriter(BuildParquetSchema(nil))
 	recordBatch := make([]Record, 0, cfg.BatchSize)
 	currentOffset := startOffset
 
@@ -751,7 +751,7 @@ func (c *StreamingConverter) StreamingConvertWAL(ctx context.Context, walPath st
 		}
 
 		for _, batch := range chunk.Batches {
-			records, err := extractRecordsFromBatch(batch.Data, partition, currentOffset)
+			records, err := extractRecordsFromBatch(batch.Data, partition, currentOffset, nil)
 			if err != nil {
 				return nil, fmt.Errorf("streaming converter: extracting records at offset %d: %w", currentOffset, err)
 			}
@@ -843,7 +843,7 @@ func StreamingConvertWALFromBytes(walData []byte, partition int32, startOffset i
 		return nil, errors.New("streaming converter: WAL has no chunks")
 	}
 
-	writer := NewWriter()
+	writer := NewWriter(BuildParquetSchema(nil))
 	recordBatch := make([]Record, 0, cfg.BatchSize)
 	currentOffset := startOffset
 
@@ -854,7 +854,7 @@ func StreamingConvertWALFromBytes(walData []byte, partition int32, startOffset i
 		}
 
 		for _, batch := range chunk.Batches {
-			records, err := extractRecordsFromBatch(batch.Data, partition, currentOffset)
+			records, err := extractRecordsFromBatch(batch.Data, partition, currentOffset, nil)
 			if err != nil {
 				return nil, fmt.Errorf("streaming converter: extracting records at offset %d: %w", currentOffset, err)
 			}

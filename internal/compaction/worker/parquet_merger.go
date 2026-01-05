@@ -67,7 +67,7 @@ func (m *ParquetMerger) Merge(ctx context.Context, entries []*index.IndexEntry) 
 	}
 
 	// Write merged records to new Parquet file
-	parquetData, stats, err := WriteToBuffer(allRecords)
+	parquetData, stats, err := WriteToBuffer(BuildParquetSchema(nil), allRecords)
 	if err != nil {
 		return nil, fmt.Errorf("merger: writing merged parquet: %w", err)
 	}

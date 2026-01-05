@@ -137,7 +137,7 @@ func TestParquetSchemaColumns(t *testing.T) {
 		},
 	}
 
-	parquetData, _, err := worker.WriteToBuffer(records)
+	parquetData, _, err := worker.WriteToBuffer(worker.BuildParquetSchema(nil), records)
 	if err != nil {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestParquetHeadersPreserveOrderAndDuplicates(t *testing.T) {
 		},
 	}
 
-	parquetData, _, err := worker.WriteToBuffer(records)
+	parquetData, _, err := worker.WriteToBuffer(worker.BuildParquetSchema(nil), records)
 	if err != nil {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestParquetRecordCRC(t *testing.T) {
 		},
 	}
 
-	parquetData, _, err := worker.WriteToBuffer(records)
+	parquetData, _, err := worker.WriteToBuffer(worker.BuildParquetSchema(nil), records)
 	if err != nil {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestParquetNullableFields(t *testing.T) {
 		},
 	}
 
-	parquetData, _, err := worker.WriteToBuffer(records)
+	parquetData, _, err := worker.WriteToBuffer(worker.BuildParquetSchema(nil), records)
 	if err != nil {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestParquetTimestampType(t *testing.T) {
 		},
 	}
 
-	parquetData, _, err := worker.WriteToBuffer(records)
+	parquetData, _, err := worker.WriteToBuffer(worker.BuildParquetSchema(nil), records)
 	if err != nil {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
@@ -998,8 +998,8 @@ func runSchemaTestCompaction(t *testing.T, ctx context.Context, streamID string,
 		t.Fatal("no WAL entries to compact")
 	}
 
-	converter := worker.NewConverter(objStore)
-	convertResult, err := converter.Convert(ctx, walEntries, partition)
+	converter := worker.NewConverter(objStore, nil)
+	convertResult, err := converter.Convert(ctx, walEntries, partition, "parquet-schema-test", nil)
 	if err != nil {
 		t.Fatalf("failed to convert WAL to Parquet: %v", err)
 	}

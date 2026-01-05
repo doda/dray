@@ -169,9 +169,9 @@ func recordToMap(rec Record) map[string]any {
 	row := map[string]any{
 		"partition":      rec.Partition,
 		"offset":         rec.Offset,
-		"timestamp_ms":   rec.Timestamp,
-		"key":            rec.Key,
-		"value":          rec.Value,
+		"timestamp":      rec.Timestamp,
+		"key":            optionalBytes(rec.Key),
+		"value":          optionalBytes(rec.Value),
 		"headers":        headersToMap(rec.Headers),
 		"producer_id":    derefInt64(rec.ProducerID),
 		"producer_epoch": derefInt32(rec.ProducerEpoch),
@@ -183,6 +183,13 @@ func recordToMap(rec Record) map[string]any {
 		row[key] = value
 	}
 	return row
+}
+
+func optionalBytes(value []byte) any {
+	if value == nil {
+		return nil
+	}
+	return value
 }
 
 func derefInt64(value *int64) any {
@@ -224,7 +231,7 @@ func BuildParquetSchema(fields []projection.FieldSpec) *parquet.Schema {
 		"producer_epoch": parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), catalog.FieldIDProducerEpoch),
 		"producer_id":    parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int64Type)), catalog.FieldIDProducerID),
 		"record_crc":     parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), catalog.FieldIDRecordCRC),
-		"timestamp_ms":   parquet.FieldID(parquet.Timestamp(parquet.Millisecond), catalog.FieldIDTimestampMs),
+		"timestamp":      parquet.FieldID(parquet.Timestamp(parquet.Millisecond), catalog.FieldIDTimestamp),
 		"value":          parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.ByteArrayType)), catalog.FieldIDValue),
 	}
 
@@ -260,7 +267,7 @@ func BuildParquetSchemaFromIceberg(schema *iceberg.Schema, fields []projection.F
 	if err != nil {
 		return nil, err
 	}
-	timestampField, err := fieldByName(schema, "timestamp_ms")
+	timestampField, err := fieldByName(schema, "timestamp")
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +330,7 @@ func BuildParquetSchemaFromIceberg(schema *iceberg.Schema, fields []projection.F
 		"producer_epoch": parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), producerEpochField.ID),
 		"producer_id":    parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int64Type)), producerIDField.ID),
 		"record_crc":     parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), recordCRCField.ID),
-		"timestamp_ms":   parquet.FieldID(parquet.Timestamp(parquet.Millisecond), timestampField.ID),
+		"timestamp":      parquet.FieldID(parquet.Timestamp(parquet.Millisecond), timestampField.ID),
 		"value":          parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.ByteArrayType)), valueField.ID),
 	}
 

@@ -104,7 +104,7 @@ func TestParquetMerger_MergeMultipleFiles(t *testing.T) {
 			Value:     []byte("value1"),
 		}
 	}
-	data1, stats1, err := WriteToBuffer(records1)
+	data1, stats1, err := WriteToBuffer(BuildParquetSchema(nil), records1)
 	if err != nil {
 		t.Fatalf("WriteToBuffer() error = %v", err)
 	}
@@ -121,7 +121,7 @@ func TestParquetMerger_MergeMultipleFiles(t *testing.T) {
 			Value:     []byte("value2"),
 		}
 	}
-	data2, stats2, err := WriteToBuffer(records2)
+	data2, stats2, err := WriteToBuffer(BuildParquetSchema(nil), records2)
 	if err != nil {
 		t.Fatalf("WriteToBuffer() error = %v", err)
 	}
@@ -257,7 +257,7 @@ func TestParquetMerger_WriteParquetToStorage(t *testing.T) {
 	records := []Record{
 		{Partition: 0, Offset: 0, Timestamp: 1000, Value: []byte("test")},
 	}
-	data, _, err := WriteToBuffer(records)
+	data, _, err := WriteToBuffer(BuildParquetSchema(nil), records)
 	if err != nil {
 		t.Fatalf("WriteToBuffer() error = %v", err)
 	}

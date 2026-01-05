@@ -32,7 +32,7 @@ func TestIcebergDuckDBAppendRead(t *testing.T) {
 		{Partition: 0, Offset: 0, Timestamp: time.Now().UnixMilli(), Key: []byte("k1"), Value: []byte("v1"), Attributes: 0},
 		{Partition: 0, Offset: 1, Timestamp: time.Now().UnixMilli(), Key: []byte("k2"), Value: []byte("v2"), Attributes: 0},
 	}
-	dataPath := writeParquetFile(t, tableRef.Location(), "append", records)
+	dataPath := writeParquetFile(t, tableRef, "append", records)
 
 	appender := catalog.NewAppender(catalog.DefaultAppenderConfig(cat))
 	if _, err := appender.AppendFilesForStream(ctx, topicName, "job-append", []catalog.DataFile{{Path: dataPath}}); err != nil {
@@ -62,7 +62,7 @@ func TestIcebergDuckDBReplaceFiles(t *testing.T) {
 	oldRecords := []worker.Record{
 		{Partition: 0, Offset: 0, Timestamp: time.Now().UnixMilli(), Key: []byte("k1"), Value: []byte("old"), Attributes: 0},
 	}
-	oldPath := writeParquetFile(t, tableRef.Location(), "old", oldRecords)
+	oldPath := writeParquetFile(t, tableRef, "old", oldRecords)
 
 	appender := catalog.NewAppender(catalog.DefaultAppenderConfig(cat))
 	if _, err := appender.AppendFilesForStream(ctx, topicName, "job-old", []catalog.DataFile{{Path: oldPath}}); err != nil {
@@ -72,7 +72,7 @@ func TestIcebergDuckDBReplaceFiles(t *testing.T) {
 	newRecords := []worker.Record{
 		{Partition: 0, Offset: 0, Timestamp: time.Now().UnixMilli(), Key: []byte("k1"), Value: []byte("new"), Attributes: 0},
 	}
-	newPath := writeParquetFile(t, tableRef.Location(), "new", newRecords)
+	newPath := writeParquetFile(t, tableRef, "new", newRecords)
 
 	if _, err := appender.ReplaceFilesForStream(ctx, topicName, "job-rewrite", []catalog.DataFile{{Path: newPath}}, []catalog.DataFile{{Path: oldPath}}); err != nil {
 		t.Fatalf("replace files failed: %v", err)
@@ -172,14 +172,20 @@ func createDuckDBTable(t *testing.T, ctx context.Context, cat *catalog.IcebergCa
 	return wrappedTable
 }
 
-func writeParquetFile(t *testing.T, tableLocation, name string, records []worker.Record) string {
+func writeParquetFile(t *testing.T, tableRef catalog.Table, name string, records []worker.Record) string {
 	t.Helper()
 
-	data, _, err := worker.WriteToBuffer(worker.BuildParquetSchema(nil), records)
+	schema, err := worker.BuildParquetSchemaFromIceberg(tableRef.Schema(), nil)
+	if err != nil {
+		t.Fatalf("build parquet schema failed: %v", err)
+	}
+
+	data, _, err := worker.WriteToBuffer(schema, records)
 	if err != nil {
 		t.Fatalf("write parquet buffer failed: %v", err)
 	}
 
+	tableLocation := tableRef.Location()
 	localLocation := strings.TrimPrefix(tableLocation, "file://")
 	dataPath := filepath.Join(localLocation, "data", name+".parquet")
 	if err := os.MkdirAll(filepath.Dir(dataPath), 0o755); err != nil {

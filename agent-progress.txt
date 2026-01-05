@@ -2463,3 +2463,14 @@ Start with project-setup, then follow spec phases:
 - **Tasks Created**: None (all spec requirements implemented)
 - **Conclusion**: Implementation matches spec v1.2.1; no new tasks needed
 [2026-01-05T20:28:03.475Z] Instruction: "Write comprehensive documentation including README..." -> 4 task(s)
+[2026-01-05T22:05:10.000Z] Task architecture-overview-doc: PASS
+- Implemented docs/architecture.md with component overview, storage/metadata interactions, and core produce/fetch/compaction flows plus ASCII diagram.
+- Fixed init.sh failures by aligning compaction/worker schema usage (NewWriter, WriteToBuffer, extractRecordsFromBatch) and updating integration tests for new signatures.
+- Ensured Parquet nullable fields round-trip as nulls by using untyped nils for optional bytes in internal/compaction/worker/parquet.go.
+- Aligned DuckDB Iceberg tests with table schema via BuildParquetSchemaFromIceberg and extended invariant I1 fetch timeouts for stability.
+- Key files changed: docs/architecture.md, internal/compaction/worker/parquet.go, internal/compaction/worker/converter.go, internal/compaction/worker/parquet_merger.go, tests/integration/iceberg_duckdb_test.go, tests/integration/invariant_i1_test.go, tests/integration/parquet_schema_roundtrip_test.go, tests/integration/parquet_rewrite_compaction_test.go, task_list.json.
+- Verification: PATH="$PATH:/usr/local/go/bin" go test -v ./tests/integration -count=1 (PASS).
+- Verification: ./init.sh --quick (PASS).
+- Challenges: init.sh failed due to compaction/worker API drift and integration test schema mismatch/timeouts.
+- Resolved by updating schema call sites, adding optionalBytes for nullable fields, using Iceberg-aligned schemas in DuckDB tests, and increasing fetch timeouts.
+- Follow-ups: none noted.
