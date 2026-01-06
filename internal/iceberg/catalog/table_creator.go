@@ -10,10 +10,11 @@ import (
 // This implements the stream-table duality by creating an Iceberg table
 // whenever a Kafka topic is created, per SPEC.md section 4.3.
 type TableCreator struct {
-	catalog     Catalog
-	namespace   []string
-	clusterID   string
-	projByTopic map[string]projection.TopicProjection
+	catalog      Catalog
+	namespace    []string
+	clusterID    string
+	projByTopic  map[string]projection.TopicProjection
+	partitioning []string // partition expressions from config
 }
 
 // TableCreatorConfig configures the TableCreator.
@@ -30,6 +31,11 @@ type TableCreatorConfig struct {
 
 	// ValueProjections defines optional projected columns per topic.
 	ValueProjections []projection.TopicProjection
+
+	// Partitioning defines partition expressions for tables.
+	// Examples: ["partition", "day(created_at)"]
+	// Default: ["partition"]
+	Partitioning []string
 }
 
 // NewTableCreator creates a new TableCreator.
@@ -39,11 +45,17 @@ func NewTableCreator(cfg TableCreatorConfig) *TableCreator {
 		namespace = []string{"dray"}
 	}
 
+	partitioning := cfg.Partitioning
+	if len(partitioning) == 0 {
+		partitioning = []string{"partition"} // default
+	}
+
 	return &TableCreator{
-		catalog:     cfg.Catalog,
-		namespace:   namespace,
-		clusterID:   cfg.ClusterID,
-		projByTopic: projection.ByTopic(projection.Normalize(cfg.ValueProjections)),
+		catalog:      cfg.Catalog,
+		namespace:    namespace,
+		clusterID:    cfg.ClusterID,
+		projByTopic:  projection.ByTopic(projection.Normalize(cfg.ValueProjections)),
+		partitioning: partitioning,
 	}
 }
 
@@ -52,7 +64,7 @@ func NewTableCreator(cfg TableCreatorConfig) *TableCreator {
 //
 // The table is created with:
 //   - Schema per spec section 5.3 (partition, offset, timestamp, key, value, headers, etc.)
-//   - Partition spec using identity transform on the "partition" column
+//   - Partition spec from config (default: identity on "partition" column)
 //   - Properties: dray.topic, dray.cluster_id, dray.schema_version
 //
 // If the table already exists, it returns the existing table without error.
@@ -64,12 +76,18 @@ func (c *TableCreator) CreateTableForTopic(ctx context.Context, topicName string
 
 	identifier := NewTableIdentifier(c.namespace, topicName)
 
-	spec := DefaultPartitionSpec()
 	var projections []projection.FieldSpec
 	if proj, ok := c.projByTopic[topicName]; ok {
 		projections = proj.Fields
 	}
 	schema := SchemaWithProjections(projections)
+
+	// Build partition spec from config
+	spec, err := PartitionSpecFromConfig(c.partitioning, schema)
+	if err != nil {
+		return nil, err
+	}
+
 	opts := CreateTableOptions{
 		Schema:        schema,
 		PartitionSpec: &spec,
