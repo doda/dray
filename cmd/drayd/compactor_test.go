@@ -226,11 +226,85 @@ func TestCompactorSagaManager(t *testing.T) {
 	compactor.Shutdown(shutdownCtx)
 }
 
-func TestCompactorPlanCompaction_PrefersRewrite(t *testing.T) {
+func TestCompactorPlanCompaction_AlternatesRewriteAndWal(t *testing.T) {
 	wal := &fakeWalPlanner{
 		plan: &planner.Result{
 			StreamID: "stream-1",
 		},
+	}
+	rewrite := &fakeRewritePlanner{
+		plan: &planner.ParquetRewriteResult{
+			StreamID: "stream-1",
+		},
+	}
+
+	compactor := &Compactor{
+		planner:        wal,
+		parquetPlanner: rewrite,
+		rewriteNext:    true,
+	}
+
+	plan, err := compactor.planCompaction(context.Background(), "stream-1")
+	if err != nil {
+		t.Fatalf("planCompaction error: %v", err)
+	}
+	if plan == nil || plan.Kind != planKindParquetRewrite {
+		t.Fatalf("expected parquet rewrite plan, got %#v", plan)
+	}
+	if rewrite.calls != 1 {
+		t.Fatalf("expected rewrite planner to be called, got %d", rewrite.calls)
+	}
+	if wal.calls != 0 {
+		t.Fatalf("expected WAL planner not to be called, got %d", wal.calls)
+	}
+
+	plan, err = compactor.planCompaction(context.Background(), "stream-1")
+	if err != nil {
+		t.Fatalf("planCompaction error: %v", err)
+	}
+	if plan == nil || plan.Kind != planKindWAL {
+		t.Fatalf("expected WAL plan, got %#v", plan)
+	}
+	if rewrite.calls != 1 {
+		t.Fatalf("expected rewrite planner to be called once, got %d", rewrite.calls)
+	}
+	if wal.calls != 1 {
+		t.Fatalf("expected WAL planner to be called once, got %d", wal.calls)
+	}
+}
+
+func TestCompactorPlanCompaction_FallsBackToWalWhenNoRewrite(t *testing.T) {
+	wal := &fakeWalPlanner{
+		plan: &planner.Result{
+			StreamID: "stream-1",
+		},
+	}
+	rewrite := &fakeRewritePlanner{}
+
+	compactor := &Compactor{
+		planner:        wal,
+		parquetPlanner: rewrite,
+		rewriteNext:    true,
+	}
+
+	plan, err := compactor.planCompaction(context.Background(), "stream-1")
+	if err != nil {
+		t.Fatalf("planCompaction error: %v", err)
+	}
+	if plan == nil || plan.Kind != planKindWAL {
+		t.Fatalf("expected WAL plan, got %#v", plan)
+	}
+	if rewrite.calls != 1 {
+		t.Fatalf("expected rewrite planner to be called once, got %d", rewrite.calls)
+	}
+	if wal.calls != 1 {
+		t.Fatalf("expected WAL planner to be called once, got %d", wal.calls)
+	}
+}
+
+func TestCompactorPlanCompaction_FallsBackToRewriteWhenNoWal(t *testing.T) {
+	wal := &fakeWalPlanner{
+		plan: nil,
 	}
 	rewrite := &fakeRewritePlanner{
 		plan: &planner.ParquetRewriteResult{
@@ -249,34 +323,6 @@ func TestCompactorPlanCompaction_PrefersRewrite(t *testing.T) {
 	}
 	if plan == nil || plan.Kind != planKindParquetRewrite {
 		t.Fatalf("expected parquet rewrite plan, got %#v", plan)
-	}
-	if rewrite.calls != 1 {
-		t.Fatalf("expected rewrite planner to be called, got %d", rewrite.calls)
-	}
-	if wal.calls != 0 {
-		t.Fatalf("expected WAL planner not to be called, got %d", wal.calls)
-	}
-}
-
-func TestCompactorPlanCompaction_FallsBackToWal(t *testing.T) {
-	wal := &fakeWalPlanner{
-		plan: &planner.Result{
-			StreamID: "stream-1",
-		},
-	}
-	rewrite := &fakeRewritePlanner{}
-
-	compactor := &Compactor{
-		planner:        wal,
-		parquetPlanner: rewrite,
-	}
-
-	plan, err := compactor.planCompaction(context.Background(), "stream-1")
-	if err != nil {
-		t.Fatalf("planCompaction error: %v", err)
-	}
-	if plan == nil || plan.Kind != planKindWAL {
-		t.Fatalf("expected WAL plan, got %#v", plan)
 	}
 	if rewrite.calls != 1 {
 		t.Fatalf("expected rewrite planner to be called, got %d", rewrite.calls)

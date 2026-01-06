@@ -24,6 +24,7 @@ import (
 	"github.com/dray-io/dray/internal/routing"
 	"github.com/dray-io/dray/internal/server"
 	"github.com/dray-io/dray/internal/topics"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
@@ -58,6 +59,18 @@ type Broker struct {
 
 	mu      sync.Mutex
 	started bool
+}
+
+var (
+	produceMetricsOnce sync.Once
+	produceMetrics     *metrics.ProduceMetrics
+)
+
+func getProduceMetrics() *metrics.ProduceMetrics {
+	produceMetricsOnce.Do(func() {
+		produceMetrics = metrics.NewProduceMetrics()
+	})
+	return produceMetrics
 }
 
 // NewBroker creates a new Broker instance but does not start it.
@@ -158,6 +171,7 @@ func (b *Broker) Start(ctx context.Context) error {
 
 	// Start health server first
 	b.healthServer = server.NewHealthServer(cfg.Observability.MetricsAddr, b.logger)
+	b.healthServer.RegisterHandler("/metrics", promhttp.Handler())
 	if err := b.healthServer.Start(); err != nil {
 		return fmt.Errorf("failed to start health server: %w", err)
 	}
@@ -324,6 +338,8 @@ func (b *Broker) createHandler() server.Handler {
 		adapter = routing.NewAffinityListerAdapter(b.registry)
 	}
 
+	produceMetrics := getProduceMetrics()
+
 	return &brokerHandler{
 		decoder: protocol.NewDecoder(),
 		encoder: protocol.NewEncoder(),
@@ -359,7 +375,7 @@ func (b *Broker) createHandler() server.Handler {
 			},
 			b.topicStore,
 			b.buffer,
-		).WithEnforcer(enforcer),
+		).WithEnforcer(enforcer).WithMetrics(produceMetrics),
 
 		fetch: protocol.NewFetchHandler(
 			protocol.FetchHandlerConfig{
@@ -377,8 +393,9 @@ func (b *Broker) createHandler() server.Handler {
 
 		createTopics: protocol.NewCreateTopicsHandler(
 			protocol.CreateTopicsHandlerConfig{
-				DefaultPartitions: 1,
-				ValueProjections:  cfg.Compaction.ValueProjections,
+				DefaultPartitions:   1,
+				ValueProjections:    cfg.Compaction.ValueProjections,
+				IcebergPartitioning: cfg.Iceberg.Partitioning,
 			},
 			b.topicStore,
 			b.streamManager,

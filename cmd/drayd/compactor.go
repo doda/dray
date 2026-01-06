@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,10 +14,12 @@ import (
 	"time"
 
 	"github.com/apache/iceberg-go"
+	iceio "github.com/apache/iceberg-go/io"
 	"github.com/dray-io/dray/internal/compaction"
 	"github.com/dray-io/dray/internal/compaction/planner"
 	"github.com/dray-io/dray/internal/compaction/worker"
 	"github.com/dray-io/dray/internal/config"
+	"github.com/dray-io/dray/internal/gc"
 	"github.com/dray-io/dray/internal/iceberg/catalog"
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/logging"
@@ -27,7 +30,6 @@ import (
 	"github.com/dray-io/dray/internal/objectstore/s3"
 	"github.com/dray-io/dray/internal/server"
 	"github.com/dray-io/dray/internal/topics"
-	iceio "github.com/apache/iceberg-go/io"
 	"github.com/parquet-go/parquet-go"
 )
 
@@ -59,6 +61,10 @@ type Compactor struct {
 	converter           *worker.Converter
 	healthServer        *server.HealthServer
 	parquetPlanner      parquetRewritePlanner
+	walGCWorker         *gc.WALGCWorker
+	walOrphanGCWorker   *gc.WALOrphanGCWorker
+	parquetGCWorker     *gc.ParquetGCWorker
+	rewriteNext         bool
 
 	mu        sync.Mutex
 	started   bool
@@ -80,6 +86,8 @@ const (
 	planKindWAL planKind = iota
 	planKindParquetRewrite
 )
+
+const parquetTimestampScale = int64(1000)
 
 func icebergS3Props(store config.ObjectStoreConfig) iceberg.Properties {
 	props := iceberg.Properties{}
@@ -114,6 +122,17 @@ func (k planKind) String() string {
 	default:
 		return "wal"
 	}
+}
+
+// hasHourPartitioning checks if the configured partitioning includes hour-based time partitioning.
+func hasHourPartitioning(partitioning []string) bool {
+	for _, expr := range partitioning {
+		cleanExpr := strings.ToLower(strings.TrimSpace(expr))
+		if strings.HasPrefix(cleanExpr, "hour(") {
+			return true
+		}
+	}
+	return false
 }
 
 type compactionPlan struct {
@@ -163,12 +182,44 @@ func (p *compactionPlan) TotalSizeBytes() int64 {
 }
 
 func (c *Compactor) planCompaction(ctx context.Context, streamID string) (*compactionPlan, error) {
+	// Alternate between WAL compaction and parquet rewrites when both are available.
+	if c.rewriteNext {
+		if c.parquetPlanner != nil {
+			rewritePlan, err := c.parquetPlanner.Plan(ctx, streamID)
+			if err != nil {
+				return nil, err
+			}
+			if rewritePlan != nil {
+				c.rewriteNext = false
+				return &compactionPlan{
+					Kind:        planKindParquetRewrite,
+					RewritePlan: rewritePlan,
+				}, nil
+			}
+		}
+	}
+
+	if c.planner != nil {
+		walPlan, err := c.planner.Plan(ctx, streamID)
+		if err != nil {
+			return nil, err
+		}
+		if walPlan != nil {
+			c.rewriteNext = true
+			return &compactionPlan{
+				Kind:    planKindWAL,
+				WALPlan: walPlan,
+			}, nil
+		}
+	}
+
 	if c.parquetPlanner != nil {
 		rewritePlan, err := c.parquetPlanner.Plan(ctx, streamID)
 		if err != nil {
 			return nil, err
 		}
 		if rewritePlan != nil {
+			c.rewriteNext = false
 			return &compactionPlan{
 				Kind:        planKindParquetRewrite,
 				RewritePlan: rewritePlan,
@@ -176,22 +227,7 @@ func (c *Compactor) planCompaction(ctx context.Context, streamID string) (*compa
 		}
 	}
 
-	if c.planner == nil {
-		return nil, nil
-	}
-
-	walPlan, err := c.planner.Plan(ctx, streamID)
-	if err != nil {
-		return nil, err
-	}
-	if walPlan == nil {
-		return nil, nil
-	}
-
-	return &compactionPlan{
-		Kind:    planKindWAL,
-		WALPlan: walPlan,
-	}, nil
+	return nil, nil
 }
 
 func (c *Compactor) executePlannedCompaction(ctx context.Context, plan *compactionPlan, topicName string, partition int32, icebergEnabled bool) error {
@@ -213,10 +249,11 @@ func NewCompactor(opts CompactorOptions) (*Compactor, error) {
 	}
 
 	c := &Compactor{
-		opts:      opts,
-		logger:    opts.Logger,
-		stopCh:    make(chan struct{}),
-		stoppedCh: make(chan struct{}),
+		opts:        opts,
+		logger:      opts.Logger,
+		rewriteNext: true,
+		stopCh:      make(chan struct{}),
+		stoppedCh:   make(chan struct{}),
 	}
 
 	return c, nil
@@ -298,6 +335,7 @@ func (c *Compactor) Start(ctx context.Context) error {
 			Catalog:          cat,
 			ClusterID:        c.opts.Config.ClusterID,
 			ValueProjections: cfg.Compaction.ValueProjections,
+			Partitioning:     cfg.Iceberg.Partitioning,
 		})
 	}
 
@@ -312,6 +350,25 @@ func (c *Compactor) Start(ctx context.Context) error {
 
 	// Create converter (nil object store for now - to be replaced with real S3)
 	c.converter = worker.NewConverter(c.objectStore, cfg.Compaction.ValueProjections)
+
+	if cfg.Compaction.Enabled && c.objectStore != nil {
+		walCfg := gc.DefaultWALGCWorkerConfig()
+		walCfg.NumDomains = cfg.Metadata.NumDomains
+		c.walGCWorker = gc.NewWALGCWorker(c.metaStore, c.objectStore, walCfg)
+		c.walGCWorker.Start()
+
+		orphanCfg := gc.DefaultWALOrphanGCWorkerConfig()
+		orphanCfg.NumDomains = cfg.Metadata.NumDomains
+		if cfg.WAL.OrphanTTLMs > 0 {
+			orphanCfg.OrphanTTLMs = cfg.WAL.OrphanTTLMs
+		}
+		c.walOrphanGCWorker = gc.NewWALOrphanGCWorker(c.metaStore, c.objectStore, orphanCfg)
+		c.walOrphanGCWorker.Start()
+
+		parquetCfg := gc.DefaultParquetGCWorkerConfig()
+		c.parquetGCWorker = gc.NewParquetGCWorker(c.metaStore, c.objectStore, parquetCfg)
+		c.parquetGCWorker.Start()
+	}
 
 	// Create planner with configuration
 	plannerCfg := planner.Config{
@@ -341,9 +398,15 @@ func (c *Compactor) Start(ctx context.Context) error {
 
 	// Register compactor goroutine with health server
 	c.healthServer.RegisterGoroutine("compaction-worker")
+	c.healthServer.RegisterGoroutine("iceberg-maintenance")
 
 	// Start the compaction worker loop
 	go c.runWorkerLoop(ctx)
+
+	// Start the Iceberg maintenance loop if enabled
+	if cfg.Iceberg.Enabled {
+		go c.runIcebergMaintenanceLoop(ctx)
+	}
 
 	c.logger.Info("compactor started")
 
@@ -352,6 +415,96 @@ func (c *Compactor) Start(ctx context.Context) error {
 	close(c.stoppedCh)
 
 	return nil
+}
+
+// runIcebergMaintenanceLoop periodically runs Iceberg table maintenance.
+func (c *Compactor) runIcebergMaintenanceLoop(ctx context.Context) {
+	// Run maintenance every hour
+	maintenanceInterval := time.Hour
+	ticker := time.NewTicker(maintenanceInterval)
+	defer ticker.Stop()
+
+	c.logger.Info("iceberg maintenance loop started")
+	c.runIcebergMaintenance(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			c.logger.Info("iceberg maintenance loop context cancelled")
+			return
+		case <-c.stopCh:
+			c.logger.Info("iceberg maintenance loop stop signal received")
+			return
+		case <-ticker.C:
+			c.healthServer.UpdateGoroutine("iceberg-maintenance")
+			c.runIcebergMaintenance(ctx)
+		}
+	}
+}
+
+func (c *Compactor) runIcebergMaintenance(ctx context.Context) {
+	if c.icebergCatalog == nil || c.topicStore == nil || c.icebergTableCreator == nil {
+		return
+	}
+
+	topics, err := c.topicStore.ListTopics(ctx)
+	if err != nil {
+		c.logger.Warnf("failed to list topics for iceberg maintenance", map[string]any{"error": err.Error()})
+		return
+	}
+
+	for _, topicMeta := range topics {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.stopCh:
+			return
+		default:
+		}
+
+		c.maintainTopicTable(ctx, topicMeta.Name)
+	}
+}
+
+func (c *Compactor) maintainTopicTable(ctx context.Context, topicName string) {
+	cfg := c.opts.Config
+	namespace := c.icebergTableCreator.Namespace()
+	if len(namespace) == 0 {
+		namespace = []string{"dray"}
+	}
+	tableID := catalog.NewTableIdentifier(namespace, topicName)
+
+	tbl, err := c.icebergTableCreator.LoadTableForTopic(ctx, topicName)
+	if err != nil {
+		if err == catalog.ErrTableNotFound {
+			return
+		}
+		c.logger.Warnf("failed to load table for maintenance", map[string]any{
+			"table": catalog.TableIdentifierString(tableID),
+			"error": err.Error(),
+		})
+		return
+	}
+
+	// Expire snapshots
+	olderThan := time.Duration(cfg.Iceberg.SnapshotRetentionAgeMs) * time.Millisecond
+	retainLast := cfg.Iceberg.SnapshotRetentionMinCount
+	if retainLast <= 0 {
+		retainLast = 1
+	}
+
+	if err := tbl.ExpireSnapshots(ctx, olderThan, retainLast); err != nil {
+		c.logger.Warnf("failed to expire snapshots", map[string]any{
+			"table": catalog.TableIdentifierString(tableID),
+			"error": err.Error(),
+		})
+	} else {
+		c.logger.Infof("expired snapshots for table", map[string]any{
+			"table": catalog.TableIdentifierString(tableID),
+		})
+	}
+
+	// NOTE: RewriteManifests is not yet supported in the Iceberg library
 }
 
 // runWorkerLoop is the main compaction worker loop.
@@ -533,28 +686,110 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 		}
 	}
 
-	convertResult, err := c.converter.Convert(ctx, entries, partition, topicName, parquetSchema)
-	if err != nil {
-		c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
-		return fmt.Errorf("convert to parquet: %w", err)
-	}
+	// Check if we need to split by hour for Iceberg partitioning
+	useHourPartitioning := icebergEnabled && hasHourPartitioning(c.opts.Config.Iceberg.Partitioning)
 
-	// Generate Parquet paths - relative for object store, full S3 URI for Iceberg manifests
-	parquetRelPath := fmt.Sprintf("parquet/%s/%s.parquet", plan.StreamID, job.JobID)
-	parquetPath := fmt.Sprintf("s3://%s/%s", c.opts.Config.ObjectStore.Bucket, parquetRelPath)
+	c.logger.Infof("compaction partitioning check", map[string]any{
+		"icebergEnabled":      icebergEnabled,
+		"partitioning":        c.opts.Config.Iceberg.Partitioning,
+		"useHourPartitioning": useHourPartitioning,
+	})
 
-	// Write Parquet to object storage using relative path
-	if c.objectStore != nil {
-		if err := c.converter.WriteParquetToStorage(ctx, parquetRelPath, convertResult.ParquetData); err != nil {
+	var parquetPaths []string
+	var parquetPath string
+	var totalBytes int64
+	var totalRecords int64
+	var minTimestamp, maxTimestamp int64
+	var dataFiles []catalog.DataFile
+
+	if useHourPartitioning {
+		// Use partitioned conversion - splits records by hour
+		partResult, err := c.converter.ConvertPartitioned(ctx, entries, partition, topicName, parquetSchema)
+		if err != nil {
 			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
-			return fmt.Errorf("write parquet: %w", err)
+			return fmt.Errorf("convert to parquet (partitioned): %w", err)
 		}
+
+		totalRecords = partResult.TotalRecords
+
+		// Write each partitioned file
+		for i, pf := range partResult.Results {
+			// Generate path with hour suffix
+			relPath := fmt.Sprintf("parquet/%s/%s-h%d.parquet", plan.StreamID, job.JobID, pf.HourValue)
+			fullPath := fmt.Sprintf("s3://%s/%s", c.opts.Config.ObjectStore.Bucket, relPath)
+
+			if c.objectStore != nil {
+				if err := c.converter.WriteParquetToStorage(ctx, relPath, pf.ParquetData); err != nil {
+					c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
+					return fmt.Errorf("write parquet for hour %d: %w", pf.HourValue, err)
+				}
+			}
+
+			totalBytes += int64(len(pf.ParquetData))
+			parquetPaths = append(parquetPaths, fullPath)
+
+			// Use first file path as primary (for logging/backwards compatibility)
+			if i == 0 {
+				parquetPath = fullPath
+			}
+
+			// Track min/max timestamps across all files
+			if i == 0 || pf.Stats.MinTimestamp < minTimestamp {
+				minTimestamp = pf.Stats.MinTimestamp
+			}
+			if i == 0 || pf.Stats.MaxTimestamp > maxTimestamp {
+				maxTimestamp = pf.Stats.MaxTimestamp
+			}
+
+			// Build data file for Iceberg
+			minTimestampMicros := scaleParquetTimestamp(pf.Stats.MinTimestamp)
+			maxTimestampMicros := scaleParquetTimestamp(pf.Stats.MaxTimestamp)
+			stats := catalog.DefaultDataFileStats(partition, pf.Stats.MinOffset, pf.Stats.MaxOffset,
+				minTimestampMicros, maxTimestampMicros, pf.RecordCount)
+			dataFile := catalog.BuildDataFileFromStats(fullPath, partition,
+				pf.RecordCount, int64(len(pf.ParquetData)), stats)
+			dataFiles = append(dataFiles, dataFile)
+		}
+	} else {
+		// Standard single-file conversion
+		convertResult, err := c.converter.Convert(ctx, entries, partition, topicName, parquetSchema)
+		if err != nil {
+			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
+			return fmt.Errorf("convert to parquet: %w", err)
+		}
+
+		// Generate Parquet paths - relative for object store, full S3 URI for Iceberg manifests
+		parquetRelPath := fmt.Sprintf("parquet/%s/%s.parquet", plan.StreamID, job.JobID)
+		parquetPath = fmt.Sprintf("s3://%s/%s", c.opts.Config.ObjectStore.Bucket, parquetRelPath)
+		parquetPaths = []string{parquetPath}
+
+		// Write Parquet to object storage using relative path
+		if c.objectStore != nil {
+			if err := c.converter.WriteParquetToStorage(ctx, parquetRelPath, convertResult.ParquetData); err != nil {
+				c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
+				return fmt.Errorf("write parquet: %w", err)
+			}
+		}
+
+		totalBytes = int64(len(convertResult.ParquetData))
+		totalRecords = convertResult.RecordCount
+		minTimestamp = convertResult.Stats.MinTimestamp
+		maxTimestamp = convertResult.Stats.MaxTimestamp
+
+		// Build single data file for Iceberg
+		minTimestampMicros := scaleParquetTimestamp(convertResult.Stats.MinTimestamp)
+		maxTimestampMicros := scaleParquetTimestamp(convertResult.Stats.MaxTimestamp)
+		stats := catalog.DefaultDataFileStats(partition, plan.StartOffset, plan.EndOffset-1,
+			minTimestampMicros, maxTimestampMicros, convertResult.RecordCount)
+		dataFile := catalog.BuildDataFileFromStats(parquetPath, partition,
+			convertResult.RecordCount, int64(len(convertResult.ParquetData)), stats)
+		dataFiles = append(dataFiles, dataFile)
 	}
 
 	// Mark Parquet as written
 	job, err = c.sagaManager.MarkParquetWritten(ctx, plan.StreamID, job.JobID,
-		parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount,
-		convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
+		parquetPaths, totalBytes, totalRecords,
+		minTimestamp, maxTimestamp)
 	if err != nil {
 		return fmt.Errorf("mark parquet written: %w", err)
 	}
@@ -566,12 +801,7 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 			"jobId": job.JobID,
 		})
 
-		stats := catalog.DefaultDataFileStats(partition, plan.StartOffset, plan.EndOffset-1,
-			convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp, convertResult.RecordCount)
-		dataFile := catalog.BuildDataFileFromStats(parquetPath, partition,
-			convertResult.RecordCount, int64(len(convertResult.ParquetData)), stats)
-
-		appendResult, err := c.icebergAppender.AppendFilesForStream(ctx, topicName, job.JobID, []catalog.DataFile{dataFile})
+		appendResult, err := c.icebergAppender.AppendFilesForStream(ctx, topicName, job.JobID, dataFiles)
 		if err != nil {
 			// Per SPEC.md 11.2, Produce/Fetch must remain available even if Iceberg is down.
 			// We fail the compaction job but it can be retried.
@@ -598,8 +828,7 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 	})
 
 	metaDomain := int(metadata.CalculateMetaDomain(plan.StreamID, c.opts.Config.Metadata.NumDomains))
-	swapResult, err := c.indexSwapper.SwapFromJob(ctx, job, parquetPath,
-		int64(len(convertResult.ParquetData)), convertResult.RecordCount, metaDomain)
+	swapResult, err := c.indexSwapper.SwapFromJob(ctx, job, metaDomain)
 	if err != nil {
 		c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, fmt.Sprintf("index swap: %v", err))
 		return fmt.Errorf("index swap: %w", err)
@@ -609,6 +838,12 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 	job, err = c.sagaManager.MarkIndexSwapped(ctx, plan.StreamID, job.JobID, swapResult.DecrementedWALObjects)
 	if err != nil {
 		return fmt.Errorf("mark index swapped: %w", err)
+	}
+
+	// Mark WAL GC as ready (required before DONE per saga state machine)
+	job, err = c.sagaManager.MarkWALGCReady(ctx, plan.StreamID, job.JobID)
+	if err != nil {
+		return fmt.Errorf("mark wal gc ready: %w", err)
 	}
 
 	// Mark job as done
@@ -621,7 +856,7 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 		"streamId":    plan.StreamID,
 		"jobId":       job.JobID,
 		"parquetPath": parquetPath,
-		"recordCount": convertResult.RecordCount,
+		"recordCount": totalRecords,
 	})
 
 	return nil
@@ -674,44 +909,113 @@ func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *p
 			return fmt.Errorf("build parquet schema: %w", err)
 		}
 	}
-	parquetData, fileStats, err := worker.WriteToBuffer(parquetSchema, records)
-	if err != nil {
-		c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
-		return fmt.Errorf("write parquet: %w", err)
-	}
+	// Check if we need to split by hour for Iceberg partitioning
+	useHourPartitioning := icebergEnabled && hasHourPartitioning(c.opts.Config.Iceberg.Partitioning)
 
-	parquetRelPath := fmt.Sprintf("parquet/%s/%s.parquet", plan.StreamID, job.JobID)
-	parquetPath := fmt.Sprintf("s3://%s/%s", c.opts.Config.ObjectStore.Bucket, parquetRelPath)
+	var parquetPaths []string
+	var parquetPath string
+	var totalBytes int64
+	var totalRecords int64
+	var minTimestamp, maxTimestamp int64
+	var dataFiles []catalog.DataFile
 
-	if err := c.objectStore.Put(ctx, parquetRelPath, bytes.NewReader(parquetData), int64(len(parquetData)), "application/octet-stream"); err != nil {
-		c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
-		return fmt.Errorf("write parquet: %w", err)
+	if useHourPartitioning {
+		// Group records by hour
+		recordsByHour := make(map[int64][]worker.Record)
+		for _, rec := range records {
+			var hourValue int64
+			if createdAt, ok := rec.Projected["created_at"]; ok {
+				switch v := createdAt.(type) {
+				case int64:
+					hourValue = v / (3600 * 1000)
+				case float64:
+					hourValue = int64(v) / (3600 * 1000)
+				default:
+					hourValue = rec.Timestamp / (3600 * 1000)
+				}
+			} else {
+				hourValue = rec.Timestamp / (3600 * 1000)
+			}
+			recordsByHour[hourValue] = append(recordsByHour[hourValue], rec)
+		}
+
+		for hourValue, hourRecords := range recordsByHour {
+			pData, stats, err := worker.WriteToBuffer(parquetSchema, hourRecords)
+			if err != nil {
+				c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
+				return fmt.Errorf("write parquet for hour %d: %w", hourValue, err)
+			}
+
+			relPath := fmt.Sprintf("parquet/%s/%s-h%d.parquet", plan.StreamID, job.JobID, hourValue)
+			fullPath := fmt.Sprintf("s3://%s/%s", c.opts.Config.ObjectStore.Bucket, relPath)
+
+			if err := c.objectStore.Put(ctx, relPath, bytes.NewReader(pData), int64(len(pData)), "application/octet-stream"); err != nil {
+				c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
+				return fmt.Errorf("write parquet for hour %d: %w", hourValue, err)
+			}
+
+			totalBytes += int64(len(pData))
+			totalRecords += stats.RecordCount
+			parquetPaths = append(parquetPaths, fullPath)
+
+			if len(parquetPaths) == 1 {
+				parquetPath = fullPath
+			}
+
+			if len(parquetPaths) == 1 || stats.MinTimestamp < minTimestamp {
+				minTimestamp = stats.MinTimestamp
+			}
+			if len(parquetPaths) == 1 || stats.MaxTimestamp > maxTimestamp {
+				maxTimestamp = stats.MaxTimestamp
+			}
+
+			minTimestampMicros := scaleParquetTimestamp(stats.MinTimestamp)
+			maxTimestampMicros := scaleParquetTimestamp(stats.MaxTimestamp)
+			dfStats := catalog.DefaultDataFileStats(partition, stats.MinOffset, stats.MaxOffset,
+				minTimestampMicros, maxTimestampMicros, stats.RecordCount)
+			dataFile := catalog.BuildDataFileFromStats(fullPath, partition,
+				stats.RecordCount, int64(len(pData)), dfStats)
+			dataFiles = append(dataFiles, dataFile)
+		}
+	} else {
+		parquetData, fileStats, err := worker.WriteToBuffer(parquetSchema, records)
+		if err != nil {
+			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
+			return fmt.Errorf("write parquet: %w", err)
+		}
+
+		parquetRelPath := fmt.Sprintf("parquet/%s/%s.parquet", plan.StreamID, job.JobID)
+		parquetPath = fmt.Sprintf("s3://%s/%s", c.opts.Config.ObjectStore.Bucket, parquetRelPath)
+		parquetPaths = []string{parquetPath}
+
+		if err := c.objectStore.Put(ctx, parquetRelPath, bytes.NewReader(parquetData), int64(len(parquetData)), "application/octet-stream"); err != nil {
+			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
+			return fmt.Errorf("write parquet: %w", err)
+		}
+
+		totalBytes = int64(len(parquetData))
+		totalRecords = fileStats.RecordCount
+		minTimestamp = fileStats.MinTimestamp
+		maxTimestamp = fileStats.MaxTimestamp
+
+		minTimestampMicros := scaleParquetTimestamp(fileStats.MinTimestamp)
+		maxTimestampMicros := scaleParquetTimestamp(fileStats.MaxTimestamp)
+		dfStats := catalog.DefaultDataFileStats(partition, plan.StartOffset, plan.EndOffset-1,
+			minTimestampMicros, maxTimestampMicros, fileStats.RecordCount)
+		dataFile := catalog.BuildDataFileFromStats(parquetPath, partition,
+			fileStats.RecordCount, int64(len(parquetData)), dfStats)
+		dataFiles = []catalog.DataFile{dataFile}
 	}
 
 	job, err = c.sagaManager.MarkParquetWritten(ctx, plan.StreamID, job.JobID,
-		parquetPath, int64(len(parquetData)), fileStats.RecordCount, fileStats.MinTimestamp, fileStats.MaxTimestamp)
+		parquetPaths, totalBytes, totalRecords, minTimestamp, maxTimestamp)
 	if err != nil {
 		return fmt.Errorf("mark parquet written: %w", err)
 	}
 
-	minTimestamp, maxTimestamp := fileStats.MinTimestamp, fileStats.MaxTimestamp
-	if fileStats.RecordCount > math.MaxUint32 {
+	if totalRecords > math.MaxUint32 {
 		c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, "parquet record count exceeds uint32")
 		return fmt.Errorf("parquet record count exceeds uint32")
-	}
-
-	parquetEntry := index.IndexEntry{
-		StreamID:         plan.StreamID,
-		StartOffset:      plan.StartOffset,
-		EndOffset:        plan.EndOffset,
-		FileType:         index.FileTypeParquet,
-		RecordCount:      uint32(fileStats.RecordCount),
-		MessageCount:     uint32(fileStats.RecordCount),
-		MinTimestampMs:   minTimestamp,
-		MaxTimestampMs:   maxTimestamp,
-		CreatedAtMs:      time.Now().UnixMilli(),
-		ParquetPath:      parquetPath,
-		ParquetSizeBytes: uint64(len(parquetData)),
 	}
 
 	parquetKeys, err := parquetIndexKeys(plan.Entries)
@@ -721,19 +1025,20 @@ func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *p
 	}
 
 	if icebergEnabled && c.icebergAppender != nil {
-		dfStats := catalog.DefaultDataFileStats(partition, plan.StartOffset, plan.EndOffset-1,
-			fileStats.MinTimestamp, fileStats.MaxTimestamp, fileStats.RecordCount)
-		addedFile := catalog.BuildDataFileFromStats(parquetPath, partition,
-			fileStats.RecordCount, int64(len(parquetData)), dfStats)
-
 		removedFiles := make([]catalog.DataFile, 0, len(plan.Entries))
 		for _, entry := range plan.Entries {
-			removedFiles = append(removedFiles, catalog.DataFile{
-				Path: entry.ParquetPath,
-			})
+			paths := entry.ParquetPaths
+			if len(paths) == 0 && entry.ParquetPath != "" {
+				paths = []string{entry.ParquetPath}
+			}
+			for _, path := range paths {
+				removedFiles = append(removedFiles, catalog.DataFile{
+					Path: path,
+				})
+			}
 		}
 
-		replaceResult, err := c.icebergAppender.ReplaceFilesForStream(ctx, topicName, job.JobID, []catalog.DataFile{addedFile}, removedFiles)
+		replaceResult, err := c.icebergAppender.ReplaceFilesForStream(ctx, topicName, job.JobID, dataFiles, removedFiles)
 		if err != nil {
 			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, fmt.Sprintf("iceberg replace: %v", err))
 			return fmt.Errorf("iceberg replace: %w", err)
@@ -754,8 +1059,22 @@ func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *p
 	swapResult, err := c.indexSwapper.Swap(ctx, compaction.SwapRequest{
 		StreamID:         plan.StreamID,
 		ParquetIndexKeys: parquetKeys,
-		ParquetEntry:     parquetEntry,
-		MetaDomain:       metaDomain,
+		ParquetEntry: index.IndexEntry{
+			StreamID:         plan.StreamID,
+			StartOffset:      plan.StartOffset,
+			EndOffset:        plan.EndOffset,
+			FileType:         index.FileTypeParquet,
+			RecordCount:      uint32(job.ParquetRecordCount),
+			MessageCount:     uint32(job.ParquetRecordCount),
+			MinTimestampMs:   job.ParquetMinTimestampMs,
+			MaxTimestampMs:   job.ParquetMaxTimestampMs,
+			CreatedAtMs:      time.Now().UnixMilli(),
+			ParquetPath:      job.ParquetPath,
+			ParquetPaths:     job.ParquetPaths,
+			ParquetSizeBytes: uint64(job.ParquetSizeBytes),
+		},
+		MetaDomain:     metaDomain,
+		IcebergEnabled: icebergEnabled,
 	})
 	if err != nil {
 		c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
@@ -772,15 +1091,25 @@ func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *p
 		return fmt.Errorf("mark index swapped: %w", err)
 	}
 
+	// Mark WAL GC as ready (required before DONE per saga state machine)
+	job, err = c.sagaManager.MarkWALGCReady(ctx, plan.StreamID, job.JobID)
+	if err != nil {
+		return fmt.Errorf("mark wal gc ready: %w", err)
+	}
+
 	if _, err := c.sagaManager.MarkDone(ctx, plan.StreamID, job.JobID); err != nil {
 		return fmt.Errorf("mark done: %w", err)
 	}
 
 	c.logger.Infof("parquet rewrite job completed", map[string]any{
-		"streamId":    plan.StreamID,
-		"jobId":       job.JobID,
-		"parquetPath": parquetPath,
-		"recordCount": fileStats.RecordCount,
+		"streamId":     plan.StreamID,
+		"jobId":        job.JobID,
+		"parquetPath":  parquetPath,
+		"parquetFiles": len(parquetPaths),
+		"recordCount":  totalRecords,
+		"totalBytes":   totalBytes,
+		"minTimestamp": minTimestamp,
+		"maxTimestamp": maxTimestamp,
 	})
 
 	return nil
@@ -797,46 +1126,60 @@ func (c *Compactor) readParquetRecords(ctx context.Context, entries []index.Inde
 
 	var records []worker.Record
 	for _, entry := range entries {
-		key := objectKeyFromPath(entry.ParquetPath)
-		rc, err := c.objectStore.Get(ctx, key)
-		if err != nil {
-			return nil, err
+		paths := entry.ParquetPaths
+		if len(paths) == 0 {
+			if entry.ParquetPath == "" {
+				return nil, fmt.Errorf("parquet entry missing path for stream %s", entry.StreamID)
+			}
+			paths = []string{entry.ParquetPath}
 		}
 
-		data, err := io.ReadAll(rc)
-		rc.Close()
-		if err != nil {
-			return nil, err
-		}
+		for _, path := range paths {
+			key := objectstore.NormalizeKey(path)
+			rc, err := c.objectStore.Get(ctx, key)
+			if err != nil {
+				return nil, err
+			}
 
-		reader := parquet.NewReader(bytes.NewReader(data))
-		schema := reader.Schema()
-		rowBuf := make([]parquet.Row, 1)
-		for {
-			n, readErr := reader.ReadRows(rowBuf)
-			if n > 0 {
-				rowMap := make(map[string]any)
-				if err := schema.Reconstruct(&rowMap, rowBuf[0]); err != nil {
-					reader.Close()
-					return nil, err
-				}
-				rec, err := recordFromMap(rowMap, partition)
-				if err != nil {
-					reader.Close()
-					return nil, err
-				}
-				records = append(records, rec)
+			data, err := io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				return nil, err
 			}
-			if readErr != nil {
-				if readErr == io.EOF {
-					break
+
+			reader := parquet.NewReader(bytes.NewReader(data))
+			schema := reader.Schema()
+			rowBuf := make([]parquet.Row, 1)
+			for {
+				n, readErr := reader.ReadRows(rowBuf)
+				if n > 0 {
+					rowMap := make(map[string]any)
+					if err := schema.Reconstruct(&rowMap, rowBuf[0]); err != nil {
+						reader.Close()
+						return nil, err
+					}
+					rec, err := recordFromMap(rowMap, partition)
+					if err != nil {
+						reader.Close()
+						return nil, err
+					}
+					records = append(records, rec)
 				}
-				reader.Close()
-				return nil, readErr
+				if readErr != nil {
+					if readErr == io.EOF {
+						break
+					}
+					reader.Close()
+					return nil, readErr
+				}
 			}
+			reader.Close()
 		}
-		reader.Close()
 	}
+
+	sort.Slice(records, func(i, j int) bool {
+		return records[i].Offset < records[j].Offset
+	})
 
 	return records, nil
 }
@@ -844,7 +1187,7 @@ func (c *Compactor) readParquetRecords(ctx context.Context, entries []index.Inde
 var baseRecordFields = map[string]struct{}{
 	"partition":      {},
 	"offset":         {},
-	"timestamp_ms":   {},
+	"timestamp":      {},
 	"key":            {},
 	"value":          {},
 	"headers":        {},
@@ -852,6 +1195,7 @@ var baseRecordFields = map[string]struct{}{
 	"producer_epoch": {},
 	"base_sequence":  {},
 	"attributes":     {},
+	"record_crc":     {},
 }
 
 func recordFromMap(row map[string]any, partition int32) (worker.Record, error) {
@@ -869,14 +1213,14 @@ func recordFromMap(row map[string]any, partition int32) (worker.Record, error) {
 		return worker.Record{}, fmt.Errorf("missing offset value")
 	}
 
-	if value, ok := row["timestamp_ms"]; ok {
+	if value, ok := row["timestamp"]; ok {
 		ts, ok := coerceTimestampMs(value)
 		if !ok {
-			return worker.Record{}, fmt.Errorf("invalid timestamp_ms value")
+			return worker.Record{}, fmt.Errorf("invalid timestamp value")
 		}
 		rec.Timestamp = ts
 	} else {
-		return worker.Record{}, fmt.Errorf("missing timestamp_ms value")
+		return worker.Record{}, fmt.Errorf("missing timestamp value")
 	}
 
 	if value, ok := row["partition"]; ok {
@@ -892,19 +1236,41 @@ func recordFromMap(row map[string]any, partition int32) (worker.Record, error) {
 	rec.ProducerEpoch = coerceOptionalInt32(row["producer_epoch"])
 	rec.BaseSequence = coerceOptionalInt32(row["base_sequence"])
 	rec.Attributes = coerceInt32Default(row["attributes"])
+	rec.RecordCRC = coerceOptionalInt32(row["record_crc"])
 
 	projected := make(map[string]any)
 	for key, value := range row {
 		if _, ok := baseRecordFields[key]; ok {
 			continue
 		}
-		projected[key] = value
+		projected[key] = normalizeProjectedValue(key, value)
 	}
 	if len(projected) > 0 {
 		rec.Projected = projected
 	}
 
 	return rec, nil
+}
+
+func normalizeProjectedValue(key string, value any) any {
+	if !strings.HasSuffix(key, "_at") {
+		return value
+	}
+	switch v := value.(type) {
+	case time.Time:
+		return v.UnixMilli()
+	case *time.Time:
+		if v == nil {
+			return nil
+		}
+		return v.UnixMilli()
+	case int64:
+		return normalizeParquetTimestamp(v)
+	case float64:
+		return normalizeParquetTimestamp(int64(v))
+	default:
+		return value
+	}
 }
 
 func coerceInt64(value any) (int64, bool) {
@@ -978,8 +1344,20 @@ func coerceTimestampMs(value any) (int64, bool) {
 		}
 		return v.UnixMilli(), true
 	default:
-		return coerceInt64(value)
+		parsed, ok := coerceInt64(value)
+		if !ok {
+			return 0, false
+		}
+		return normalizeParquetTimestamp(parsed), true
 	}
+}
+
+func normalizeParquetTimestamp(value int64) int64 {
+	return value / parquetTimestampScale
+}
+
+func scaleParquetTimestamp(value int64) int64 {
+	return value * parquetTimestampScale
 }
 
 func coerceBytes(value any) []byte {
@@ -1053,16 +1431,6 @@ func parquetIndexKeys(entries []index.IndexEntry) ([]string, error) {
 	return keysList, nil
 }
 
-func objectKeyFromPath(path string) string {
-	if strings.HasPrefix(path, "s3://") {
-		parts := strings.SplitN(path[5:], "/", 2)
-		if len(parts) > 1 {
-			return parts[1]
-		}
-	}
-	return path
-}
-
 // recoverJob resumes an incomplete compaction job from its current state.
 func (c *Compactor) recoverJob(ctx context.Context, job *compaction.Job) {
 	streamMeta, err := c.streamManager.GetStreamMeta(ctx, job.StreamID)
@@ -1089,19 +1457,77 @@ func (c *Compactor) recoverJob(ctx context.Context, job *compaction.Job) {
 				return
 			}
 
-			stats := catalog.DefaultDataFileStats(streamMeta.Partition, job.SourceStartOffset, job.SourceEndOffset-1,
-				job.ParquetMinTimestampMs, job.ParquetMaxTimestampMs, job.ParquetRecordCount)
-			dataFile := catalog.BuildDataFileFromStats(job.ParquetPath, streamMeta.Partition,
-				job.ParquetRecordCount, job.ParquetSizeBytes, stats)
-
-			appendResult, err := c.icebergAppender.AppendFilesForStream(ctx, streamMeta.TopicName, job.JobID, []catalog.DataFile{dataFile})
-			if err != nil {
-				c.logger.Warnf("recovery: iceberg commit failed", map[string]any{"error": err.Error()})
+			paths := job.ParquetPaths
+			if len(paths) == 0 && job.ParquetPath != "" {
+				paths = []string{job.ParquetPath}
+			}
+			if len(paths) == 0 {
+				c.logger.Warnf("recovery: missing parquet paths", map[string]any{"streamId": job.StreamID, "jobId": job.JobID})
 				return
 			}
-			job, err = c.sagaManager.MarkIcebergCommitted(ctx, job.StreamID, job.JobID, appendResult.Snapshot.SnapshotID)
+
+			dataFiles := make([]catalog.DataFile, 0, len(paths))
+			if len(paths) == 1 {
+				minTimestampMicros := scaleParquetTimestamp(job.ParquetMinTimestampMs)
+				maxTimestampMicros := scaleParquetTimestamp(job.ParquetMaxTimestampMs)
+				stats := catalog.DefaultDataFileStats(streamMeta.Partition, job.SourceStartOffset, job.SourceEndOffset-1,
+					minTimestampMicros, maxTimestampMicros, job.ParquetRecordCount)
+				dataFiles = append(dataFiles, catalog.BuildDataFileFromStats(paths[0], streamMeta.Partition,
+					job.ParquetRecordCount, job.ParquetSizeBytes, stats))
+			} else {
+				for _, path := range paths {
+					key := objectstore.NormalizeKey(path)
+					rc, err := c.objectStore.Get(ctx, key)
+					if err != nil {
+						c.logger.Warnf("recovery: parquet read failed", map[string]any{"error": err.Error(), "path": path})
+						return
+					}
+
+					data, err := io.ReadAll(rc)
+					rc.Close()
+					if err != nil {
+						c.logger.Warnf("recovery: parquet read failed", map[string]any{"error": err.Error(), "path": path})
+						return
+					}
+
+					parquetFile, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)), parquet.SkipPageIndex(true), parquet.SkipBloomFilters(true))
+					if err != nil {
+						c.logger.Warnf("recovery: parquet metadata read failed", map[string]any{"error": err.Error(), "path": path})
+						return
+					}
+
+					recordCount := parquetFile.NumRows()
+					dataFiles = append(dataFiles, catalog.BuildDataFileFromStats(path, streamMeta.Partition,
+						recordCount, int64(len(data)), nil))
+				}
+			}
+
+			removedFiles, err := c.rewriteRemovedParquetFiles(ctx, job)
 			if err != nil {
+				c.logger.Warnf("recovery: list parquet rewrite sources failed", map[string]any{"error": err.Error()})
 				return
+			}
+
+			if len(removedFiles) > 0 {
+				replaceResult, err := c.icebergAppender.ReplaceFilesForStream(ctx, streamMeta.TopicName, job.JobID, dataFiles, removedFiles)
+				if err != nil {
+					c.logger.Warnf("recovery: iceberg replace failed", map[string]any{"error": err.Error()})
+					return
+				}
+				job, err = c.sagaManager.MarkIcebergCommitted(ctx, job.StreamID, job.JobID, replaceResult.Snapshot.SnapshotID)
+				if err != nil {
+					return
+				}
+			} else {
+				appendResult, err := c.icebergAppender.AppendFilesForStream(ctx, streamMeta.TopicName, job.JobID, dataFiles)
+				if err != nil {
+					c.logger.Warnf("recovery: iceberg commit failed", map[string]any{"error": err.Error()})
+					return
+				}
+				job, err = c.sagaManager.MarkIcebergCommitted(ctx, job.StreamID, job.JobID, appendResult.Snapshot.SnapshotID)
+				if err != nil {
+					return
+				}
 			}
 		} else {
 			job, err = c.sagaManager.MarkIcebergCommitted(ctx, job.StreamID, job.JobID, 0)
@@ -1115,8 +1541,7 @@ func (c *Compactor) recoverJob(ctx context.Context, job *compaction.Job) {
 	case compaction.JobStateIcebergCommitted:
 		// Iceberg committed, perform index swap
 		metaDomain := int(metadata.CalculateMetaDomain(job.StreamID, c.opts.Config.Metadata.NumDomains))
-		swapResult, err := c.indexSwapper.SwapFromJob(ctx, job, job.ParquetPath,
-			job.ParquetSizeBytes, job.ParquetRecordCount, metaDomain)
+		swapResult, err := c.indexSwapper.SwapFromJob(ctx, job, metaDomain)
 		if err != nil {
 			if errors.Is(err, compaction.ErrNoEntriesToSwap) {
 				c.logger.Warnf("recovery: no index entries to swap, marking job failed", map[string]any{
@@ -1137,12 +1562,60 @@ func (c *Compactor) recoverJob(ctx context.Context, job *compaction.Job) {
 		c.recoverJob(ctx, job)
 
 	case compaction.JobStateIndexSwapped:
-		// Index swapped, just need to mark done
+		// Index swapped, need to mark WAL GC ready then done
+		job, err := c.sagaManager.MarkWALGCReady(ctx, job.StreamID, job.JobID)
+		if err != nil {
+			return
+		}
+		c.sagaManager.MarkDone(ctx, job.StreamID, job.JobID)
+
+	case compaction.JobStateWALGCReady:
+		// WAL GC ready, just need to mark done
 		c.sagaManager.MarkDone(ctx, job.StreamID, job.JobID)
 
 	case compaction.JobStateDone, compaction.JobStateFailed:
 		// Terminal states
 	}
+}
+
+func (c *Compactor) rewriteRemovedParquetFiles(ctx context.Context, job *compaction.Job) ([]catalog.DataFile, error) {
+	startKey, err := keys.OffsetIndexStartKey(job.StreamID, job.SourceStartOffset+1)
+	if err != nil {
+		return nil, fmt.Errorf("build start key: %w", err)
+	}
+	endKey, err := keys.OffsetIndexStartKey(job.StreamID, job.SourceEndOffset+1)
+	if err != nil {
+		return nil, fmt.Errorf("build end key: %w", err)
+	}
+
+	kvs, err := c.metaStore.List(ctx, startKey, endKey, 0)
+	if err != nil {
+		return nil, fmt.Errorf("list index entries: %w", err)
+	}
+
+	removed := make([]catalog.DataFile, 0)
+	for _, kv := range kvs {
+		var entry index.IndexEntry
+		if err := json.Unmarshal(kv.Value, &entry); err != nil {
+			return nil, fmt.Errorf("unmarshal index entry: %w", err)
+		}
+		if entry.FileType != index.FileTypeParquet {
+			continue
+		}
+		if entry.StartOffset < job.SourceStartOffset || entry.EndOffset > job.SourceEndOffset {
+			continue
+		}
+
+		paths := entry.ParquetPaths
+		if len(paths) == 0 && entry.ParquetPath != "" {
+			paths = []string{entry.ParquetPath}
+		}
+		for _, path := range paths {
+			removed = append(removed, catalog.DataFile{Path: path})
+		}
+	}
+
+	return removed, nil
 }
 
 // Shutdown gracefully stops the compactor.
@@ -1170,6 +1643,16 @@ func (c *Compactor) Shutdown(ctx context.Context) error {
 		// Worker stopped cleanly
 	case <-ctx.Done():
 		c.logger.Warn("shutdown context cancelled, forcing stop")
+	}
+
+	if c.parquetGCWorker != nil {
+		c.parquetGCWorker.Stop()
+	}
+	if c.walOrphanGCWorker != nil {
+		c.walOrphanGCWorker.Stop()
+	}
+	if c.walGCWorker != nil {
+		c.walGCWorker.Stop()
 	}
 
 	// Release all held locks
