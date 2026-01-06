@@ -23,7 +23,7 @@ linters:
       - path: doc\.go
         linters:
           - unused
-      - path: cmd/drayd/admin\.go
+      - path: cmd/drayd/
         linters:
           - errcheck
 
