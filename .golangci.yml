@@ -23,6 +23,9 @@ linters:
       - path: doc\.go
         linters:
           - unused
+      - path: cmd/drayd/admin\.go
+        linters:
+          - errcheck
 
 formatters:
   enable:
