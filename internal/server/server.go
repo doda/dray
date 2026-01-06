@@ -692,7 +692,7 @@ func (s *Server) monitorConnection(conn net.Conn, ctx context.Context, cancel co
 	// when the remote end has shutdown the connection (sent FIN).
 	pollFds := []unix.PollFd{{
 		Fd:     int32(fd),
-		Events: unix.POLLRDHUP | unix.POLLHUP | unix.POLLERR,
+		Events: unix.POLLHUP | unix.POLLERR,
 	}}
 
 	for {
