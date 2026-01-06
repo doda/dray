@@ -57,10 +57,11 @@ type IndexEntry struct {
 	BatchIndex  []BatchIndexEntry `json:"batchIndex,omitempty"`
 
 	// Parquet-specific fields
-	ParquetID         string `json:"parquetId,omitempty"`
-	ParquetPath       string `json:"parquetPath,omitempty"`
-	ParquetSizeBytes  uint64 `json:"parquetSizeBytes,omitempty"`
-	IcebergDataFileID string `json:"icebergDataFileId,omitempty"`
+	ParquetID         string   `json:"parquetId,omitempty"`
+	ParquetPath       string   `json:"parquetPath,omitempty"`
+	ParquetPaths      []string `json:"parquetPaths,omitempty"`
+	ParquetSizeBytes  uint64   `json:"parquetSizeBytes,omitempty"`
+	IcebergDataFileID string   `json:"icebergDataFileId,omitempty"`
 }
 
 // Common errors for index entry operations.

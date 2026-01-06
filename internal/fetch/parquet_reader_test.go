@@ -19,7 +19,9 @@ func createParquetFile(t *testing.T, records []ParquetRecordWithHeaders) []byte 
 	var buf bytes.Buffer
 	writer := parquet.NewGenericWriter[ParquetRecordWithHeaders](&buf)
 
-	_, err := writer.Write(records)
+	scaled := scaleParquetTestRecords(records)
+
+	_, err := writer.Write(scaled)
 	if err != nil {
 		t.Fatalf("failed to write parquet records: %v", err)
 	}
@@ -38,7 +40,9 @@ func createParquetFileWithRowGroupSize(t *testing.T, records []ParquetRecordWith
 	var buf bytes.Buffer
 	writer := parquet.NewGenericWriter[ParquetRecordWithHeaders](&buf, parquet.MaxRowsPerRowGroup(maxRows))
 
-	_, err := writer.Write(records)
+	scaled := scaleParquetTestRecords(records)
+
+	_, err := writer.Write(scaled)
 	if err != nil {
 		t.Fatalf("failed to write parquet records: %v", err)
 	}
@@ -49,6 +53,15 @@ func createParquetFileWithRowGroupSize(t *testing.T, records []ParquetRecordWith
 	}
 
 	return buf.Bytes()
+}
+
+func scaleParquetTestRecords(records []ParquetRecordWithHeaders) []ParquetRecordWithHeaders {
+	scaled := make([]ParquetRecordWithHeaders, len(records))
+	for i, rec := range records {
+		rec.Timestamp = encodeParquetTimestamp(rec.Timestamp)
+		scaled[i] = rec
+	}
+	return scaled
 }
 
 func TestParquetReader_ReadBatches(t *testing.T) {

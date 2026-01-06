@@ -124,7 +124,11 @@ type Job struct {
 
 	// ParquetPath is the object storage path of the written Parquet file.
 	// Set when state transitions to PARQUET_WRITTEN.
+	// For multi-file (partitioned) compaction, this is the path of the first file.
 	ParquetPath string `json:"parquetPath,omitempty"`
+
+	// ParquetPaths contains all object storage paths for multi-file compaction.
+	ParquetPaths []string `json:"parquetPaths,omitempty"`
 
 	// ParquetSizeBytes is the size of the Parquet file.
 	ParquetSizeBytes int64 `json:"parquetSizeBytes,omitempty"`
@@ -172,11 +176,12 @@ type Job struct {
 
 // ParquetGCCandidate describes a Parquet file eligible for GC once compaction is DONE.
 type ParquetGCCandidate struct {
-	Path                    string `json:"path"`
-	CreatedAtMs             int64  `json:"createdAtMs"`
-	SizeBytes               int64  `json:"sizeBytes"`
-	IcebergEnabled          bool   `json:"icebergEnabled,omitempty"`
-	IcebergRemovalConfirmed bool   `json:"icebergRemovalConfirmed,omitempty"`
+	Path                    string   `json:"path"`
+	Paths                   []string `json:"paths,omitempty"`
+	CreatedAtMs             int64    `json:"createdAtMs"`
+	SizeBytes               int64    `json:"sizeBytes"`
+	IcebergEnabled          bool     `json:"icebergEnabled,omitempty"`
+	IcebergRemovalConfirmed bool     `json:"icebergRemovalConfirmed,omitempty"`
 }
 
 // NewJobID generates a new unique job ID.
@@ -430,9 +435,12 @@ func (sm *SagaManager) TransitionState(ctx context.Context, streamID, jobID stri
 }
 
 // MarkParquetWritten transitions a job to PARQUET_WRITTEN state.
-func (sm *SagaManager) MarkParquetWritten(ctx context.Context, streamID, jobID, parquetPath string, sizeBytes, recordCount, minTimestamp, maxTimestamp int64) (*Job, error) {
+func (sm *SagaManager) MarkParquetWritten(ctx context.Context, streamID, jobID string, parquetPaths []string, sizeBytes, recordCount, minTimestamp, maxTimestamp int64) (*Job, error) {
 	return sm.TransitionState(ctx, streamID, jobID, JobStateParquetWritten, func(j *Job) error {
-		j.ParquetPath = parquetPath
+		if len(parquetPaths) > 0 {
+			j.ParquetPath = parquetPaths[0]
+			j.ParquetPaths = parquetPaths
+		}
 		j.ParquetSizeBytes = sizeBytes
 		j.ParquetRecordCount = recordCount
 		j.ParquetMinTimestampMs = minTimestamp
@@ -501,17 +509,24 @@ func (sm *SagaManager) MarkDone(ctx context.Context, streamID, jobID string) (*J
 	deleteAfterMs := time.Now().UnixMilli() + gracePeriodMs
 
 	for _, candidate := range job.ParquetGCCandidates {
-		gcRecord := gc.ParquetGCRecord{
-			Path:                    candidate.Path,
-			DeleteAfterMs:           deleteAfterMs,
-			CreatedAt:               candidate.CreatedAtMs,
-			SizeBytes:               candidate.SizeBytes,
-			StreamID:                job.StreamID,
-			IcebergEnabled:          candidate.IcebergEnabled,
-			IcebergRemovalConfirmed: candidate.IcebergRemovalConfirmed,
+		paths := candidate.Paths
+		if len(paths) == 0 && candidate.Path != "" {
+			paths = []string{candidate.Path}
 		}
-		if err := gc.ScheduleParquetGC(ctx, sm.meta, gcRecord); err != nil {
-			continue
+
+		for _, path := range paths {
+			gcRecord := gc.ParquetGCRecord{
+				Path:                    path,
+				DeleteAfterMs:           deleteAfterMs,
+				CreatedAt:               candidate.CreatedAtMs,
+				SizeBytes:               candidate.SizeBytes, // Total size, same as in retention.go
+				StreamID:                job.StreamID,
+				IcebergEnabled:          candidate.IcebergEnabled,
+				IcebergRemovalConfirmed: candidate.IcebergRemovalConfirmed,
+			}
+			if err := gc.ScheduleParquetGC(ctx, sm.meta, gcRecord); err != nil {
+				continue
+			}
 		}
 	}
 

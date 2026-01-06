@@ -846,31 +846,31 @@ func TestWriter_RecordCRC(t *testing.T) {
 
 	records := []Record{
 		{
-			Partition:   0,
-			Offset:      0,
-			Timestamp:   1000,
-			Key:         []byte("key1"),
-			Value:       []byte("value1"),
-			Attributes:  0,
-			RecordCRC:   &crc1,
+			Partition:  0,
+			Offset:     0,
+			Timestamp:  1000,
+			Key:        []byte("key1"),
+			Value:      []byte("value1"),
+			Attributes: 0,
+			RecordCRC:  &crc1,
 		},
 		{
-			Partition:   0,
-			Offset:      1,
-			Timestamp:   1001,
-			Key:         []byte("key2"),
-			Value:       []byte("value2"),
-			Attributes:  0,
-			RecordCRC:   &crc2,
+			Partition:  0,
+			Offset:     1,
+			Timestamp:  1001,
+			Key:        []byte("key2"),
+			Value:      []byte("value2"),
+			Attributes: 0,
+			RecordCRC:  &crc2,
 		},
 		{
-			Partition:   0,
-			Offset:      2,
-			Timestamp:   1002,
-			Key:         []byte("key3"),
-			Value:       []byte("value3"),
-			Attributes:  0,
-			RecordCRC:   nil, // optional - can be nil
+			Partition:  0,
+			Offset:     2,
+			Timestamp:  1002,
+			Key:        []byte("key3"),
+			Value:      []byte("value3"),
+			Attributes: 0,
+			RecordCRC:  nil, // optional - can be nil
 		},
 	}
 
@@ -921,11 +921,11 @@ func TestWriter_RoundTripPreservesRecordCRC(t *testing.T) {
 	crc := int32(0x12345678)
 
 	original := Record{
-		Partition:     3,
-		Offset:        12345,
-		Timestamp:     time.Now().UnixMilli(),
-		Key:           []byte("test-key"),
-		Value:         []byte("test-value"),
+		Partition: 3,
+		Offset:    12345,
+		Timestamp: time.Now().UnixMilli(),
+		Key:       []byte("test-key"),
+		Value:     []byte("test-value"),
 		Headers: []Header{
 			{Key: "trace-id", Value: []byte("abc123")},
 		},

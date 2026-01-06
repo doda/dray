@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/apache/iceberg-go"
 	"github.com/dray-io/dray/internal/iceberg/catalog"
@@ -20,7 +21,7 @@ import (
 type Record struct {
 	Partition     int32    `parquet:"partition"`
 	Offset        int64    `parquet:"offset"`
-	Timestamp     int64    `parquet:"timestamp,timestamp(millisecond)"`
+	Timestamp     int64    `parquet:"timestamp,timestamp(microsecond)"`
 	Key           []byte   `parquet:"key,optional"`
 	Value         []byte   `parquet:"value,optional"`
 	Headers       []Header `parquet:"headers,list,optional"`
@@ -50,6 +51,8 @@ type FileStats struct {
 	RecordCount  int64
 	SizeBytes    int64
 }
+
+const parquetTimestampScale = int64(1000)
 
 // Writer writes Kafka records to Parquet format.
 type Writer struct {
@@ -169,7 +172,7 @@ func recordToMap(rec Record) map[string]any {
 	row := map[string]any{
 		"partition":      rec.Partition,
 		"offset":         rec.Offset,
-		"timestamp":      rec.Timestamp,
+		"timestamp":      scaleParquetTimestamp(rec.Timestamp),
 		"key":            optionalBytes(rec.Key),
 		"value":          optionalBytes(rec.Value),
 		"headers":        headersToMap(rec.Headers),
@@ -180,7 +183,7 @@ func recordToMap(rec Record) map[string]any {
 		"record_crc":     derefInt32(rec.RecordCRC),
 	}
 	for key, value := range rec.Projected {
-		row[key] = value
+		row[key] = scaleProjectedTimestampValue(key, value)
 	}
 	return row
 }
@@ -190,6 +193,28 @@ func optionalBytes(value []byte) any {
 		return nil
 	}
 	return value
+}
+
+func scaleParquetTimestamp(value int64) int64 {
+	return value * parquetTimestampScale
+}
+
+func normalizeParquetTimestamp(value int64) int64 {
+	return value / parquetTimestampScale
+}
+
+func scaleProjectedTimestampValue(name string, value any) any {
+	if !strings.HasSuffix(name, "_at") {
+		return value
+	}
+	switch v := value.(type) {
+	case int64:
+		return v * parquetTimestampScale
+	case float64:
+		return v * float64(parquetTimestampScale)
+	default:
+		return value
+	}
 }
 
 func derefInt64(value *int64) any {
@@ -223,16 +248,16 @@ func headersToMap(headers []Header) []map[string]any {
 // BuildParquetSchema returns a Parquet schema for the base record plus projections.
 func BuildParquetSchema(fields []projection.FieldSpec) *parquet.Schema {
 	base := parquet.Group{
-		"attributes":     parquet.FieldID(parquet.Leaf(parquet.Int32Type), catalog.FieldIDAttributes),
-		"base_sequence":  parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), catalog.FieldIDBaseSequence),
-		"key":            parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.ByteArrayType)), catalog.FieldIDKey),
-		"offset":         parquet.FieldID(parquet.Leaf(parquet.Int64Type), catalog.FieldIDOffset),
 		"partition":      parquet.FieldID(parquet.Leaf(parquet.Int32Type), catalog.FieldIDPartition),
-		"producer_epoch": parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), catalog.FieldIDProducerEpoch),
-		"producer_id":    parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int64Type)), catalog.FieldIDProducerID),
-		"record_crc":     parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), catalog.FieldIDRecordCRC),
-		"timestamp":      parquet.FieldID(parquet.Timestamp(parquet.Millisecond), catalog.FieldIDTimestamp),
+		"offset":         parquet.FieldID(parquet.Leaf(parquet.Int64Type), catalog.FieldIDOffset),
+		"timestamp":      parquet.FieldID(parquet.Timestamp(parquet.Microsecond), catalog.FieldIDTimestamp),
+		"key":            parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.ByteArrayType)), catalog.FieldIDKey),
 		"value":          parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.ByteArrayType)), catalog.FieldIDValue),
+		"producer_id":    parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int64Type)), catalog.FieldIDProducerID),
+		"producer_epoch": parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), catalog.FieldIDProducerEpoch),
+		"base_sequence":  parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), catalog.FieldIDBaseSequence),
+		"attributes":     parquet.FieldID(parquet.Leaf(parquet.Int32Type), catalog.FieldIDAttributes),
+		"record_crc":     parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), catalog.FieldIDRecordCRC),
 	}
 
 	headersElement := parquet.FieldID(parquet.Group{
@@ -330,7 +355,7 @@ func BuildParquetSchemaFromIceberg(schema *iceberg.Schema, fields []projection.F
 		"producer_epoch": parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), producerEpochField.ID),
 		"producer_id":    parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int64Type)), producerIDField.ID),
 		"record_crc":     parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.Int32Type)), recordCRCField.ID),
-		"timestamp":      parquet.FieldID(parquet.Timestamp(parquet.Millisecond), timestampField.ID),
+		"timestamp":      parquet.FieldID(parquet.Timestamp(parquet.Microsecond), timestampField.ID),
 		"value":          parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.ByteArrayType)), valueField.ID),
 	}
 
@@ -378,7 +403,7 @@ func parquetNodeForField(field projection.FieldSpec, fieldID int) parquet.Node {
 	case projection.FieldTypeBool:
 		return parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.BooleanType)), fieldID)
 	case projection.FieldTypeTimestampMs:
-		return parquet.FieldID(parquet.Optional(parquet.Timestamp(parquet.Millisecond)), fieldID)
+		return parquet.FieldID(parquet.Optional(parquet.Timestamp(parquet.Microsecond)), fieldID)
 	case projection.FieldTypeStringList:
 		return parquet.FieldID(parquet.Optional(parquet.List(parquet.FieldID(parquet.String(), fieldID+1))), fieldID)
 	case projection.FieldTypeInt64List:
@@ -401,7 +426,7 @@ func parquetNodeForFieldWithIDs(field projection.FieldSpec, fieldID, elementID i
 	case projection.FieldTypeBool:
 		return parquet.FieldID(parquet.Optional(parquet.Leaf(parquet.BooleanType)), fieldID), nil
 	case projection.FieldTypeTimestampMs:
-		return parquet.FieldID(parquet.Optional(parquet.Timestamp(parquet.Millisecond)), fieldID), nil
+		return parquet.FieldID(parquet.Optional(parquet.Timestamp(parquet.Microsecond)), fieldID), nil
 	case projection.FieldTypeStringList:
 		if elementID == 0 {
 			return nil, fmt.Errorf("parquet: list field %q missing element id", field.Name)
@@ -499,6 +524,9 @@ func (r *Reader) ReadAll() ([]Record, error) {
 	n, err := r.reader.Read(records)
 	if err != nil && err != io.EOF {
 		return nil, fmt.Errorf("parquet: read records: %w", err)
+	}
+	for i := 0; i < n; i++ {
+		records[i].Timestamp = normalizeParquetTimestamp(records[i].Timestamp)
 	}
 	return records[:n], nil
 }

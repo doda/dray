@@ -214,7 +214,8 @@ func (w *ParquetGCWorker) processGCRecord(ctx context.Context, gcKey string, val
 		return false, nil
 	}
 
-	if err := w.obj.Delete(ctx, record.Path); err != nil {
+	key := objectstore.NormalizeKey(record.Path)
+	if err := w.obj.Delete(ctx, key); err != nil {
 		if !errors.Is(err, objectstore.ErrNotFound) {
 			return false, fmt.Errorf("delete Parquet object %s: %w", record.Path, err)
 		}
