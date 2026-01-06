@@ -18,6 +18,9 @@ func TestNewProduceMetrics(t *testing.T) {
 	if m.RequestsTotal == nil {
 		t.Fatal("RequestsTotal is nil")
 	}
+	if m.MessagesInTotal == nil {
+		t.Fatal("MessagesInTotal is nil")
+	}
 }
 
 func TestProduceMetrics_RecordLatency(t *testing.T) {
@@ -97,6 +100,22 @@ func TestProduceMetrics_RecordSuccessAndFailure(t *testing.T) {
 	}
 	if got := failureMetric.Counter.GetValue(); got != 1 {
 		t.Errorf("failure counter = %f, want 1", got)
+	}
+}
+
+func TestProduceMetrics_RecordMessages(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewProduceMetricsWithRegistry(reg)
+
+	m.RecordMessages(3)
+	m.RecordMessages(2)
+
+	counterMetric := &dto.Metric{}
+	if err := m.MessagesInTotal.(prometheus.Metric).Write(counterMetric); err != nil {
+		t.Fatalf("failed to write messages counter: %v", err)
+	}
+	if got := counterMetric.Counter.GetValue(); got != 5 {
+		t.Errorf("messages counter = %f, want 5", got)
 	}
 }
 

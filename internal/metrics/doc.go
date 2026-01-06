@@ -5,6 +5,7 @@
 //   - Fetch request latency (p50, p99, p999) broken down by success/failure
 //   - Fetch request latency broken down by source (wal, parquet, none)
 //   - Request counters by status
+//   - Topic throughput counter (total Kafka records accepted)
 //   - WAL flush size histogram (bytes per WAL object)
 //   - WAL flush latency histogram (seconds per flush operation)
 //   - WAL objects created counter (for computing objects/second via rate())
