@@ -115,12 +115,22 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 	var found bool
 	var batchBaseOffset int64 = -1
 	var batchBaseTimestamp int64
-
-	// Collect all matching records from all files
 	var allRows []ParquetRecordWithHeaders
-	var seenFile bool
+	var approxBytes int64
 
-	for _, path := range paths {
+	type parquetCandidate struct {
+		rowGroups []parquet.RowGroup
+		minOffset int64
+		hasBounds bool
+		order     int
+	}
+
+	var (
+		candidates []parquetCandidate
+		seenFile   bool
+	)
+
+	for idx, path := range paths {
 		key := objectstore.NormalizeKey(path)
 		meta, err := r.store.Head(ctx, key)
 		if err != nil {
@@ -145,8 +155,50 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
 		}
+		if len(rowGroups) == 0 {
+			continue
+		}
 
-		for _, rowGroup := range rowGroups {
+		var minOffset int64
+		var hasBounds bool
+		if offsetColumn, ok := parquetFile.Schema().Lookup("offset"); ok {
+			minOffset, hasBounds = minOffsetForRowGroups(rowGroups, offsetColumn.ColumnIndex)
+		}
+
+		candidates = append(candidates, parquetCandidate{
+			rowGroups: rowGroups,
+			minOffset: minOffset,
+			hasBounds: hasBounds,
+			order:     idx,
+		})
+	}
+
+	if len(candidates) == 0 {
+		if !seenFile {
+			return nil, ErrParquetNotFound
+		}
+		return nil, ErrOffsetNotInParquet
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		ai := candidates[i]
+		aj := candidates[j]
+		if ai.hasBounds && aj.hasBounds {
+			if ai.minOffset == aj.minOffset {
+				return ai.order < aj.order
+			}
+			return ai.minOffset < aj.minOffset
+		}
+		if ai.hasBounds != aj.hasBounds {
+			return ai.hasBounds
+		}
+		return ai.order < aj.order
+	})
+
+	const recordOverheadEstimate = 64
+	stopRead := false
+	for _, candidate := range candidates {
+		for _, rowGroup := range candidate.rowGroups {
 			groupReader := parquet.NewGenericRowGroupReader[ParquetRecordWithHeaders](rowGroup)
 			rows := make([]ParquetRecordWithHeaders, 256)
 
@@ -158,6 +210,11 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 							continue
 						}
 						allRows = append(allRows, rec)
+						approxBytes += int64(len(rec.Key)+len(rec.Value)) + recordOverheadEstimate
+						if maxBytes > 0 && approxBytes >= maxBytes && len(allRows) > 0 {
+							stopRead = true
+							break
+						}
 					}
 				}
 				if err == io.EOF {
@@ -167,8 +224,17 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 					groupReader.Close()
 					return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
 				}
+				if stopRead {
+					break
+				}
 			}
 			groupReader.Close()
+			if stopRead {
+				break
+			}
+		}
+		if stopRead {
+			break
 		}
 	}
 
@@ -188,7 +254,22 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 		return allRows[i].Offset < allRows[j].Offset
 	})
 
+	prevOffset := int64(-1)
 	for _, rec := range allRows {
+		if agg.count() > 0 && prevOffset >= 0 && rec.Offset != prevOffset+1 {
+			batch := agg.flush()
+			batchSize := int64(len(batch))
+
+			if maxBytes > 0 && totalBytes+batchSize > maxBytes && len(result.Batches) > 0 {
+				result.TotalBytes = totalBytes
+				return result, nil
+			}
+
+			result.Batches = append(result.Batches, batch)
+			totalBytes += batchSize
+			batchBaseOffset = -1
+		}
+
 		// Track first record's offset for the result
 		if result.StartOffset < 0 {
 			result.StartOffset = rec.Offset
@@ -206,6 +287,7 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 
 		shouldFlush := agg.add(rec, offsetDelta, timestampDelta)
 		found = true
+		prevOffset = rec.Offset
 
 		if shouldFlush {
 			batch := agg.flush()
@@ -730,6 +812,34 @@ func selectRowGroupsByOffset(file *parquet.File, rangeStart, rangeEnd int64) ([]
 	}
 
 	return selected, nil
+}
+
+func minOffsetForRowGroups(rowGroups []parquet.RowGroup, columnIndex int) (int64, bool) {
+	var min int64
+	minSet := false
+	for _, rowGroup := range rowGroups {
+		chunks := rowGroup.ColumnChunks()
+		if columnIndex >= len(chunks) {
+			continue
+		}
+		boundsChunk, ok := chunks[columnIndex].(interface {
+			Bounds() (parquet.Value, parquet.Value, bool)
+		})
+		if !ok {
+			continue
+		}
+		minValue, _, ok := boundsChunk.Bounds()
+		if !ok || minValue.IsNull() {
+			continue
+		}
+		offset := minValue.Int64()
+		if !minSet || offset < min {
+			min = offset
+			minSet = true
+		}
+	}
+
+	return min, minSet
 }
 
 // parquetBytesFile implements parquet.File for reading from an in-memory byte slice.
