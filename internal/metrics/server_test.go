@@ -53,6 +53,7 @@ func TestServer_MetricsEndpoint(t *testing.T) {
 	m.RecordSuccess(0.005)
 	m.RecordSuccess(0.010)
 	m.RecordFailure(0.050)
+	m.RecordMessages(4)
 
 	// Start server
 	s := NewServer(":0")
@@ -88,6 +89,9 @@ func TestServer_MetricsEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(bodyStr, "dray_produce_requests_total") {
 		t.Error("expected dray_produce_requests_total in metrics output")
+	}
+	if !strings.Contains(bodyStr, "dray_topic_messages_in_total") {
+		t.Error("expected dray_topic_messages_in_total in metrics output")
 	}
 
 	// Check for status labels

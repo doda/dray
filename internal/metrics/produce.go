@@ -15,6 +15,9 @@ type ProduceMetrics struct {
 
 	// RequestsTotal tracks total produce requests by status.
 	RequestsTotal *prometheus.CounterVec
+
+	// MessagesInTotal tracks total Kafka records accepted by Dray.
+	MessagesInTotal prometheus.Counter
 }
 
 // DefaultProduceLatencyBuckets are latency buckets for produce requests.
@@ -69,6 +72,14 @@ func NewProduceMetrics() *ProduceMetrics {
 			},
 			[]string{"status"},
 		),
+		MessagesInTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: "dray",
+				Subsystem: "topic",
+				Name:      "messages_in_total",
+				Help:      "Total number of Kafka records accepted by Dray.",
+			},
+		),
 	}
 }
 
@@ -96,12 +107,23 @@ func NewProduceMetricsWithRegistry(reg prometheus.Registerer) *ProduceMetrics {
 		[]string{"status"},
 	)
 
+	messagesInTotal := prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: "dray",
+			Subsystem: "topic",
+			Name:      "messages_in_total",
+			Help:      "Total number of Kafka records accepted by Dray.",
+		},
+	)
+
 	reg.MustRegister(latencyHist)
 	reg.MustRegister(requestsTotal)
+	reg.MustRegister(messagesInTotal)
 
 	return &ProduceMetrics{
 		LatencyHistogram: latencyHist,
 		RequestsTotal:    requestsTotal,
+		MessagesInTotal:  messagesInTotal,
 	}
 }
 
@@ -124,4 +146,12 @@ func (m *ProduceMetrics) RecordSuccess(durationSeconds float64) {
 // RecordFailure is a convenience method to record a failed produce latency.
 func (m *ProduceMetrics) RecordFailure(durationSeconds float64) {
 	m.RecordLatency(durationSeconds, false)
+}
+
+// RecordMessages increments the total record counter by count.
+func (m *ProduceMetrics) RecordMessages(count uint32) {
+	if m == nil || m.MessagesInTotal == nil || count == 0 {
+		return
+	}
+	m.MessagesInTotal.Add(float64(count))
 }

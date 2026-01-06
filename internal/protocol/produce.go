@@ -260,7 +260,10 @@ func (h *ProduceHandler) processPartition(ctx context.Context, version int16, to
 	// For acks=0, we don't wait for commit
 	if acks == 0 {
 		// Fire and forget - add to buffer but don't wait
-		_, _ = h.buffer.Add(ctx, partMeta.StreamID, batches, recordCount, minTs, maxTs)
+		_, err = h.buffer.Add(ctx, partMeta.StreamID, batches, recordCount, minTs, maxTs)
+		if err == nil && h.metrics != nil {
+			h.metrics.RecordMessages(recordCount)
+		}
 		resp.ErrorCode = errNoError
 		resp.BaseOffset = 0
 		return resp
@@ -297,6 +300,9 @@ func (h *ProduceHandler) processPartition(ctx context.Context, version int16, to
 			resp.LogAppendTime = time.Now().UnixMilli()
 		} else {
 			resp.BaseOffset = 0
+		}
+		if h.metrics != nil {
+			h.metrics.RecordMessages(recordCount)
 		}
 	case <-ctx.Done():
 		resp.ErrorCode = errRequestTimedOut
