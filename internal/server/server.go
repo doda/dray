@@ -688,11 +688,12 @@ func (s *Server) monitorConnection(conn net.Conn, ctx context.Context, cancel co
 		return
 	}
 
-	// Poll for connection close using POLLRDHUP which specifically detects
+	// Poll for connection close using POLLHUP and POLLERR.
+	// On Linux, we also use POLLRDHUP which specifically detects
 	// when the remote end has shutdown the connection (sent FIN).
 	pollFds := []unix.PollFd{{
 		Fd:     int32(fd),
-		Events: unix.POLLHUP | unix.POLLERR,
+		Events: unix.POLLHUP | unix.POLLERR | pollRDHUP,
 	}}
 
 	for {
