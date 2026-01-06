@@ -58,6 +58,28 @@ type ConvertResult struct {
 	RecordCount int64
 }
 
+// PartitionedConvertResult contains results from partition-aware conversion.
+// Each result represents a separate Parquet file for one partition value.
+type PartitionedConvertResult struct {
+	// Results is a list of conversion results, one per partition value.
+	Results []PartitionedFile
+	// TotalRecords is the total number of records across all partitions.
+	TotalRecords int64
+}
+
+// PartitionedFile represents a single Parquet file for one partition value.
+type PartitionedFile struct {
+	// HourValue is the hour partition value (hours since epoch).
+	// For hour(created_at) partitioning.
+	HourValue int64
+	// ParquetData is the raw Parquet file bytes.
+	ParquetData []byte
+	// Stats contains file-level statistics.
+	Stats FileStats
+	// RecordCount is the number of records in this partition.
+	RecordCount int64
+}
+
 // Kafka compression types (bits 0-2 of attributes)
 const (
 	compressionNone   = 0
@@ -119,6 +141,95 @@ func (c *Converter) Convert(ctx context.Context, entries []*index.IndexEntry, pa
 		Stats:       stats,
 		RecordCount: int64(len(allRecords)),
 	}, nil
+}
+
+// ConvertPartitioned reads WAL entries and converts them to multiple Parquet files,
+// one per partition value (hour). This is required for Iceberg tables with time-based
+// partitioning, as each data file must belong to exactly one partition.
+func (c *Converter) ConvertPartitioned(ctx context.Context, entries []*index.IndexEntry, partition int32, topicName string, schema *parquet.Schema) (*PartitionedConvertResult, error) {
+	if len(entries) == 0 {
+		return nil, errors.New("converter: no entries to convert")
+	}
+
+	// Validate all entries are WAL type and belong to same stream
+	streamID := entries[0].StreamID
+	for _, e := range entries {
+		if e.FileType != index.FileTypeWAL {
+			return nil, fmt.Errorf("converter: expected WAL entry, got %s", e.FileType)
+		}
+		if e.StreamID != streamID {
+			return nil, errors.New("converter: entries must belong to same stream")
+		}
+	}
+
+	// Prepare projection settings for this topic.
+	projectionFields := c.ProjectionFields(topicName)
+	projector := newRecordProjector(projectionFields)
+
+	// Collect all records from all WAL entries
+	var allRecords []Record
+
+	for _, entry := range entries {
+		records, err := c.extractRecordsFromEntry(ctx, entry, partition, projector)
+		if err != nil {
+			return nil, fmt.Errorf("converter: processing entry at offset %d: %w", entry.StartOffset, err)
+		}
+		allRecords = append(allRecords, records...)
+	}
+
+	if len(allRecords) == 0 {
+		return nil, errors.New("converter: no records extracted from WAL entries")
+	}
+
+	// Group records by hour value based on created_at projected field
+	recordsByHour := make(map[int64][]Record)
+	for _, rec := range allRecords {
+		// Use created_at from projected fields if available, otherwise fall back to Kafka timestamp
+		var hourValue int64
+		if createdAt, ok := rec.Projected["created_at"]; ok {
+			switch v := createdAt.(type) {
+			case int64:
+				hourValue = v / (3600 * 1000)
+			case float64:
+				hourValue = int64(v) / (3600 * 1000)
+			default:
+				// Fallback to Kafka timestamp if created_at is not a number
+				hourValue = rec.Timestamp / (3600 * 1000)
+			}
+		} else {
+			// Fallback to Kafka timestamp if created_at not projected
+			hourValue = rec.Timestamp / (3600 * 1000)
+		}
+		recordsByHour[hourValue] = append(recordsByHour[hourValue], rec)
+	}
+
+	// Build schema once
+	parquetSchema := schema
+	if parquetSchema == nil {
+		parquetSchema = BuildParquetSchema(projectionFields)
+	}
+
+	// Write separate Parquet file for each hour
+	result := &PartitionedConvertResult{
+		Results:      make([]PartitionedFile, 0, len(recordsByHour)),
+		TotalRecords: int64(len(allRecords)),
+	}
+
+	for hourValue, records := range recordsByHour {
+		parquetData, stats, err := WriteToBuffer(parquetSchema, records)
+		if err != nil {
+			return nil, fmt.Errorf("converter: writing parquet for hour %d: %w", hourValue, err)
+		}
+
+		result.Results = append(result.Results, PartitionedFile{
+			HourValue:   hourValue,
+			ParquetData: parquetData,
+			Stats:       stats,
+			RecordCount: int64(len(records)),
+		})
+	}
+
+	return result, nil
 }
 
 // extractRecordsFromEntry reads a single WAL entry and extracts all records.
@@ -649,8 +760,9 @@ func (c *StreamingConverter) ConvertStreaming(ctx context.Context, entries []*in
 		}
 	}
 
-	// Create Parquet writer
-	writer := NewWriter(BuildParquetSchema(nil))
+	// Create Parquet writer with base schema (streaming converter doesn't support projections)
+	schema := BuildParquetSchema(nil)
+	writer := NewWriter(schema)
 	recordBatch := make([]Record, 0, cfg.BatchSize)
 	currentOffset := entries[0].StartOffset
 
@@ -739,7 +851,8 @@ func (c *StreamingConverter) StreamingConvertWAL(ctx context.Context, walPath st
 		return nil, errors.New("streaming converter: WAL has no chunks")
 	}
 
-	writer := NewWriter(BuildParquetSchema(nil))
+	schema := BuildParquetSchema(nil)
+	writer := NewWriter(schema)
 	recordBatch := make([]Record, 0, cfg.BatchSize)
 	currentOffset := startOffset
 
@@ -843,7 +956,8 @@ func StreamingConvertWALFromBytes(walData []byte, partition int32, startOffset i
 		return nil, errors.New("streaming converter: WAL has no chunks")
 	}
 
-	writer := NewWriter(BuildParquetSchema(nil))
+	schema := BuildParquetSchema(nil)
+	writer := NewWriter(schema)
 	recordBatch := make([]Record, 0, cfg.BatchSize)
 	currentOffset := startOffset
 

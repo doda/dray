@@ -295,6 +295,7 @@ func (s *IndexSwapper) Swap(ctx context.Context, req SwapRequest) (*SwapResult, 
 		for _, entry := range parquetEntries {
 			result.ParquetGCCandidates = append(result.ParquetGCCandidates, ParquetGCCandidate{
 				Path:           entry.ParquetPath,
+				Paths:          entry.ParquetPaths,
 				CreatedAtMs:    entry.CreatedAtMs,
 				SizeBytes:      int64(entry.ParquetSizeBytes),
 				IcebergEnabled: req.IcebergEnabled,
@@ -432,11 +433,11 @@ func (s *IndexSwapper) decrementWALRefCountInTxn(txn metadata.Txn, metaDomain in
 // Uses targeted range queries based on job offset bounds to avoid O(N) full index scans.
 // If the job has an IcebergDataFileID set (from MarkIcebergCommitted), it will be
 // included in the index entry per SPEC 6.3.3.
-func (s *IndexSwapper) SwapFromJob(ctx context.Context, job *Job, parquetPath string, parquetSizeBytes int64, parquetRecordCount int64, metaDomain int) (*SwapResult, error) {
+func (s *IndexSwapper) SwapFromJob(ctx context.Context, job *Job, metaDomain int) (*SwapResult, error) {
 	if job.StreamID == "" {
 		return nil, ErrInvalidStreamID
 	}
-	if parquetRecordCount <= 0 {
+	if job.ParquetRecordCount <= 0 {
 		return nil, fmt.Errorf("compaction: parquet record count must be positive")
 	}
 
@@ -496,13 +497,14 @@ func (s *IndexSwapper) SwapFromJob(ctx context.Context, job *Job, parquetPath st
 		StartOffset:      job.SourceStartOffset,
 		EndOffset:        job.SourceEndOffset,
 		FileType:         index.FileTypeParquet,
-		RecordCount:      uint32(parquetRecordCount),
-		MessageCount:     uint32(parquetRecordCount),
+		RecordCount:      uint32(job.ParquetRecordCount),
+		MessageCount:     uint32(job.ParquetRecordCount),
 		MinTimestampMs:   minTimestamp,
 		MaxTimestampMs:   maxTimestamp,
 		CreatedAtMs:      time.Now().UnixMilli(),
-		ParquetPath:      parquetPath,
-		ParquetSizeBytes: uint64(parquetSizeBytes),
+		ParquetPath:      job.ParquetPath,
+		ParquetPaths:     job.ParquetPaths,
+		ParquetSizeBytes: uint64(job.ParquetSizeBytes),
 	}
 
 	return s.Swap(ctx, SwapRequest{
