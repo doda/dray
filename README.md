@@ -115,10 +115,14 @@ Initialize and run the full local checks (downloads deps, vet, build, tests):
 ./init.sh
 ```
 
-Quick sanity check:
+Or use the Makefile for more control:
 
 ```bash
-./init.sh --quick
+make deps      # Download dependencies
+make build     # Build binary only
+make test      # Run tests
+make lint      # Run linter (requires golangci-lint)
+make           # Run all: deps, lint, test, build
 ```
 
 ## Documentation
