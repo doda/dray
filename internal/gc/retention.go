@@ -396,7 +396,7 @@ func (w *RetentionWorker) deleteWALIndexEntryAtomically(
 	return nil
 }
 
-// deleteParquetIndexEntry deletes a Parquet index entry and schedules GC if needed.
+// deleteParquetIndexEntry deletes a Parquet index entry and schedules GC for all its files.
 func (w *RetentionWorker) deleteParquetIndexEntry(
 	ctx context.Context,
 	key string,
@@ -408,22 +408,30 @@ func (w *RetentionWorker) deleteParquetIndexEntry(
 		return fmt.Errorf("delete index entry %s: %w", key, err)
 	}
 
-	// Schedule GC for the Parquet file when Iceberg is not enabled
+	// Schedule GC for the Parquet file(s) when Iceberg is not enabled
 	if w.config.IcebergEnabled {
 		return nil
 	}
 
-	gcRecord := ParquetGCRecord{
-		Path:                    entry.ParquetPath,
-		DeleteAfterMs:           deleteAfterMs,
-		CreatedAt:               entry.CreatedAtMs,
-		SizeBytes:               int64(entry.ParquetSizeBytes),
-		StreamID:                entry.StreamID,
-		IcebergEnabled:          false,
-		IcebergRemovalConfirmed: true,
+	paths := entry.ParquetPaths
+	if len(paths) == 0 && entry.ParquetPath != "" {
+		paths = []string{entry.ParquetPath}
 	}
-	if err := ScheduleParquetGC(ctx, w.meta, gcRecord); err != nil {
-		return fmt.Errorf("schedule Parquet GC: %w", err)
+
+	for _, path := range paths {
+		gcRecord := ParquetGCRecord{
+			Path:                    path,
+			DeleteAfterMs:           deleteAfterMs,
+			CreatedAt:               entry.CreatedAtMs,
+			SizeBytes:               int64(entry.ParquetSizeBytes), // Note: size is total, but we don't have per-file size here
+			StreamID:                entry.StreamID,
+			IcebergEnabled:          false,
+			IcebergRemovalConfirmed: true,
+		}
+		if err := ScheduleParquetGC(ctx, w.meta, gcRecord); err != nil {
+			// Continue with other paths even if one fails
+			continue
+		}
 	}
 
 	return nil

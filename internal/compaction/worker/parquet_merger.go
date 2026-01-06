@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/parquet-go/parquet-go"
 
@@ -66,8 +67,13 @@ func (m *ParquetMerger) Merge(ctx context.Context, entries []*index.IndexEntry) 
 		return nil, fmt.Errorf("merger: no records extracted from Parquet files")
 	}
 
+	sort.Slice(allRecords, func(i, j int) bool {
+		return allRecords[i].Offset < allRecords[j].Offset
+	})
+
 	// Write merged records to new Parquet file
-	parquetData, stats, err := WriteToBuffer(BuildParquetSchema(nil), allRecords)
+	schema := BuildParquetSchema(nil)
+	parquetData, stats, err := WriteToBuffer(schema, allRecords)
 	if err != nil {
 		return nil, fmt.Errorf("merger: writing merged parquet: %w", err)
 	}
@@ -81,44 +87,64 @@ func (m *ParquetMerger) Merge(ctx context.Context, entries []*index.IndexEntry) 
 
 // readRecordsFromParquet reads all records from a single Parquet file.
 func (m *ParquetMerger) readRecordsFromParquet(ctx context.Context, entry *index.IndexEntry) ([]Record, error) {
-	// Get file metadata for size
-	meta, err := m.store.Head(ctx, entry.ParquetPath)
-	if err != nil {
-		return nil, fmt.Errorf("getting file metadata: %w", err)
+	paths := entry.ParquetPaths
+	if len(paths) == 0 {
+		if entry.ParquetPath == "" {
+			return nil, fmt.Errorf("merger: parquet entry missing path for stream %s", entry.StreamID)
+		}
+		paths = []string{entry.ParquetPath}
 	}
 
-	// Create a reader at for range reads
-	readerAt := newObjectStoreReaderAt(ctx, m.store, entry.ParquetPath, meta.Size)
+	var all []Record
+	for _, path := range paths {
+		key := objectstore.NormalizeKey(path)
+		// Get file metadata for size
+		meta, err := m.store.Head(ctx, key)
+		if err != nil {
+			return nil, fmt.Errorf("getting file metadata: %w", err)
+		}
 
-	// Open Parquet file
-	parquetFile, err := parquet.OpenFile(readerAt, meta.Size,
-		parquet.SkipPageIndex(true),
-		parquet.SkipBloomFilters(true))
-	if err != nil {
-		return nil, fmt.Errorf("opening parquet file: %w", err)
+		// Create a reader at for range reads
+		readerAt := newObjectStoreReaderAt(ctx, m.store, key, meta.Size)
+
+		// Open Parquet file
+		parquetFile, err := parquet.OpenFile(readerAt, meta.Size,
+			parquet.SkipPageIndex(true),
+			parquet.SkipBloomFilters(true))
+		if err != nil {
+			return nil, fmt.Errorf("opening parquet file: %w", err)
+		}
+
+		// Read all records using generic reader
+		reader := parquet.NewGenericReader[Record](parquetFile)
+
+		numRows := reader.NumRows()
+		if numRows == 0 {
+			continue
+		}
+
+		records := make([]Record, numRows)
+		n, err := reader.Read(records)
+		if err != nil && err != io.EOF {
+			reader.Close()
+			return nil, fmt.Errorf("reading records: %w", err)
+		}
+		if err := reader.Close(); err != nil {
+			return nil, fmt.Errorf("closing parquet reader: %w", err)
+		}
+		for i := 0; i < n; i++ {
+			records[i].Timestamp = normalizeParquetTimestamp(records[i].Timestamp)
+		}
+		all = append(all, records[:n]...)
 	}
 
-	// Read all records using generic reader
-	reader := parquet.NewGenericReader[Record](parquetFile)
-	defer reader.Close()
-
-	numRows := reader.NumRows()
-	if numRows == 0 {
-		return nil, nil
-	}
-
-	records := make([]Record, numRows)
-	n, err := reader.Read(records)
-	if err != nil && err != io.EOF {
-		return nil, fmt.Errorf("reading records: %w", err)
-	}
-
-	return records[:n], nil
+	return all, nil
 }
 
 // WriteParquetToStorage writes Parquet data to object storage.
 func (m *ParquetMerger) WriteParquetToStorage(ctx context.Context, path string, data []byte) error {
-	return m.store.Put(ctx, path, newBytesReader(data), int64(len(data)), "application/x-parquet")
+	key := objectstore.NormalizeKey(path)
+	return m.store.Put(ctx, key, newBytesReader(data), int64(len(data)), "application/x-parquet")
 }
 
 // objectStoreReaderAt implements parquet.File for reading from object storage via range requests.

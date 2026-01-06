@@ -84,75 +84,106 @@ func (r *ParquetReader) FindOffsetByTimestamp(ctx context.Context, entry *index.
 		return -1, -1, false, fmt.Errorf("fetch: expected Parquet entry, got %s", entry.FileType)
 	}
 
-	meta, err := r.store.Head(ctx, entry.ParquetPath)
-	if err != nil {
-		if errors.Is(err, objectstore.ErrNotFound) {
-			return -1, -1, false, fmt.Errorf("%w: %s", ErrParquetNotFound, entry.ParquetPath)
+	paths := entry.ParquetPaths
+	if len(paths) == 0 {
+		if entry.ParquetPath == "" {
+			return -1, -1, false, fmt.Errorf("%w: no path in entry", ErrParquetNotFound)
 		}
-		return -1, -1, false, fmt.Errorf("fetch: reading parquet metadata: %w", err)
-	}
-
-	if meta.Size == 0 {
-		return -1, -1, false, ErrInvalidParquet
-	}
-
-	readerAt := newObjectStoreReaderAt(ctx, r.store, entry.ParquetPath, meta.Size)
-	parquetFile, err := parquet.OpenFile(readerAt, meta.Size, parquet.SkipPageIndex(true), parquet.SkipBloomFilters(true))
-	if err != nil {
-		return -1, -1, false, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
-	}
-
-	rowGroups := selectRowGroupsByTimestamp(parquetFile, timestamp)
-	if len(rowGroups) == 0 {
-		return -1, -1, false, nil
+		paths = []string{entry.ParquetPath}
 	}
 
 	var (
-		found     bool
-		bestOff   int64
-		bestTs    int64
-		readBatch = make([]ParquetRecordWithHeaders, 128)
+		found    bool
+		bestOff  int64
+		bestTs   int64
+		seenFile bool
 	)
 
-	for _, rowGroup := range rowGroups {
-		groupReader := parquet.NewGenericRowGroupReader[ParquetRecordWithHeaders](rowGroup)
+	for _, path := range paths {
+		key := objectstore.NormalizeKey(path)
+		meta, err := r.store.Head(ctx, key)
+		if err != nil {
+			if errors.Is(err, objectstore.ErrNotFound) {
+				continue
+			}
+			return -1, -1, false, fmt.Errorf("fetch: reading parquet metadata for %s: %w", path, err)
+		}
+		if meta.Size == 0 {
+			seenFile = true
+			continue
+		}
 
-		for {
-			n, err := groupReader.Read(readBatch)
-			if n > 0 {
-				for _, rec := range readBatch[:n] {
-					if rec.Offset < entry.StartOffset || rec.Offset >= entry.EndOffset {
-						continue
-					}
-					if rec.Timestamp >= timestamp {
-						if !found || rec.Offset < bestOff {
-							bestOff = rec.Offset
-							bestTs = rec.Timestamp
-							found = true
+		seenFile = true
+
+		readerAt := newObjectStoreReaderAt(ctx, r.store, key, meta.Size)
+		parquetFile, err := parquet.OpenFile(readerAt, meta.Size, parquet.SkipPageIndex(true), parquet.SkipBloomFilters(true))
+		if err != nil {
+			return -1, -1, false, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
+		}
+
+		rowGroups := selectRowGroupsByTimestamp(parquetFile, timestamp)
+		if len(rowGroups) == 0 {
+			continue
+		}
+
+		readBatch := make([]ParquetRecordWithHeaders, 128)
+		var fileFound bool
+		var fileBestOff int64
+		var fileBestTs int64
+
+		for _, rowGroup := range rowGroups {
+			groupReader := parquet.NewGenericRowGroupReader[ParquetRecordWithHeaders](rowGroup)
+
+			for {
+				n, err := groupReader.Read(readBatch)
+				if n > 0 {
+					for _, rec := range readBatch[:n] {
+						if rec.Offset < entry.StartOffset || rec.Offset >= entry.EndOffset {
+							continue
+						}
+						recTimestamp := normalizeParquetTimestamp(rec.Timestamp)
+						if recTimestamp >= timestamp {
+							if !fileFound || rec.Offset < fileBestOff {
+								fileBestOff = rec.Offset
+								fileBestTs = recTimestamp
+								fileFound = true
+							}
 						}
 					}
 				}
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					groupReader.Close()
+					return -1, -1, false, fmt.Errorf("fetch: parsing parquet records: %w", err)
+				}
 			}
-			if err == io.EOF {
+
+			if err := groupReader.Close(); err != nil {
+				return -1, -1, false, fmt.Errorf("fetch: closing row group reader: %w", err)
+			}
+
+			// If we found a match in this row group, we can stop.
+			// Row groups are assumed to be in timestamp order, so once we find the first
+			// offset >= timestamp, any subsequent matches in other row groups would have
+			// higher offsets (which we don't want - we want the minimum offset).
+			if fileFound {
 				break
 			}
-			if err != nil {
-				groupReader.Close()
-				return -1, -1, false, fmt.Errorf("fetch: parsing parquet records: %w", err)
+		}
+
+		if fileFound {
+			if !found || fileBestOff < bestOff {
+				bestOff = fileBestOff
+				bestTs = fileBestTs
+				found = true
 			}
 		}
+	}
 
-		if err := groupReader.Close(); err != nil {
-			return -1, -1, false, fmt.Errorf("fetch: closing row group reader: %w", err)
-		}
-
-		// If we found a match in this row group, we can stop.
-		// Row groups are assumed to be in timestamp order, so once we find the first
-		// offset >= timestamp, any subsequent matches in other row groups would have
-		// higher offsets (which we don't want - we want the minimum offset).
-		if found {
-			break
-		}
+	if !seenFile {
+		return -1, -1, false, ErrParquetNotFound
 	}
 
 	if !found {
@@ -171,6 +202,7 @@ func selectRowGroupsByTimestamp(file *parquet.File, timestamp int64) []parquet.R
 		return rowGroups
 	}
 
+	targetTimestamp := encodeParquetTimestamp(timestamp)
 	columnIndex := timestampColumn.ColumnIndex
 	selected := make([]parquet.RowGroup, 0, len(rowGroups))
 	for _, rowGroup := range rowGroups {
@@ -193,7 +225,7 @@ func selectRowGroupsByTimestamp(file *parquet.File, timestamp int64) []parquet.R
 		}
 		maxTs := maxValue.Int64()
 		// Skip row groups where max timestamp < target (no records can match)
-		if maxTs < timestamp {
+		if maxTs < targetTimestamp {
 			continue
 		}
 		selected = append(selected, rowGroup)

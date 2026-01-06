@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"sort"
 
 	"github.com/parquet-go/parquet-go"
 
@@ -22,6 +23,8 @@ const DefaultBatchTargetSize = 64 * 1024
 
 // DefaultBatchMaxRecords is the maximum records per aggregated batch.
 const DefaultBatchMaxRecords = 1000
+
+const parquetTimestampScale = int64(1000)
 
 // Common errors for Parquet reading.
 var (
@@ -50,7 +53,7 @@ func NewParquetReader(store objectstore.Store) *ParquetReader {
 type ParquetRecord struct {
 	Partition int32  `parquet:"partition"`
 	Offset    int64  `parquet:"offset"`
-	Timestamp int64  `parquet:"timestamp,timestamp(millisecond)"`
+	Timestamp int64  `parquet:"timestamp,timestamp(microsecond)"`
 	Key       []byte `parquet:"key,optional"`
 	Value     []byte `parquet:"value,optional"`
 	// Headers is a list of key-value pairs - handled separately
@@ -67,7 +70,7 @@ type ParquetHeader struct {
 type ParquetRecordWithHeaders struct {
 	Partition     int32           `parquet:"partition"`
 	Offset        int64           `parquet:"offset"`
-	Timestamp     int64           `parquet:"timestamp,timestamp(millisecond)"`
+	Timestamp     int64           `parquet:"timestamp,timestamp(microsecond)"`
 	Key           []byte          `parquet:"key,optional"`
 	Value         []byte          `parquet:"value,optional"`
 	Headers       []ParquetHeader `parquet:"headers,list"`
@@ -85,22 +88,12 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 		return nil, fmt.Errorf("fetch: expected Parquet entry, got %s", entry.FileType)
 	}
 
-	meta, err := r.store.Head(ctx, entry.ParquetPath)
-	if err != nil {
-		if errors.Is(err, objectstore.ErrNotFound) {
-			return nil, fmt.Errorf("%w: %s", ErrParquetNotFound, entry.ParquetPath)
+	paths := entry.ParquetPaths
+	if len(paths) == 0 {
+		if entry.ParquetPath == "" {
+			return nil, fmt.Errorf("%w: no path in entry", ErrParquetNotFound)
 		}
-		return nil, fmt.Errorf("fetch: reading parquet metadata: %w", err)
-	}
-
-	if meta.Size == 0 {
-		return nil, ErrInvalidParquet
-	}
-
-	readerAt := newObjectStoreReaderAt(ctx, r.store, entry.ParquetPath, meta.Size)
-	parquetFile, err := parquet.OpenFile(readerAt, meta.Size, parquet.SkipPageIndex(true), parquet.SkipBloomFilters(true))
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
+		paths = []string{entry.ParquetPath}
 	}
 
 	rangeStart := fetchOffset
@@ -109,14 +102,6 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 	}
 	rangeEnd := entry.EndOffset
 	if rangeEnd <= rangeStart {
-		return nil, ErrOffsetNotInParquet
-	}
-
-	rowGroups, err := selectRowGroupsByOffset(parquetFile, rangeStart, rangeEnd)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
-	}
-	if len(rowGroups) == 0 {
 		return nil, ErrOffsetNotInParquet
 	}
 
@@ -131,66 +116,112 @@ func (r *ParquetReader) ReadBatches(ctx context.Context, entry *index.IndexEntry
 	var batchBaseOffset int64 = -1
 	var batchBaseTimestamp int64
 
-	for _, rowGroup := range rowGroups {
-		groupReader := parquet.NewGenericRowGroupReader[ParquetRecordWithHeaders](rowGroup)
-		rows := make([]ParquetRecordWithHeaders, 256)
+	// Collect all matching records from all files
+	var allRows []ParquetRecordWithHeaders
+	var seenFile bool
 
-		for {
-			n, err := groupReader.Read(rows)
-			if n > 0 {
-				for _, rec := range rows[:n] {
-					if rec.Offset < rangeStart || rec.Offset >= rangeEnd {
-						continue
-					}
-
-					// Track first record's offset for the result
-					if result.StartOffset < 0 {
-						result.StartOffset = rec.Offset
-					}
-					result.EndOffset = rec.Offset + 1
-
-					// Track batch base values for delta calculation
-					if batchBaseOffset < 0 {
-						batchBaseOffset = rec.Offset
-						batchBaseTimestamp = rec.Timestamp
-					}
-
-					offsetDelta := int32(rec.Offset - batchBaseOffset)
-					timestampDelta := rec.Timestamp - batchBaseTimestamp
-
-					shouldFlush := agg.add(rec, offsetDelta, timestampDelta)
-					found = true
-
-					if shouldFlush {
-						batch := agg.flush()
-						batchSize := int64(len(batch))
-
-						// Check maxBytes limit before adding batch
-						if maxBytes > 0 && totalBytes+batchSize > maxBytes && len(result.Batches) > 0 {
-							groupReader.Close()
-							result.TotalBytes = totalBytes
-							return result, nil
-						}
-
-						result.Batches = append(result.Batches, batch)
-						totalBytes += batchSize
-
-						// Reset base values for next batch
-						batchBaseOffset = -1
-					}
-				}
+	for _, path := range paths {
+		key := objectstore.NormalizeKey(path)
+		meta, err := r.store.Head(ctx, key)
+		if err != nil {
+			if errors.Is(err, objectstore.ErrNotFound) {
+				continue // Skip missing files if there are others
 			}
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				groupReader.Close()
-				return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
-			}
+			return nil, fmt.Errorf("fetch: reading parquet metadata for %s: %w", path, err)
+		}
+		seenFile = true
+
+		if meta.Size == 0 {
+			continue
 		}
 
-		if err := groupReader.Close(); err != nil {
+		readerAt := newObjectStoreReaderAt(ctx, r.store, key, meta.Size)
+		parquetFile, err := parquet.OpenFile(readerAt, meta.Size, parquet.SkipPageIndex(true), parquet.SkipBloomFilters(true))
+		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
+		}
+
+		rowGroups, err := selectRowGroupsByOffset(parquetFile, rangeStart, rangeEnd)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
+		}
+
+		for _, rowGroup := range rowGroups {
+			groupReader := parquet.NewGenericRowGroupReader[ParquetRecordWithHeaders](rowGroup)
+			rows := make([]ParquetRecordWithHeaders, 256)
+
+			for {
+				n, err := groupReader.Read(rows)
+				if n > 0 {
+					for _, rec := range rows[:n] {
+						if rec.Offset < rangeStart || rec.Offset >= rangeEnd {
+							continue
+						}
+						allRows = append(allRows, rec)
+					}
+				}
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					groupReader.Close()
+					return nil, fmt.Errorf("%w: %v", ErrInvalidParquet, err)
+				}
+			}
+			groupReader.Close()
+		}
+	}
+
+	if len(allRows) == 0 {
+		if !seenFile {
+			return nil, ErrParquetNotFound
+		}
+		return nil, ErrOffsetNotInParquet
+	}
+
+	for i := range allRows {
+		allRows[i].Timestamp = normalizeParquetTimestamp(allRows[i].Timestamp)
+	}
+
+	// Sort all rows by offset as they might be out of order across files
+	sort.Slice(allRows, func(i, j int) bool {
+		return allRows[i].Offset < allRows[j].Offset
+	})
+
+	for _, rec := range allRows {
+		// Track first record's offset for the result
+		if result.StartOffset < 0 {
+			result.StartOffset = rec.Offset
+		}
+		result.EndOffset = rec.Offset + 1
+
+		// Track batch base values for delta calculation
+		if batchBaseOffset < 0 {
+			batchBaseOffset = rec.Offset
+			batchBaseTimestamp = rec.Timestamp
+		}
+
+		offsetDelta := int32(rec.Offset - batchBaseOffset)
+		timestampDelta := rec.Timestamp - batchBaseTimestamp
+
+		shouldFlush := agg.add(rec, offsetDelta, timestampDelta)
+		found = true
+
+		if shouldFlush {
+			batch := agg.flush()
+			batchSize := int64(len(batch))
+
+			// Check maxBytes limit before adding batch
+			if maxBytes > 0 && totalBytes+batchSize > maxBytes && len(result.Batches) > 0 {
+				result.TotalBytes = totalBytes
+				return result, nil
+			}
+
+			result.Batches = append(result.Batches, batch)
+			totalBytes += batchSize
+
+			// Reset base values for next batch
+			batchBaseOffset = -1
 		}
 	}
 
@@ -506,6 +537,14 @@ func buildKafkaRecordBatch(rec ParquetRecordWithHeaders) []byte {
 	binary.BigEndian.PutUint32(batch[crcOffset:], crc)
 
 	return batch
+}
+
+func normalizeParquetTimestamp(value int64) int64 {
+	return value / parquetTimestampScale
+}
+
+func encodeParquetTimestamp(value int64) int64 {
+	return value * parquetTimestampScale
 }
 
 // buildKafkaRecord builds a single Kafka record in the v2 format.
