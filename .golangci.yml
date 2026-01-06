@@ -6,12 +6,13 @@ run:
 
 linters:
   enable:
-    # - errcheck  # TODO: Fix unchecked errors in a separate PR
     - govet
     - ineffassign
     - staticcheck
     - unused
     - misspell
+  disable:
+    - errcheck  # TODO: Fix unchecked errors in a separate PR
   settings:
     misspell:
       locale: US
