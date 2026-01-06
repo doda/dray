@@ -2,6 +2,9 @@ package catalog
 
 import (
 	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/apache/iceberg-go"
 	"github.com/dray-io/dray/internal/projection"
@@ -159,6 +162,103 @@ func DefaultPartitionSpec() iceberg.PartitionSpec {
 		Name:      "partition",
 		Transform: iceberg.IdentityTransform{},
 	})
+}
+
+// partitionExprRegex matches partition expressions like "day(created_at)" or just "partition"
+var partitionExprRegex = regexp.MustCompile(`^(\w+)(?:\((\w+)\))?$`)
+
+// PartitionSpecFromConfig builds a partition spec from config expressions.
+// Supported expressions:
+//   - "fieldname" or "identity(fieldname)" - identity transform
+//   - "day(fieldname)" - day transform on timestamp field
+//   - "hour(fieldname)" - hour transform on timestamp field
+//   - "month(fieldname)" - month transform on timestamp field
+//   - "year(fieldname)" - year transform on timestamp field
+//   - "bucket(fieldname, N)" - bucket transform (not yet supported)
+//   - "truncate(fieldname, N)" - truncate transform (not yet supported)
+//
+// If expressions is empty or nil, returns the default partition spec.
+func PartitionSpecFromConfig(expressions []string, schema *iceberg.Schema) (iceberg.PartitionSpec, error) {
+	if len(expressions) == 0 {
+		return DefaultPartitionSpec(), nil
+	}
+
+	fields := make([]iceberg.PartitionField, 0, len(expressions))
+	fieldID := 1000 // Partition field IDs start at 1000 per Iceberg spec
+
+	for _, expr := range expressions {
+		expr = strings.TrimSpace(expr)
+		if expr == "" {
+			continue
+		}
+
+		pf, err := parsePartitionExpression(expr, schema, fieldID)
+		if err != nil {
+			return iceberg.PartitionSpec{}, fmt.Errorf("invalid partition expression %q: %w", expr, err)
+		}
+
+		fields = append(fields, pf)
+		fieldID++
+	}
+
+	if len(fields) == 0 {
+		return DefaultPartitionSpec(), nil
+	}
+
+	return iceberg.NewPartitionSpecID(0, fields...), nil
+}
+
+// parsePartitionExpression parses a single partition expression.
+func parsePartitionExpression(expr string, schema *iceberg.Schema, fieldID int) (iceberg.PartitionField, error) {
+	matches := partitionExprRegex.FindStringSubmatch(expr)
+	if matches == nil {
+		return iceberg.PartitionField{}, fmt.Errorf("invalid syntax")
+	}
+
+	transformName := strings.ToLower(matches[1])
+	columnName := matches[2]
+
+	// Handle bare column name (e.g., "partition") as identity transform
+	if columnName == "" {
+		columnName = transformName
+		transformName = "identity"
+	}
+
+	// Look up column in schema
+	sourceField, ok := schema.FindFieldByName(columnName)
+	if !ok {
+		return iceberg.PartitionField{}, fmt.Errorf("column %q not found in schema", columnName)
+	}
+
+	var transform iceberg.Transform
+	var partitionName string
+
+	switch transformName {
+	case "identity":
+		transform = iceberg.IdentityTransform{}
+		partitionName = columnName
+	case "day":
+		transform = iceberg.DayTransform{}
+		partitionName = columnName + "_day"
+	case "hour":
+		transform = iceberg.HourTransform{}
+		partitionName = columnName + "_hour"
+	case "month":
+		transform = iceberg.MonthTransform{}
+		partitionName = columnName + "_month"
+	case "year":
+		transform = iceberg.YearTransform{}
+		partitionName = columnName + "_year"
+	default:
+		return iceberg.PartitionField{}, fmt.Errorf("unsupported transform %q", transformName)
+	}
+
+	return iceberg.PartitionField{
+		SourceID:  sourceField.ID,
+		FieldID:   fieldID,
+		Name:      partitionName,
+		Transform: transform,
+	}, nil
 }
 
 // NameMappingForSchema returns the JSON name mapping for the provided schema.

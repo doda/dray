@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/table"
@@ -102,6 +103,9 @@ func (m *mockTable) ReplaceFiles(ctx context.Context, added []catalog.DataFile, 
 func (m *mockTable) Properties() catalog.TableProperties { return m.props }
 func (m *mockTable) Location() string                    { return m.location }
 func (m *mockTable) Refresh(ctx context.Context) error   { return nil }
+func (m *mockTable) ExpireSnapshots(ctx context.Context, olderThan time.Duration, retainLast int) error {
+	return nil
+}
 
 func TestCreateTopicsHandler_BasicCreation(t *testing.T) {
 	ctx := context.Background()

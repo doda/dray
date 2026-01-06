@@ -95,10 +95,17 @@ type CompactionConfig struct {
 }
 
 type IcebergConfig struct {
-	Enabled     bool   `yaml:"enabled" env:"DRAY_ICEBERG_ENABLED"`
-	CatalogType string `yaml:"catalogType" env:"DRAY_ICEBERG_CATALOG_TYPE"`
-	CatalogURI  string `yaml:"catalogUri" env:"DRAY_ICEBERG_CATALOG_URI"`
-	Warehouse   string `yaml:"warehouse" env:"DRAY_ICEBERG_WAREHOUSE"`
+	Enabled      bool     `yaml:"enabled" env:"DRAY_ICEBERG_ENABLED"`
+	CatalogType  string   `yaml:"catalogType" env:"DRAY_ICEBERG_CATALOG_TYPE"`
+	CatalogURI   string   `yaml:"catalogUri" env:"DRAY_ICEBERG_CATALOG_URI"`
+	Warehouse    string   `yaml:"warehouse" env:"DRAY_ICEBERG_WAREHOUSE"`
+	Partitioning []string `yaml:"partitioning"` // e.g., ["partition", "day(created_at)"]
+
+	// Maintenance settings
+	SnapshotRetentionAgeMs    int64 `yaml:"snapshotRetentionAgeMs" env:"DRAY_ICEBERG_SNAPSHOT_RETENTION_AGE_MS"`
+	SnapshotRetentionMinCount int   `yaml:"snapshotRetentionMinCount" env:"DRAY_ICEBERG_SNAPSHOT_RETENTION_MIN_COUNT"`
+	ManifestRewriteEnabled    bool  `yaml:"manifestRewriteEnabled" env:"DRAY_ICEBERG_MANIFEST_REWRITE_ENABLED"`
+	ManifestRewriteTargetSize int64 `yaml:"manifestRewriteTargetSize" env:"DRAY_ICEBERG_MANIFEST_REWRITE_TARGET_SIZE"`
 }
 
 type RoutingConfig struct {
@@ -147,8 +154,13 @@ func Default() *Config {
 			ParquetMinAgeMs:                10 * 60 * 1000,
 		},
 		Iceberg: IcebergConfig{
-			Enabled:     true,
-			CatalogType: "rest",
+			Enabled:                   true,
+			CatalogType:               "rest",
+			Partitioning:              []string{"partition"},   // default: partition by Kafka partition only
+			SnapshotRetentionAgeMs:    7 * 24 * 60 * 60 * 1000, // 7 days
+			SnapshotRetentionMinCount: 1,
+			ManifestRewriteEnabled:    true,
+			ManifestRewriteTargetSize: 10 * 1024 * 1024, // 10MB
 		},
 		Routing: RoutingConfig{
 			EnforceOwner: false,
@@ -334,7 +346,7 @@ func (c *Config) Validate() error {
 			reserved := map[string]struct{}{
 				"partition":      {},
 				"offset":         {},
-				"timestamp_ms":   {},
+				"timestamp":      {},
 				"key":            {},
 				"value":          {},
 				"headers":        {},

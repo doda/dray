@@ -37,6 +37,9 @@ type CreateTopicsHandlerConfig struct {
 	IcebergNamespace []string
 	// ValueProjections defines optional projected columns per topic.
 	ValueProjections []projection.TopicProjection
+	// IcebergPartitioning defines partition expressions for Iceberg tables.
+	// Examples: ["partition", "day(created_at)"]
+	IcebergPartitioning []string
 }
 
 // CreateTopicsHandler handles CreateTopics (key 19) requests.
@@ -68,6 +71,7 @@ func NewCreateTopicsHandler(
 			Namespace:        cfg.IcebergNamespace,
 			ClusterID:        cfg.ClusterID,
 			ValueProjections: cfg.ValueProjections,
+			Partitioning:     cfg.IcebergPartitioning,
 		})
 	}
 
