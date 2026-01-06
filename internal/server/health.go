@@ -37,6 +37,7 @@ type HealthServer struct {
 	goroutines       map[string]*goroutineStatus
 	readinessChecks  []ReadinessChecker
 	readinessTimeout time.Duration
+	extraHandlers    map[string]http.Handler
 }
 
 // goroutineStatus tracks whether a critical goroutine is running.
@@ -72,7 +73,19 @@ func NewHealthServer(addr string, logger *logging.Logger) *HealthServer {
 		goroutines:       make(map[string]*goroutineStatus),
 		readinessChecks:  make([]ReadinessChecker, 0),
 		readinessTimeout: DefaultReadinessTimeout,
+		extraHandlers:    make(map[string]http.Handler),
 	}
+}
+
+// RegisterHandler registers an extra HTTP handler to be served alongside health endpoints.
+// Call before Start so the handler is mounted on the server mux.
+func (h *HealthServer) RegisterHandler(pattern string, handler http.Handler) {
+	if pattern == "" || handler == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.extraHandlers[pattern] = handler
 }
 
 // RegisterReadinessCheck registers a component for readiness checking.
@@ -137,6 +150,15 @@ func (h *HealthServer) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.handleHealthz)
 	mux.HandleFunc("/readyz", h.handleReadyz)
+	h.mu.RLock()
+	extraHandlers := make(map[string]http.Handler, len(h.extraHandlers))
+	for pattern, handler := range h.extraHandlers {
+		extraHandlers[pattern] = handler
+	}
+	h.mu.RUnlock()
+	for pattern, handler := range extraHandlers {
+		mux.Handle(pattern, handler)
+	}
 
 	h.server = &http.Server{
 		Addr:         h.addr,
