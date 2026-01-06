@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/table"
@@ -157,6 +158,10 @@ type Table interface {
 
 	// Refresh reloads the table metadata from the catalog.
 	Refresh(ctx context.Context) error
+
+	// ExpireSnapshots expires snapshots older than the given duration,
+	// while retaining at least retainLast snapshots.
+	ExpireSnapshots(ctx context.Context, olderThan time.Duration, retainLast int) error
 }
 
 // TableIdentifier uniquely identifies a table within a catalog.

@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/apache/iceberg-go"
 	icecatalog "github.com/apache/iceberg-go/catalog"
@@ -291,4 +292,17 @@ func (t *icebergTable) Location() string {
 
 func (t *icebergTable) Refresh(ctx context.Context) error {
 	return t.tbl.Refresh(ctx)
+}
+
+func (t *icebergTable) ExpireSnapshots(ctx context.Context, olderThan time.Duration, retainLast int) error {
+	txn := t.tbl.NewTransaction()
+	if err := txn.ExpireSnapshots(table.WithOlderThan(olderThan), table.WithRetainLast(retainLast)); err != nil {
+		return mapCatalogError(err)
+	}
+	updated, err := txn.Commit(ctx)
+	if err != nil {
+		return mapCatalogError(err)
+	}
+	t.tbl = updated
+	return nil
 }
