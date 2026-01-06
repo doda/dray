@@ -197,7 +197,10 @@ func (b *Broker) Start(ctx context.Context) error {
 			KeyFile:  cfg.Broker.TLS.KeyFile,
 		},
 	}
-	b.tcpServer = server.New(serverCfg, handler, b.logger)
+	tcpServer := server.New(serverCfg, handler, b.logger)
+	b.mu.Lock()
+	b.tcpServer = tcpServer
+	b.mu.Unlock()
 
 	// Register health checks
 	b.healthServer.RegisterGoroutine("tcp-server")
@@ -312,6 +315,17 @@ func (b *Broker) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	return drainErr
+}
+
+// Addr returns the address the broker is listening on, or nil if not yet listening.
+// This method is thread-safe.
+func (b *Broker) Addr() net.Addr {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.tcpServer == nil {
+		return nil
+	}
+	return b.tcpServer.Addr()
 }
 
 // createHandler creates the protocol handler that routes requests to handlers.

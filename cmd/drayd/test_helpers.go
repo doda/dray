@@ -38,11 +38,9 @@ func waitForBrokerStart(t *testing.T, b *Broker, errCh <-chan error) string {
 		default:
 		}
 
-		if b.tcpServer != nil {
-			addr := b.tcpServer.Addr()
-			if addr != nil {
-				return addr.String()
-			}
+		// Use thread-safe Addr() method to avoid data race
+		if addr := b.Addr(); addr != nil {
+			return addr.String()
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -62,11 +60,9 @@ func waitForHealthServer(t *testing.T, c *Compactor, errCh <-chan error) string 
 		default:
 		}
 
-		if c.healthServer != nil {
-			addr := c.healthServer.Addr()
-			if addr != "" {
-				return addr
-			}
+		// Use thread-safe HealthServerAddr() method to avoid data race
+		if addr := c.HealthServerAddr(); addr != "" {
+			return addr
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
