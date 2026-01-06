@@ -251,7 +251,9 @@ func (t *Transaction) ExpireSnapshots(opts ...ExpireSnapshotsOpt) error {
 		}
 	}
 
-	updates = append(updates, NewRemoveSnapshotsUpdate(snapsToDelete))
+	for _, snapID := range snapsToDelete {
+		updates = append(updates, NewRemoveSnapshotsUpdate([]int64{snapID}))
+	}
 
 	return t.apply(updates, nil)
 }
