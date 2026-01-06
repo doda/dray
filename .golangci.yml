@@ -15,6 +15,17 @@ linters:
     - gofmt
     - goimports
     - misspell
+  settings:
+    misspell:
+      locale: US
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+      - path: doc\.go
+        linters:
+          - unused
 
 formatters:
   enable:
@@ -24,16 +35,3 @@ formatters:
     goimports:
       local-prefixes:
         - github.com/dray-io/dray
-
-linters-settings:
-  misspell:
-    locale: US
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-    - path: doc\.go
-      linters:
-        - unused
