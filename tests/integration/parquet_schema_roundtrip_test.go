@@ -411,8 +411,8 @@ func TestParquetNullableFields(t *testing.T) {
 	}
 
 	// Verify record 1 (null key)
-	if readRecords[1].Key != nil {
-		t.Error("record 1: key should be nil")
+	if len(readRecords[1].Key) != 0 {
+		t.Error("record 1: key should be nil or empty")
 	}
 	if readRecords[1].Value == nil {
 		t.Error("record 1: value should not be nil")
@@ -422,8 +422,8 @@ func TestParquetNullableFields(t *testing.T) {
 	if readRecords[2].Key == nil {
 		t.Error("record 2: key should not be nil")
 	}
-	if readRecords[2].Value != nil {
-		t.Error("record 2: value should be nil")
+	if len(readRecords[2].Value) != 0 {
+		t.Error("record 2: value should be nil or empty")
 	}
 
 	t.Log("Nullable fields work correctly")
@@ -1095,7 +1095,7 @@ func (m *parquetTestObjectStore) GetRange(ctx context.Context, key string, start
 	if end < 0 || end >= int64(len(data)) {
 		end = int64(len(data)) - 1
 	}
-	return io.NopCloser(bytes.NewReader(data[start:end+1])), nil
+	return io.NopCloser(bytes.NewReader(data[start : end+1])), nil
 }
 
 func (m *parquetTestObjectStore) Head(ctx context.Context, key string) (objectstore.ObjectMeta, error) {

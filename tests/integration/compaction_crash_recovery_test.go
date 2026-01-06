@@ -107,7 +107,7 @@ func TestCrashRecovery_AfterParquetWritten(t *testing.T) {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
+	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, []string{parquetPath}, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestCrashRecovery_AfterParquetWritten(t *testing.T) {
 
 	// Continue: swap index
 	swapper := compaction.NewIndexSwapper(metaStore)
-	swapResult, err := swapper.SwapFromJob(ctx, recoveredJob, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, 0)
+	swapResult, err := swapper.SwapFromJob(ctx, recoveredJob, 0)
 	if err != nil {
 		t.Fatalf("failed to swap index: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestCrashRecovery_AfterIcebergCommitted(t *testing.T) {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
+	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, []string{parquetPath}, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestCrashRecovery_AfterIcebergCommitted(t *testing.T) {
 
 	// Continue from ICEBERG_COMMITTED: swap index
 	swapper := compaction.NewIndexSwapper(metaStore)
-	swapResult, err := swapper.SwapFromJob(ctx, recoveredJob, recoveredJob.ParquetPath, recoveredJob.ParquetSizeBytes, recoveredJob.ParquetRecordCount, 0)
+	swapResult, err := swapper.SwapFromJob(ctx, recoveredJob, 0)
 	if err != nil {
 		t.Fatalf("failed to swap index: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestCrashRecovery_AfterIndexSwapped(t *testing.T) {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
+	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, []string{parquetPath}, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
@@ -476,7 +476,7 @@ func TestCrashRecovery_AfterIndexSwapped(t *testing.T) {
 	}
 
 	swapper := compaction.NewIndexSwapper(metaStore)
-	swapResult, err := swapper.SwapFromJob(ctx, job, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, 0)
+	swapResult, err := swapper.SwapFromJob(ctx, job, 0)
 	if err != nil {
 		t.Fatalf("failed to swap index: %v", err)
 	}
@@ -659,7 +659,7 @@ func TestCrashRecovery_NoDataLossOrDuplication(t *testing.T) {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	job, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
+	job, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, []string{parquetPath}, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
@@ -685,7 +685,7 @@ func TestCrashRecovery_NoDataLossOrDuplication(t *testing.T) {
 
 	// Swap index
 	swapper := compaction.NewIndexSwapper(metaStore)
-	swapResult, err := swapper.SwapFromJob(ctx, job, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, 0)
+	swapResult, err := swapper.SwapFromJob(ctx, job, 0)
 	if err != nil {
 		t.Fatalf("failed to swap index: %v", err)
 	}
@@ -776,13 +776,13 @@ func TestCrashRecovery_IdempotentStateTransitions(t *testing.T) {
 	}
 
 	// Transition to PARQUET_WRITTEN
-	job, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, "/path/to/file.parquet", 5000, 100, 0, 0)
+	job, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, []string{"/path/to/file.parquet"}, 5000, 100, 0, 0)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
 
 	// Try to transition to PARQUET_WRITTEN again (invalid)
-	_, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, "/path/to/file.parquet", 5000, 100, 0, 0)
+	_, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, []string{"/path/to/file.parquet"}, 5000, 100, 0, 0)
 	if err == nil {
 		t.Fatal("expected error on duplicate transition to PARQUET_WRITTEN")
 	}
@@ -795,7 +795,7 @@ func TestCrashRecovery_IdempotentStateTransitions(t *testing.T) {
 	}
 
 	// Try to go back to PARQUET_WRITTEN (invalid)
-	_, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, "/path/to/file.parquet", 5000, 100, 0, 0)
+	_, err = sagaManager.MarkParquetWritten(ctx, streamID, job.JobID, []string{"/path/to/file.parquet"}, 5000, 100, 0, 0)
 	if err == nil {
 		t.Fatal("expected error on backward transition")
 	}
@@ -852,16 +852,16 @@ func TestCrashRecovery_MultipleJobsRecovery(t *testing.T) {
 	// job-created stays in CREATED state
 
 	job2, _ := sagaManager1.CreateJob(ctx, streamID, compaction.WithJobID("job-parquet"))
-	job2, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job2.JobID, "/p", 1000, 50, 0, 0)
+	job2, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job2.JobID, []string{"/p"}, 1000, 50, 0, 0)
 	// job2 is in PARQUET_WRITTEN
 
 	job3, _ := sagaManager1.CreateJob(ctx, streamID, compaction.WithJobID("job-iceberg"))
-	job3, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job3.JobID, "/p", 1000, 50, 0, 0)
+	job3, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job3.JobID, []string{"/p"}, 1000, 50, 0, 0)
 	job3, _ = sagaManager1.MarkIcebergCommitted(ctx, streamID, job3.JobID, 111)
 	// job3 is in ICEBERG_COMMITTED
 
 	job4, _ := sagaManager1.CreateJob(ctx, streamID, compaction.WithJobID("job-done"))
-	job4, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job4.JobID, "/p", 1000, 50, 0, 0)
+	job4, _ = sagaManager1.MarkParquetWritten(ctx, streamID, job4.JobID, []string{"/p"}, 1000, 50, 0, 0)
 	job4, _ = sagaManager1.MarkIcebergCommitted(ctx, streamID, job4.JobID, 222)
 	job4, _ = sagaManager1.MarkIndexSwapped(ctx, streamID, job4.JobID, nil)
 	job4, _ = sagaManager1.MarkWALGCReady(ctx, streamID, job4.JobID)
@@ -1068,7 +1068,7 @@ func TestCrashRecovery_AfterCreated(t *testing.T) {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	recoveredJob, err = sagaManager2.MarkParquetWritten(ctx, streamID, recoveredJob.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
+	recoveredJob, err = sagaManager2.MarkParquetWritten(ctx, streamID, recoveredJob.JobID, []string{parquetPath}, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
@@ -1080,7 +1080,7 @@ func TestCrashRecovery_AfterCreated(t *testing.T) {
 	}
 
 	swapper := compaction.NewIndexSwapper(metaStore)
-	swapResult, err := swapper.SwapFromJob(ctx, recoveredJob, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, 0)
+	swapResult, err := swapper.SwapFromJob(ctx, recoveredJob, 0)
 	if err != nil {
 		t.Fatalf("failed to swap index: %v", err)
 	}
@@ -1213,7 +1213,7 @@ func TestCrashRecovery_AfterWALGCReady(t *testing.T) {
 		t.Fatalf("failed to write Parquet: %v", err)
 	}
 
-	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
+	job, err = sagaManager1.MarkParquetWritten(ctx, streamID, job.JobID, []string{parquetPath}, int64(len(convertResult.ParquetData)), convertResult.RecordCount, convertResult.Stats.MinTimestamp, convertResult.Stats.MaxTimestamp)
 	if err != nil {
 		t.Fatalf("failed to mark parquet written: %v", err)
 	}
@@ -1224,7 +1224,7 @@ func TestCrashRecovery_AfterWALGCReady(t *testing.T) {
 	}
 
 	swapper := compaction.NewIndexSwapper(metaStore)
-	swapResult, err := swapper.SwapFromJob(ctx, job, parquetPath, int64(len(convertResult.ParquetData)), convertResult.RecordCount, 0)
+	swapResult, err := swapper.SwapFromJob(ctx, job, 0)
 	if err != nil {
 		t.Fatalf("failed to swap index: %v", err)
 	}
