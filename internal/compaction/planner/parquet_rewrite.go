@@ -88,77 +88,112 @@ func (p *ParquetRewritePlanner) PlanWithTime(ctx context.Context, streamID strin
 	var totalSize int64
 	var expectedStartOffset int64 = -1
 	var partitionID *int32
+	resetSelection := func() {
+		selected = nil
+		totalSize = 0
+		expectedStartOffset = -1
+		partitionID = nil
+	}
+	buildResult := func() *ParquetRewriteResult {
+		if len(selected) < p.cfg.MinFiles {
+			return nil
+		}
+		return &ParquetRewriteResult{
+			StreamID:       streamID,
+			Entries:        selected,
+			TotalSizeBytes: totalSize,
+			StartOffset:    selected[0].StartOffset,
+			EndOffset:      selected[len(selected)-1].EndOffset,
+		}
+	}
 
 	for _, entry := range entries {
 		if entry.FileType != index.FileTypeParquet {
-			if len(selected) > 0 {
-				break
+			if result := buildResult(); result != nil {
+				return result, nil
 			}
+			resetSelection()
 			continue
 		}
 
 		entrySize, ok := parquetSizeToInt64(entry.ParquetSizeBytes)
 		if !ok {
-			if len(selected) > 0 {
-				break
+			if result := buildResult(); result != nil {
+				return result, nil
 			}
+			resetSelection()
 			continue
 		}
 
 		if p.cfg.SmallFileThresholdBytes > 0 && entrySize >= p.cfg.SmallFileThresholdBytes {
-			if len(selected) > 0 {
-				break
+			if result := buildResult(); result != nil {
+				return result, nil
 			}
+			resetSelection()
 			continue
 		}
 
 		if p.cfg.MinAgeMs > 0 && nowMs-entry.CreatedAtMs < p.cfg.MinAgeMs {
-			if len(selected) > 0 {
-				break
+			if result := buildResult(); result != nil {
+				return result, nil
 			}
+			resetSelection()
 			continue
 		}
 
 		entryPartition, hasPartition := parseParquetPartition(entry.ParquetPath)
-		if partitionID != nil && hasPartition && *partitionID != entryPartition {
-			break
-		}
-		if partitionID == nil && hasPartition {
-			partitionID = &entryPartition
+		if len(selected) > 0 {
+			if partitionID != nil && hasPartition && *partitionID != entryPartition {
+				if result := buildResult(); result != nil {
+					return result, nil
+				}
+				resetSelection()
+			} else if expectedStartOffset >= 0 && entry.StartOffset != expectedStartOffset {
+				if result := buildResult(); result != nil {
+					return result, nil
+				}
+				resetSelection()
+			} else if p.cfg.MaxFiles > 0 && len(selected) >= p.cfg.MaxFiles {
+				if result := buildResult(); result != nil {
+					return result, nil
+				}
+				resetSelection()
+			} else if p.cfg.MaxMergeBytes > 0 && totalSize+entrySize > p.cfg.MaxMergeBytes && len(selected) > 0 {
+				if result := buildResult(); result != nil {
+					return result, nil
+				}
+				resetSelection()
+			}
 		}
 
-		if expectedStartOffset >= 0 && entry.StartOffset != expectedStartOffset {
-			break
+		if len(selected) == 0 {
+			if hasPartition {
+				partitionID = &entryPartition
+			}
+			expectedStartOffset = entry.EndOffset
+			selected = append(selected, entry)
+			totalSize = entrySize
+		} else {
+			if partitionID == nil && hasPartition {
+				partitionID = &entryPartition
+			}
+			selected = append(selected, entry)
+			totalSize += entrySize
+			expectedStartOffset = entry.EndOffset
 		}
-
-		if p.cfg.MaxFiles > 0 && len(selected) >= p.cfg.MaxFiles {
-			break
-		}
-
-		if p.cfg.MaxMergeBytes > 0 && totalSize+entrySize > p.cfg.MaxMergeBytes && len(selected) > 0 {
-			break
-		}
-
-		selected = append(selected, entry)
-		totalSize += entrySize
-		expectedStartOffset = entry.EndOffset
 
 		if p.cfg.TargetFileSizeBytes > 0 && totalSize >= p.cfg.TargetFileSizeBytes {
-			break
+			if result := buildResult(); result != nil {
+				return result, nil
+			}
+			resetSelection()
 		}
 	}
 
-	if len(selected) < p.cfg.MinFiles {
-		return nil, nil
+	if result := buildResult(); result != nil {
+		return result, nil
 	}
-
-	return &ParquetRewriteResult{
-		StreamID:       streamID,
-		Entries:        selected,
-		TotalSizeBytes: totalSize,
-		StartOffset:    selected[0].StartOffset,
-		EndOffset:      selected[len(selected)-1].EndOffset,
-	}, nil
+	return nil, nil
 }
 
 func parquetSizeToInt64(size uint64) (int64, bool) {

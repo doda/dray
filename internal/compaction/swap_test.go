@@ -703,12 +703,16 @@ func TestIndexSwapper_SwapFromJob(t *testing.T) {
 	meta.Put(ctx, walObjectKey, walRecordBytes)
 
 	job := &Job{
-		StreamID:          streamID,
-		SourceStartOffset: 0,
-		SourceEndOffset:   100,
+		StreamID:           streamID,
+		SourceStartOffset:  0,
+		SourceEndOffset:    100,
+		ParquetPath:        "/parquet/job-output.parquet",
+		ParquetPaths:       []string{"/parquet/job-output.parquet"},
+		ParquetSizeBytes:   500,
+		ParquetRecordCount: 100,
 	}
 
-	result, err := swapper.SwapFromJob(ctx, job, "/parquet/job-output.parquet", 500, 100, metaDomain)
+	result, err := swapper.SwapFromJob(ctx, job, metaDomain)
 	if err != nil {
 		t.Fatalf("SwapFromJob failed: %v", err)
 	}
@@ -967,12 +971,16 @@ func TestIndexSwapper_BoundedListCalls(t *testing.T) {
 	swapEndOffset := int64(50300)   // End of entry 502
 
 	job := &Job{
-		StreamID:          streamID,
-		SourceStartOffset: swapStartOffset,
-		SourceEndOffset:   swapEndOffset,
+		StreamID:           streamID,
+		SourceStartOffset:  swapStartOffset,
+		SourceEndOffset:    swapEndOffset,
+		ParquetPath:        "/parquet/test.parquet",
+		ParquetPaths:       []string{"/parquet/test.parquet"},
+		ParquetSizeBytes:   300,
+		ParquetRecordCount: 300,
 	}
 
-	_, err := swapper.SwapFromJob(ctx, job, "/parquet/test.parquet", 300, 300, metaDomain)
+	_, err := swapper.SwapFromJob(ctx, job, metaDomain)
 	if err != nil {
 		t.Fatalf("SwapFromJob failed: %v", err)
 	}
@@ -1422,12 +1430,16 @@ func TestIndexSwapper_SwapFromJob_PopulatesParquetID(t *testing.T) {
 	meta.Put(ctx, walObjectKey, walRecordBytes)
 
 	job := &Job{
-		StreamID:          streamID,
-		SourceStartOffset: 0,
-		SourceEndOffset:   100,
+		StreamID:           streamID,
+		SourceStartOffset:  0,
+		SourceEndOffset:    100,
+		ParquetPath:        "/parquet/job-parquet-id.parquet",
+		ParquetPaths:       []string{"/parquet/job-parquet-id.parquet"},
+		ParquetSizeBytes:   500,
+		ParquetRecordCount: 100,
 	}
 
-	result, err := swapper.SwapFromJob(ctx, job, "/parquet/job-parquet-id.parquet", 500, 100, metaDomain)
+	result, err := swapper.SwapFromJob(ctx, job, metaDomain)
 	if err != nil {
 		t.Fatalf("SwapFromJob failed: %v", err)
 	}
@@ -1488,13 +1500,17 @@ func TestIndexSwapper_SwapFromJob_UsesJobIcebergDataFileID(t *testing.T) {
 
 	// Create a job with IcebergDataFileID set (simulating post-Iceberg commit state)
 	job := &Job{
-		StreamID:          streamID,
-		SourceStartOffset: 0,
-		SourceEndOffset:   100,
-		IcebergDataFileID: expectedIcebergDataFileID, // Set by MarkIcebergCommitted
+		StreamID:           streamID,
+		SourceStartOffset:  0,
+		SourceEndOffset:    100,
+		IcebergDataFileID:  expectedIcebergDataFileID, // Set by MarkIcebergCommitted
+		ParquetPath:        expectedIcebergDataFileID,
+		ParquetPaths:       []string{expectedIcebergDataFileID},
+		ParquetSizeBytes:   500,
+		ParquetRecordCount: 100,
 	}
 
-	result, err := swapper.SwapFromJob(ctx, job, expectedIcebergDataFileID, 500, 100, metaDomain)
+	result, err := swapper.SwapFromJob(ctx, job, metaDomain)
 	if err != nil {
 		t.Fatalf("SwapFromJob failed: %v", err)
 	}
