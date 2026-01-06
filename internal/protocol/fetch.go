@@ -264,6 +264,16 @@ func (h *FetchHandler) processPartition(ctx context.Context, version int16, topi
 	}
 
 	fetchOffset := partReq.FetchOffset
+	if fetchOffset < earliestOffset {
+		logging.FromCtx(ctx).Warnf("fetch offset below log start, clamping to earliest", map[string]any{
+			"topic":          topicName,
+			"partition":      partReq.Partition,
+			"streamId":       streamID,
+			"fetchOffset":    fetchOffset,
+			"earliestOffset": earliestOffset,
+		})
+		fetchOffset = earliestOffset
+	}
 
 	// Long-poll waiting: If fetchOffset >= hwm and maxWaitMs > 0, wait for new data
 	// Per Kafka protocol, this implements long-polling for consumers waiting at the end.

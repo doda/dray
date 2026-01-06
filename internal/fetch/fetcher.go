@@ -13,6 +13,9 @@ const (
 	SourceWAL     = "wal"
 	SourceParquet = "parquet"
 	SourceNone    = "none"
+
+	// DefaultParquetFetchMaxBytes caps Parquet fetch size to keep long-range reads responsive.
+	DefaultParquetFetchMaxBytes int64 = 1 * 1024 * 1024
 )
 
 // Fetcher handles fetching record batches from WAL or Parquet storage.
@@ -129,7 +132,11 @@ func (f *Fetcher) Fetch(ctx context.Context, req *FetchRequest) (*FetchResponse,
 		source = SourceWAL
 
 	case index.FileTypeParquet:
-		fetchResult, err = f.parquetReader.ReadBatches(ctx, entry, req.FetchOffset, req.MaxBytes)
+		maxBytes := req.MaxBytes
+		if maxBytes <= 0 || maxBytes > DefaultParquetFetchMaxBytes {
+			maxBytes = DefaultParquetFetchMaxBytes
+		}
+		fetchResult, err = f.parquetReader.ReadBatches(ctx, entry, req.FetchOffset, maxBytes)
 		if err != nil {
 			return nil, err
 		}
