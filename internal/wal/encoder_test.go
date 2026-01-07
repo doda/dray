@@ -485,6 +485,12 @@ func TestCalculateEncodedSize(t *testing.T) {
 }
 
 func TestChunkBodyLengthOverflow(t *testing.T) {
+	// Skip when running with race detector since unsafe.Slice with invalid
+	// bounds triggers checkptr panics in race mode
+	if raceEnabled {
+		t.Skip("skipping test with race detector: unsafe.Slice bounds check")
+	}
+
 	walID := uuid.New()
 	wal := NewWAL(walID, 1, 1700000000000)
 

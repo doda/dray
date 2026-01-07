@@ -388,7 +388,10 @@ func (c *Compactor) Start(ctx context.Context) error {
 	}
 	c.parquetPlanner = planner.NewParquetRewritePlanner(rewriteCfg, c.streamManager)
 	// Start health server
-	c.healthServer = server.NewHealthServer(cfg.Observability.MetricsAddr, c.logger)
+	healthServer := server.NewHealthServer(cfg.Observability.MetricsAddr, c.logger)
+	c.mu.Lock()
+	c.healthServer = healthServer
+	c.mu.Unlock()
 	if err := c.healthServer.Start(); err != nil {
 		return fmt.Errorf("failed to start health server: %w", err)
 	}
@@ -1616,6 +1619,17 @@ func (c *Compactor) rewriteRemovedParquetFiles(ctx context.Context, job *compact
 	}
 
 	return removed, nil
+}
+
+// HealthServerAddr returns the address the health server is listening on, or empty if not yet listening.
+// This method is thread-safe.
+func (c *Compactor) HealthServerAddr() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.healthServer == nil {
+		return ""
+	}
+	return c.healthServer.Addr()
 }
 
 // Shutdown gracefully stops the compactor.
