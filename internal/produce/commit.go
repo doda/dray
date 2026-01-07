@@ -8,11 +8,14 @@ import (
 	"time"
 
 	"github.com/dray-io/dray/internal/index"
+	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
 	"github.com/dray-io/dray/internal/objectstore"
 	"github.com/dray-io/dray/internal/wal"
 )
+
+const defaultCommitTimeout = 30 * time.Second
 
 // CommitterConfig configures the produce committer.
 type CommitterConfig struct {
@@ -77,6 +80,20 @@ func (c *Committer) Commit(ctx context.Context, domain metadata.MetaDomain, requ
 		return nil
 	}
 
+	ctx, cancel := ensureCommitContext(ctx)
+	if cancel != nil {
+		defer cancel()
+	}
+
+	logger := logging.FromCtx(ctx)
+	start := time.Now()
+	var totalBytes int64
+	var totalRecords uint32
+	for _, req := range requests {
+		totalBytes += req.Size
+		totalRecords += req.RecordCount
+	}
+
 	// Create staging writer
 	writer := wal.NewStagingWriter(c.objStore, c.metaStore, &wal.StagingWriterConfig{
 		ZoneID: c.zoneID,
@@ -127,12 +144,31 @@ func (c *Committer) Commit(ctx context.Context, domain metadata.MetaDomain, requ
 	// Flush WAL to object storage
 	writeResult, err := writer.Flush(ctx)
 	if err != nil {
+		logger.Warnf("produce commit WAL flush failed", map[string]any{
+			"domain":       domain,
+			"records":      totalRecords,
+			"bytes":        totalBytes,
+			"elapsedMs":    time.Since(start).Milliseconds(),
+			"error":        err.Error(),
+			"hasDeadline":  ctx.Err() != nil,
+			"streamChunks": len(chunks),
+		})
 		return fmt.Errorf("produce: flush WAL: %w", err)
 	}
 
 	// Execute atomic metadata commit
 	result, err := c.commitMetadata(ctx, domain, writeResult, chunks)
 	if err != nil {
+		logger.Warnf("produce commit metadata failed", map[string]any{
+			"domain":       domain,
+			"records":      totalRecords,
+			"bytes":        totalBytes,
+			"elapsedMs":    time.Since(start).Milliseconds(),
+			"walId":        writeResult.WalID.String(),
+			"error":        err.Error(),
+			"hasDeadline":  ctx.Err() != nil,
+			"streamChunks": len(chunks),
+		})
 		return fmt.Errorf("produce: commit metadata: %w", err)
 	}
 
@@ -151,7 +187,31 @@ func (c *Committer) Commit(ctx context.Context, domain metadata.MetaDomain, requ
 		}
 	}
 
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		logger.Warnf("produce commit slow", map[string]any{
+			"domain":       domain,
+			"records":      totalRecords,
+			"bytes":        totalBytes,
+			"elapsedMs":    elapsed.Milliseconds(),
+			"walId":        writeResult.WalID.String(),
+			"streamChunks": len(chunks),
+		})
+	}
+
 	return nil
+}
+
+func ensureCommitContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		return context.WithTimeout(context.Background(), defaultCommitTimeout)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if time.Until(deadline) < defaultCommitTimeout {
+			return context.WithTimeout(context.Background(), defaultCommitTimeout)
+		}
+		return ctx, nil
+	}
+	return context.WithTimeout(ctx, defaultCommitTimeout)
 }
 
 // pendingChunk aggregates batches for a single stream.

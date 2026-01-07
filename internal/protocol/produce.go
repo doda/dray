@@ -261,7 +261,18 @@ func (h *ProduceHandler) processPartition(ctx context.Context, version int16, to
 	if acks == 0 {
 		// Fire and forget - add to buffer but don't wait
 		_, err = h.buffer.Add(ctx, partMeta.StreamID, batches, recordCount, minTs, maxTs)
-		if err == nil && h.metrics != nil {
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				resp.ErrorCode = errRequestTimedOut
+			} else if errors.Is(err, produce.ErrBufferFull) {
+				resp.ErrorCode = errClusterAuthorizationFailed
+			} else {
+				resp.ErrorCode = errUnknownTopicOrPartitionErr
+			}
+			resp.BaseOffset = -1
+			return resp
+		}
+		if h.metrics != nil {
 			h.metrics.RecordMessages(recordCount)
 		}
 		resp.ErrorCode = errNoError
