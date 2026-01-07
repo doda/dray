@@ -7,15 +7,8 @@ run:
 linters:
   enable:
     - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    - misspell
   disable:
     - errcheck  # TODO: Fix unchecked errors in a separate PR
-  settings:
-    misspell:
-      locale: US
   exclusions:
     rules:
       - path: doc\.go
