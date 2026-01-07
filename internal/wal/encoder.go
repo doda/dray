@@ -96,7 +96,6 @@ func (e *Encoder) Encode(wal *WAL) (int64, error) {
 	// Calculate and encode CRC32C footer (covers everything before footer)
 	crc := crc32.Checksum(buf[:offset], crc32cTable)
 	binary.BigEndian.PutUint32(buf[offset:], crc)
-	offset += FooterSize
 
 	// Write to underlying writer
 	return writeFull(e.w, buf)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,20 @@ import (
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
 )
+
+// syncedWriter is a test helper that synchronizes writes to an underlying buffer.
+type syncedWriter struct {
+	buf *bytes.Buffer
+	mu  *sync.Mutex
+}
+
+func (w *syncedWriter) Write(p []byte) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+var _ io.Writer = (*syncedWriter)(nil)
 
 // failingNotificationStream is a test helper that returns errors from Next().
 type failingNotificationStream struct {
@@ -676,10 +691,11 @@ func TestACLCache_WatchLoopBackoffOnErrors(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Set up logging capture
+	// Set up logging capture with synchronized writer
 	var logBuf bytes.Buffer
 	var logMu sync.Mutex
-	handler := slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	syncWriter := &syncedWriter{buf: &logBuf, mu: &logMu}
+	handler := slog.NewTextHandler(syncWriter, &slog.HandlerOptions{Level: slog.LevelWarn})
 	oldLogger := slog.Default()
 	slog.SetDefault(slog.New(handler))
 	defer slog.SetDefault(oldLogger)

@@ -191,11 +191,11 @@ func TestSASLAuthenticator_HandleSASLAuthenticate_NilStore(t *testing.T) {
 
 func TestParsePlainAuth(t *testing.T) {
 	tests := []struct {
-		name       string
-		data       []byte
-		wantUser   string
-		wantPass   string
-		wantErr    bool
+		name     string
+		data     []byte
+		wantUser string
+		wantPass string
+		wantErr  bool
 	}{
 		{
 			name:     "standard format",

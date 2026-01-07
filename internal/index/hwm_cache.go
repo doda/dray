@@ -255,8 +255,7 @@ func (c *HWMCache) watchNotifications() {
 					"failed":    failed,
 				})
 			}
-			pendingRefresh = nil
-			disconnected = false
+			// Variables are reset in the error path below (lines 277-278)
 		}
 
 		// Process notifications until error or cancellation

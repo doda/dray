@@ -153,13 +153,13 @@ type ACLEntry struct {
 
 // Common errors for ACL operations.
 var (
-	ErrACLNotFound        = errors.New("acl: not found")
-	ErrACLAlreadyExists   = errors.New("acl: already exists")
+	ErrACLNotFound         = errors.New("acl: not found")
+	ErrACLAlreadyExists    = errors.New("acl: already exists")
 	ErrInvalidResourceType = errors.New("acl: invalid resource type")
-	ErrInvalidOperation   = errors.New("acl: invalid operation")
-	ErrInvalidPermission  = errors.New("acl: invalid permission")
-	ErrInvalidPrincipal   = errors.New("acl: invalid principal")
-	ErrInvalidPatternType = errors.New("acl: invalid pattern type")
+	ErrInvalidOperation    = errors.New("acl: invalid operation")
+	ErrInvalidPermission   = errors.New("acl: invalid permission")
+	ErrInvalidPrincipal    = errors.New("acl: invalid principal")
+	ErrInvalidPatternType  = errors.New("acl: invalid pattern type")
 )
 
 // ACLStore provides ACL storage operations backed by MetadataStore.

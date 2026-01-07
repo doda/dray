@@ -112,8 +112,8 @@ func TestTopicDescribe(t *testing.T) {
 		Name:           "my-topic",
 		PartitionCount: 5,
 		Config: map[string]string{
-			"retention.ms":     "604800000",
-			"cleanup.policy":   "delete",
+			"retention.ms":   "604800000",
+			"cleanup.policy": "delete",
 		},
 		NowMs: time.Now().UnixMilli(),
 	})
@@ -458,8 +458,8 @@ func TestConfigDescribe(t *testing.T) {
 		Name:           "config-topic",
 		PartitionCount: 1,
 		Config: map[string]string{
-			"retention.ms":     "86400000",
-			"cleanup.policy":   "compact",
+			"retention.ms":   "86400000",
+			"cleanup.policy": "compact",
 		},
 		NowMs: time.Now().UnixMilli(),
 	})

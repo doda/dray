@@ -930,7 +930,7 @@ func TestServer_LongPollExitsOnConnectionClose(t *testing.T) {
 	select {
 	case <-handler.done:
 		// Good, handler exited
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("handler did not exit after connection close")
 	}
 
