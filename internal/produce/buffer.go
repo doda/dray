@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/wal"
 )
@@ -338,6 +339,15 @@ func (b *Buffer) flushDomain(ctx context.Context, domain metadata.MetaDomain) {
 
 	// Call the flush handler first - space is only freed after flush completes
 	err := b.config.OnFlush(flushCtx, domain, requests)
+	if err != nil {
+		logging.FromCtx(flushCtx).Warnf("produce flush failed", map[string]any{
+			"domain":     domain,
+			"requests":   len(requests),
+			"sizeBytes":  size,
+			"error":      err.Error(),
+			"hasTimeout": flushCtx.Err() != nil,
+		})
+	}
 
 	// Update total size after flush completes
 	b.sizeMu.Lock()
