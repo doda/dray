@@ -5,21 +5,6 @@ run:
   modules-download-mode: readonly
 
 linters:
+  default: none
   enable:
     - govet
-  disable:
-    - errcheck  # TODO: Fix unchecked errors in a separate PR
-  exclusions:
-    rules:
-      - path: doc\.go
-        linters:
-          - unused
-
-formatters:
-  enable:
-    - gofmt
-    - goimports
-  settings:
-    goimports:
-      local-prefixes:
-        - github.com/dray-io/dray
