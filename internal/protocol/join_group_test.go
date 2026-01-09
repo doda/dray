@@ -587,6 +587,9 @@ func TestJoinGroupHandler_DefaultConfig(t *testing.T) {
 	if cfg.MaxSessionTimeoutMs != 300000 {
 		t.Errorf("expected max session timeout 300000, got %d", cfg.MaxSessionTimeoutMs)
 	}
+	if cfg.InitialRebalanceDelayMs != 3000 {
+		t.Errorf("expected initial rebalance delay 3000, got %d", cfg.InitialRebalanceDelayMs)
+	}
 	if cfg.RebalanceTimeoutMs != 300000 {
 		t.Errorf("expected rebalance timeout 300000, got %d", cfg.RebalanceTimeoutMs)
 	}
@@ -607,6 +610,9 @@ func TestJoinGroupHandler_ZeroConfigDefaults(t *testing.T) {
 	}
 	if handler.cfg.MaxSessionTimeoutMs != 300000 {
 		t.Errorf("expected max session timeout 300000, got %d", handler.cfg.MaxSessionTimeoutMs)
+	}
+	if handler.cfg.InitialRebalanceDelayMs != 3000 {
+		t.Errorf("expected initial rebalance delay 3000, got %d", handler.cfg.InitialRebalanceDelayMs)
 	}
 	if handler.cfg.RebalanceTimeoutMs != 300000 {
 		t.Errorf("expected rebalance timeout 300000, got %d", handler.cfg.RebalanceTimeoutMs)

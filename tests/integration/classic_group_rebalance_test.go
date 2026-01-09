@@ -24,6 +24,47 @@ func joinConsumer(ctx context.Context, handler *protocol.JoinGroupHandler, group
 	return resp, resp.MemberID
 }
 
+func TestClassicGroupJoin_InitialRebalanceDelay(t *testing.T) {
+	metaStore := metadata.NewMockStore()
+	groupStore := groups.NewStore(metaStore)
+
+	joinHandler := protocol.NewJoinGroupHandler(
+		protocol.JoinGroupHandlerConfig{
+			MinSessionTimeoutMs:     1000,
+			MaxSessionTimeoutMs:     60000,
+			InitialRebalanceDelayMs: 50,
+			RebalanceTimeoutMs:      60000,
+		},
+		groupStore,
+		nil, // No lease manager for simpler testing
+	)
+
+	req := kmsg.NewPtrJoinGroupRequest()
+	req.Group = "initial-delay-group"
+	req.SessionTimeoutMillis = 6000
+	req.RebalanceTimeoutMillis = 10000
+	req.ProtocolType = "consumer"
+
+	proto := kmsg.NewJoinGroupRequestProtocol()
+	proto.Name = "range"
+	proto.Metadata = buildConsumerMetadata("test-topic")
+	req.Protocols = append(req.Protocols, proto)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	resp := joinHandler.Handle(ctx, 3, req, "test-client")
+	if resp.ErrorCode != 0 {
+		t.Fatalf("JoinGroup failed: error code %d", resp.ErrorCode)
+	}
+	if resp.MemberID == "" {
+		t.Fatal("expected member ID to be set")
+	}
+	if resp.LeaderID == "" {
+		t.Fatal("expected leader ID to be set")
+	}
+}
+
 // TestClassicGroupRebalance_TwoConsumers tests a classic group with 2 consumers.
 // Both consumers should receive assignments after joining.
 func TestClassicGroupRebalance_TwoConsumers(t *testing.T) {
@@ -628,8 +669,8 @@ func buildJoinGroupRequest(groupID, memberID, topicName string, numPartitions in
 	req.Group = groupID
 	req.MemberID = memberID
 	req.ProtocolType = "consumer"
-	req.SessionTimeoutMillis = 6000   // Minimum 6 seconds
-	req.RebalanceTimeoutMillis = 100  // 100ms rebalance timeout for fast tests
+	req.SessionTimeoutMillis = 6000  // Minimum 6 seconds
+	req.RebalanceTimeoutMillis = 100 // 100ms rebalance timeout for fast tests
 
 	proto := kmsg.NewJoinGroupRequestProtocol()
 	proto.Name = "range"

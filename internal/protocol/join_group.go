@@ -39,6 +39,8 @@ type JoinGroupHandlerConfig struct {
 	MinSessionTimeoutMs int32
 	// MaxSessionTimeoutMs is the maximum session timeout.
 	MaxSessionTimeoutMs int32
+	// InitialRebalanceDelayMs is the initial delay to allow members to join a new rebalance.
+	InitialRebalanceDelayMs int32
 	// RebalanceTimeoutMs is the default rebalance timeout.
 	RebalanceTimeoutMs int32
 	// MaxGroupSize is the maximum number of members per group.
@@ -48,10 +50,11 @@ type JoinGroupHandlerConfig struct {
 // DefaultJoinGroupHandlerConfig returns sensible defaults.
 func DefaultJoinGroupHandlerConfig() JoinGroupHandlerConfig {
 	return JoinGroupHandlerConfig{
-		MinSessionTimeoutMs: 6000,   // 6 seconds
-		MaxSessionTimeoutMs: 300000, // 5 minutes
-		RebalanceTimeoutMs:  300000, // 5 minutes
-		MaxGroupSize:        0,      // Unlimited
+		MinSessionTimeoutMs:     6000,   // 6 seconds
+		MaxSessionTimeoutMs:     300000, // 5 minutes
+		InitialRebalanceDelayMs: 3000,   // 3 seconds (Kafka default)
+		RebalanceTimeoutMs:      300000, // 5 minutes
+		MaxGroupSize:            0,      // Unlimited
 	}
 }
 
@@ -64,14 +67,15 @@ type pendingJoin struct {
 
 // rebalanceState tracks members waiting for a rebalance to complete.
 type rebalanceState struct {
-	mu           sync.Mutex
-	pending      map[string]*pendingJoin // memberID -> pending join
-	timer        *time.Timer
-	timeoutMs    int32
-	generation   int32
-	leaderID     string
-	protocolType string
-	protocol     string
+	mu             sync.Mutex
+	pending        map[string]*pendingJoin // memberID -> pending join
+	timer          *time.Timer
+	joinDelayMs    int32
+	joinDeadlineMs int64
+	generation     int32
+	leaderID       string
+	protocolType   string
+	protocol       string
 }
 
 // JoinGroupHandler handles JoinGroup (key 11) requests for classic consumer groups.
@@ -98,6 +102,9 @@ func NewJoinGroupHandler(cfg JoinGroupHandlerConfig, store *groups.Store, leaseM
 	}
 	if cfg.MaxSessionTimeoutMs == 0 {
 		cfg.MaxSessionTimeoutMs = 300000
+	}
+	if cfg.InitialRebalanceDelayMs == 0 {
+		cfg.InitialRebalanceDelayMs = 3000
 	}
 	if cfg.RebalanceTimeoutMs == 0 {
 		cfg.RebalanceTimeoutMs = 300000
@@ -353,14 +360,32 @@ func (h *JoinGroupHandler) addOrUpdateMember(ctx context.Context, req *kmsg.Join
 	return err
 }
 
+func (h *JoinGroupHandler) joinDelayMs(rebalanceTimeoutMs int32) int32 {
+	delayMs := h.cfg.InitialRebalanceDelayMs
+	if delayMs < 0 {
+		delayMs = 0
+	}
+	if rebalanceTimeoutMs > 0 && delayMs > rebalanceTimeoutMs {
+		delayMs = rebalanceTimeoutMs
+	}
+	return delayMs
+}
+
 // handleRebalance manages the rebalance process for joining members.
 func (h *JoinGroupHandler) handleRebalance(ctx context.Context, groupID, memberID, clientID string, protocols []kmsg.JoinGroupRequestProtocol, rebalanceTimeoutMs int32, version int16, nowMs int64) *kmsg.JoinGroupResponse {
+	delayMs := h.joinDelayMs(rebalanceTimeoutMs)
+	joinDeadlineMs := int64(0)
+	if rebalanceTimeoutMs > 0 {
+		joinDeadlineMs = nowMs + int64(rebalanceTimeoutMs)
+	}
+
 	h.mu.Lock()
 	rs, exists := h.rebalanceStates[groupID]
 	if !exists {
 		rs = &rebalanceState{
-			pending:   make(map[string]*pendingJoin),
-			timeoutMs: rebalanceTimeoutMs,
+			pending:        make(map[string]*pendingJoin),
+			joinDelayMs:    delayMs,
+			joinDeadlineMs: joinDeadlineMs,
 		}
 		h.rebalanceStates[groupID] = rs
 	}
@@ -394,14 +419,30 @@ func (h *JoinGroupHandler) handleRebalance(ctx context.Context, groupID, memberI
 
 	isFirst := len(rs.pending) == 1
 
-	// Extend timeout if needed (use max of all members' rebalance timeouts)
-	if rebalanceTimeoutMs > rs.timeoutMs {
-		rs.timeoutMs = rebalanceTimeoutMs
+	if isFirst {
+		rs.joinDelayMs = delayMs
+		rs.joinDeadlineMs = joinDeadlineMs
+	} else {
+		if rs.joinDelayMs == 0 || (delayMs > 0 && delayMs < rs.joinDelayMs) {
+			rs.joinDelayMs = delayMs
+		}
+		if joinDeadlineMs > 0 && (rs.joinDeadlineMs == 0 || joinDeadlineMs < rs.joinDeadlineMs) {
+			rs.joinDeadlineMs = joinDeadlineMs
+		}
 	}
 
 	if isFirst {
 		// First member to join - start the timer
-		timeout := time.Duration(rs.timeoutMs) * time.Millisecond
+		timeout := time.Duration(rs.joinDelayMs) * time.Millisecond
+		if rs.joinDeadlineMs > 0 {
+			remainingMs := rs.joinDeadlineMs - time.Now().UnixMilli()
+			if remainingMs < 0 {
+				remainingMs = 0
+			}
+			if int64(rs.joinDelayMs) > remainingMs {
+				timeout = time.Duration(remainingMs) * time.Millisecond
+			}
+		}
 		rebalanceCtx := context.WithoutCancel(ctx)
 		rs.timer = time.AfterFunc(timeout, func() {
 			h.completeRebalance(rebalanceCtx, groupID, version)
@@ -410,7 +451,16 @@ func (h *JoinGroupHandler) handleRebalance(ctx context.Context, groupID, memberI
 		// Additional member joined - reset the timer with initial delay
 		// Per Kafka protocol, give a grace period for other members
 		rs.timer.Stop()
-		timeout := time.Duration(rs.timeoutMs) * time.Millisecond
+		timeout := time.Duration(rs.joinDelayMs) * time.Millisecond
+		if rs.joinDeadlineMs > 0 {
+			remainingMs := rs.joinDeadlineMs - time.Now().UnixMilli()
+			if remainingMs < 0 {
+				remainingMs = 0
+			}
+			if int64(rs.joinDelayMs) > remainingMs {
+				timeout = time.Duration(remainingMs) * time.Millisecond
+			}
+		}
 		rebalanceCtx := context.WithoutCancel(ctx)
 		rs.timer = time.AfterFunc(timeout, func() {
 			h.completeRebalance(rebalanceCtx, groupID, version)
