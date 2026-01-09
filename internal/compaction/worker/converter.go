@@ -126,12 +126,12 @@ func (c *Converter) Convert(ctx context.Context, entries []*index.IndexEntry, pa
 		return nil, errors.New("converter: no records extracted from WAL entries")
 	}
 
-	// Write records to Parquet.
+	// Write records to Parquet with projection bounds tracking.
 	parquetSchema := schema
 	if parquetSchema == nil {
 		parquetSchema = BuildParquetSchema(projectionFields)
 	}
-	parquetData, stats, err := WriteToBuffer(parquetSchema, allRecords)
+	parquetData, stats, err := WriteToBufferWithProjections(parquetSchema, allRecords, projectionFields)
 	if err != nil {
 		return nil, fmt.Errorf("converter: writing parquet: %w", err)
 	}
@@ -216,7 +216,7 @@ func (c *Converter) ConvertPartitioned(ctx context.Context, entries []*index.Ind
 	}
 
 	for hourValue, records := range recordsByHour {
-		parquetData, stats, err := WriteToBuffer(parquetSchema, records)
+		parquetData, stats, err := WriteToBufferWithProjections(parquetSchema, records, projectionFields)
 		if err != nil {
 			return nil, fmt.Errorf("converter: writing parquet for hour %d: %w", hourValue, err)
 		}

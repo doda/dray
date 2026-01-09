@@ -50,25 +50,50 @@ type FileStats struct {
 	MaxTimestamp int64
 	RecordCount  int64
 	SizeBytes    int64
+
+	// ProjectedBounds tracks min/max bounds for projected fields by field name.
+	// Values are in the appropriate format for Iceberg (e.g., microseconds for timestamps).
+	// Only populated for fields that support bounds tracking (currently timestamp fields).
+	ProjectedBounds map[string]FieldBounds
+}
+
+// FieldBounds contains min/max bounds for a single field.
+type FieldBounds struct {
+	Min int64
+	Max int64
 }
 
 const parquetTimestampScale = int64(1000)
 
 // Writer writes Kafka records to Parquet format.
 type Writer struct {
-	buf        bytes.Buffer
-	writer     *parquet.Writer
-	schema     *parquet.Schema
-	stats      FileStats
-	firstWrite bool
+	buf             bytes.Buffer
+	writer          *parquet.Writer
+	schema          *parquet.Schema
+	stats           FileStats
+	firstWrite      bool
+	timestampFields map[string]bool // Fields that are timestamp type (for bounds tracking)
 }
 
 // NewWriter creates a new Parquet writer.
 func NewWriter(schema *parquet.Schema) *Writer {
 	return &Writer{
-		firstWrite: true,
-		schema:     schema,
+		firstWrite:      true,
+		schema:          schema,
+		timestampFields: make(map[string]bool),
 	}
+}
+
+// NewWriterWithProjections creates a new Parquet writer with projection field specs.
+// This enables bounds tracking for timestamp-type projected fields.
+func NewWriterWithProjections(schema *parquet.Schema, fields []projection.FieldSpec) *Writer {
+	w := NewWriter(schema)
+	for _, f := range fields {
+		if f.Type == projection.FieldTypeTimestampMs {
+			w.timestampFields[f.Name] = true
+		}
+	}
+	return w
 }
 
 // WriteRecords writes a slice of records to the Parquet file.
@@ -123,6 +148,39 @@ func (w *Writer) WriteRecords(records []Record) error {
 				w.stats.MaxTimestamp = rec.Timestamp
 			}
 		}
+
+		// Track bounds for timestamp-type projected fields.
+		// Convert from milliseconds to microseconds for Iceberg TimestampTz.
+		for fieldName := range w.timestampFields {
+			val, ok := rec.Projected[fieldName]
+			if !ok {
+				continue
+			}
+			var micros int64
+			switch v := val.(type) {
+			case int64:
+				micros = v * 1000 // ms to micros
+			case int:
+				micros = int64(v) * 1000
+			default:
+				continue
+			}
+			if w.stats.ProjectedBounds == nil {
+				w.stats.ProjectedBounds = make(map[string]FieldBounds)
+			}
+			if bounds, exists := w.stats.ProjectedBounds[fieldName]; exists {
+				if micros < bounds.Min {
+					bounds.Min = micros
+				}
+				if micros > bounds.Max {
+					bounds.Max = micros
+				}
+				w.stats.ProjectedBounds[fieldName] = bounds
+			} else {
+				w.stats.ProjectedBounds[fieldName] = FieldBounds{Min: micros, Max: micros}
+			}
+		}
+
 		w.stats.RecordCount++
 	}
 
@@ -162,6 +220,16 @@ func GenerateParquetPath(topic string, partition int32, date string, parquetID s
 // WriteToBuffer writes records to a buffer with the provided schema.
 func WriteToBuffer(schema *parquet.Schema, records []Record) ([]byte, FileStats, error) {
 	w := NewWriter(schema)
+	if err := w.WriteRecords(records); err != nil {
+		return nil, FileStats{}, err
+	}
+	return w.Close()
+}
+
+// WriteToBufferWithProjections writes records to a buffer with projection field tracking.
+// This enables bounds tracking for timestamp-type projected fields.
+func WriteToBufferWithProjections(schema *parquet.Schema, records []Record, fields []projection.FieldSpec) ([]byte, FileStats, error) {
+	w := NewWriterWithProjections(schema, fields)
 	if err := w.WriteRecords(records); err != nil {
 		return nil, FileStats{}, err
 	}

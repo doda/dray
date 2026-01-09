@@ -617,3 +617,40 @@ func DefaultDataFileStats(partition int32, minOffset, maxOffset, minTs, maxTs in
 		},
 	}
 }
+
+// ProjectedFieldBounds contains min/max bounds for a projected field.
+type ProjectedFieldBounds struct {
+	Min int64
+	Max int64
+}
+
+// DataFileStatsWithProjections creates DataFileStats including bounds for projected fields.
+// The schema is used to look up field IDs for the projected field names.
+// projectedBounds maps field names to their min/max values (in microseconds for timestamps).
+func DataFileStatsWithProjections(
+	partition int32,
+	minOffset, maxOffset int64,
+	minTs, maxTs int64,
+	recordCount int64,
+	schema *iceberg.Schema,
+	projectedBounds map[string]ProjectedFieldBounds,
+) *DataFileStats {
+	stats := DefaultDataFileStats(partition, minOffset, maxOffset, minTs, maxTs, recordCount)
+
+	// Add bounds for projected fields
+	for fieldName, bounds := range projectedBounds {
+		field, ok := schema.FindFieldByName(fieldName)
+		if !ok {
+			continue
+		}
+		fieldID := int32(field.ID)
+
+		// Encode bounds as big-endian int64 (same as timestamp)
+		lower, upper := NewTimestampBounds(bounds.Min, bounds.Max)
+		stats.LowerBounds[fieldID] = lower
+		stats.UpperBounds[fieldID] = upper
+		stats.ValueCounts[fieldID] = recordCount
+	}
+
+	return stats
+}

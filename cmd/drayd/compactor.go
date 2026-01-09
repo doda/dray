@@ -676,13 +676,15 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 
 	projectionFields := c.converter.ProjectionFields(topicName)
 	var parquetSchema *parquet.Schema
+	var icebergSchema *iceberg.Schema
 	if icebergEnabled && c.icebergTableCreator != nil {
 		table, err := c.icebergTableCreator.CreateTableForTopic(ctx, topicName)
 		if err != nil {
 			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, fmt.Sprintf("ensure iceberg table exists: %v", err))
 			return fmt.Errorf("ensure iceberg table exists: %w", err)
 		}
-		parquetSchema, err = worker.BuildParquetSchemaFromIceberg(table.Schema(), projectionFields)
+		icebergSchema = table.Schema()
+		parquetSchema, err = worker.BuildParquetSchemaFromIceberg(icebergSchema, projectionFields)
 		if err != nil {
 			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
 			return fmt.Errorf("build parquet schema: %w", err)
@@ -747,8 +749,9 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 			// Build data file for Iceberg
 			minTimestampMicros := scaleParquetTimestamp(pf.Stats.MinTimestamp)
 			maxTimestampMicros := scaleParquetTimestamp(pf.Stats.MaxTimestamp)
-			stats := catalog.DefaultDataFileStats(partition, pf.Stats.MinOffset, pf.Stats.MaxOffset,
-				minTimestampMicros, maxTimestampMicros, pf.RecordCount)
+			stats := buildDataFileStats(partition, pf.Stats.MinOffset, pf.Stats.MaxOffset,
+				minTimestampMicros, maxTimestampMicros, pf.RecordCount,
+				icebergSchema, pf.Stats.ProjectedBounds)
 			dataFile := catalog.BuildDataFileFromStats(fullPath, partition,
 				pf.RecordCount, int64(len(pf.ParquetData)), stats)
 			dataFiles = append(dataFiles, dataFile)
@@ -782,8 +785,9 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 		// Build single data file for Iceberg
 		minTimestampMicros := scaleParquetTimestamp(convertResult.Stats.MinTimestamp)
 		maxTimestampMicros := scaleParquetTimestamp(convertResult.Stats.MaxTimestamp)
-		stats := catalog.DefaultDataFileStats(partition, plan.StartOffset, plan.EndOffset-1,
-			minTimestampMicros, maxTimestampMicros, convertResult.RecordCount)
+		stats := buildDataFileStats(partition, plan.StartOffset, plan.EndOffset-1,
+			minTimestampMicros, maxTimestampMicros, convertResult.RecordCount,
+			icebergSchema, convertResult.Stats.ProjectedBounds)
 		dataFile := catalog.BuildDataFileFromStats(parquetPath, partition,
 			convertResult.RecordCount, int64(len(convertResult.ParquetData)), stats)
 		dataFiles = append(dataFiles, dataFile)
@@ -900,13 +904,15 @@ func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *p
 
 	projectionFields := c.converter.ProjectionFields(topicName)
 	parquetSchema := worker.BuildParquetSchema(projectionFields)
+	var icebergSchema *iceberg.Schema
 	if icebergEnabled && c.icebergTableCreator != nil {
 		table, err := c.icebergTableCreator.CreateTableForTopic(ctx, topicName)
 		if err != nil {
 			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, fmt.Sprintf("ensure iceberg table exists: %v", err))
 			return fmt.Errorf("ensure iceberg table exists: %w", err)
 		}
-		parquetSchema, err = worker.BuildParquetSchemaFromIceberg(table.Schema(), projectionFields)
+		icebergSchema = table.Schema()
+		parquetSchema, err = worker.BuildParquetSchemaFromIceberg(icebergSchema, projectionFields)
 		if err != nil {
 			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
 			return fmt.Errorf("build parquet schema: %w", err)
@@ -943,7 +949,7 @@ func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *p
 		}
 
 		for hourValue, hourRecords := range recordsByHour {
-			pData, stats, err := worker.WriteToBuffer(parquetSchema, hourRecords)
+			pData, stats, err := worker.WriteToBufferWithProjections(parquetSchema, hourRecords, projectionFields)
 			if err != nil {
 				c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
 				return fmt.Errorf("write parquet for hour %d: %w", hourValue, err)
@@ -974,14 +980,15 @@ func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *p
 
 			minTimestampMicros := scaleParquetTimestamp(stats.MinTimestamp)
 			maxTimestampMicros := scaleParquetTimestamp(stats.MaxTimestamp)
-			dfStats := catalog.DefaultDataFileStats(partition, stats.MinOffset, stats.MaxOffset,
-				minTimestampMicros, maxTimestampMicros, stats.RecordCount)
+			dfStats := buildDataFileStats(partition, stats.MinOffset, stats.MaxOffset,
+				minTimestampMicros, maxTimestampMicros, stats.RecordCount,
+				icebergSchema, stats.ProjectedBounds)
 			dataFile := catalog.BuildDataFileFromStats(fullPath, partition,
 				stats.RecordCount, int64(len(pData)), dfStats)
 			dataFiles = append(dataFiles, dataFile)
 		}
 	} else {
-		parquetData, fileStats, err := worker.WriteToBuffer(parquetSchema, records)
+		parquetData, fileStats, err := worker.WriteToBufferWithProjections(parquetSchema, records, projectionFields)
 		if err != nil {
 			c.sagaManager.MarkFailed(ctx, plan.StreamID, job.JobID, err.Error())
 			return fmt.Errorf("write parquet: %w", err)
@@ -1003,8 +1010,9 @@ func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *p
 
 		minTimestampMicros := scaleParquetTimestamp(fileStats.MinTimestamp)
 		maxTimestampMicros := scaleParquetTimestamp(fileStats.MaxTimestamp)
-		dfStats := catalog.DefaultDataFileStats(partition, plan.StartOffset, plan.EndOffset-1,
-			minTimestampMicros, maxTimestampMicros, fileStats.RecordCount)
+		dfStats := buildDataFileStats(partition, plan.StartOffset, plan.EndOffset-1,
+			minTimestampMicros, maxTimestampMicros, fileStats.RecordCount,
+			icebergSchema, fileStats.ProjectedBounds)
 		dataFile := catalog.BuildDataFileFromStats(parquetPath, partition,
 			fileStats.RecordCount, int64(len(parquetData)), dfStats)
 		dataFiles = []catalog.DataFile{dataFile}
@@ -1361,6 +1369,32 @@ func normalizeParquetTimestamp(value int64) int64 {
 
 func scaleParquetTimestamp(value int64) int64 {
 	return value * parquetTimestampScale
+}
+
+// buildDataFileStats creates DataFileStats, including projected field bounds if available.
+func buildDataFileStats(
+	partition int32,
+	minOffset, maxOffset int64,
+	minTs, maxTs int64,
+	recordCount int64,
+	schema *iceberg.Schema,
+	projectedBounds map[string]worker.FieldBounds,
+) *catalog.DataFileStats {
+	// Convert worker.FieldBounds to catalog.ProjectedFieldBounds
+	if schema != nil && len(projectedBounds) > 0 {
+		catalogBounds := make(map[string]catalog.ProjectedFieldBounds, len(projectedBounds))
+		for name, bounds := range projectedBounds {
+			catalogBounds[name] = catalog.ProjectedFieldBounds{
+				Min: bounds.Min,
+				Max: bounds.Max,
+			}
+		}
+		return catalog.DataFileStatsWithProjections(
+			partition, minOffset, maxOffset, minTs, maxTs, recordCount,
+			schema, catalogBounds,
+		)
+	}
+	return catalog.DefaultDataFileStats(partition, minOffset, maxOffset, minTs, maxTs, recordCount)
 }
 
 func coerceBytes(value any) []byte {
