@@ -155,12 +155,17 @@ func (b *Broker) Start(ctx context.Context) error {
 	})
 
 	// Create broker registry for registration
+	// Use AdvertiseAddr if configured, otherwise fall back to ListenAddr
+	advertiseAddr := cfg.Broker.ListenAddr
+	if cfg.Broker.AdvertiseAddr != "" {
+		advertiseAddr = cfg.Broker.AdvertiseAddr
+	}
 	b.registry = routing.NewRegistry(b.metaStore, routing.RegistryConfig{
 		ClusterID:           b.opts.ClusterID,
 		BrokerID:            b.opts.BrokerID,
 		NodeID:              b.opts.NodeID,
 		ZoneID:              cfg.Broker.ZoneID,
-		AdvertisedListeners: []string{cfg.Broker.ListenAddr},
+		AdvertisedListeners: []string{advertiseAddr},
 		BuildInfo: routing.BuildInfo{
 			Version:   b.opts.Version,
 			GitCommit: b.opts.GitCommit,
@@ -332,8 +337,13 @@ func (b *Broker) Addr() net.Addr {
 func (b *Broker) createHandler() server.Handler {
 	cfg := b.opts.Config
 
-	// Extract host and port from listen address
-	host, port := parseHostPort(cfg.Broker.ListenAddr)
+	// Extract host and port for Kafka protocol responses
+	// Use AdvertiseAddr if configured, otherwise fall back to ListenAddr
+	addrForProtocol := cfg.Broker.ListenAddr
+	if cfg.Broker.AdvertiseAddr != "" {
+		addrForProtocol = cfg.Broker.AdvertiseAddr
+	}
+	host, port := parseHostPort(addrForProtocol)
 	if host == "" || host == "0.0.0.0" {
 		host = "127.0.0.1"
 	}

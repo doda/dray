@@ -35,9 +35,10 @@ type Config struct {
 }
 
 type BrokerConfig struct {
-	ListenAddr string    `yaml:"listenAddr" env:"DRAY_LISTEN_ADDR"`
-	ZoneID     string    `yaml:"zoneId" env:"DRAY_ZONE_ID"`
-	TLS        TLSConfig `yaml:"tls"`
+	ListenAddr    string    `yaml:"listenAddr" env:"DRAY_LISTEN_ADDR"`
+	AdvertiseAddr string    `yaml:"advertiseAddr" env:"DRAY_ADVERTISE_ADDR"`
+	ZoneID        string    `yaml:"zoneId" env:"DRAY_ZONE_ID"`
+	TLS           TLSConfig `yaml:"tls"`
 }
 
 type TLSConfig struct {
