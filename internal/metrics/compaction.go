@@ -10,7 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-// CompactionMetrics holds metrics related to compaction backlog.
+// CompactionMetrics holds metrics related to compaction backlog and job execution.
 type CompactionMetrics struct {
 	// PendingBytesGauge tracks total WAL bytes pending compaction across all streams.
 	PendingBytesGauge prometheus.Gauge
@@ -29,6 +29,26 @@ type CompactionMetrics struct {
 	// StreamPendingFilesGauge tracks WAL files pending compaction per stream.
 	// Labels: stream_id
 	StreamPendingFilesGauge *prometheus.GaugeVec
+
+	// JobsActiveGauge tracks the number of active compaction jobs.
+	// Labels: job_type (wal, parquet_rewrite)
+	JobsActiveGauge *prometheus.GaugeVec
+
+	// JobDurationHistogram tracks compaction job duration in seconds.
+	// Labels: job_type (wal, parquet_rewrite), status (success, failed)
+	JobDurationHistogram *prometheus.HistogramVec
+
+	// JobBytesProcessedCounter tracks total bytes processed by compaction jobs.
+	// Labels: job_type (wal, parquet_rewrite)
+	JobBytesProcessedCounter *prometheus.CounterVec
+
+	// JobRecordsProcessedCounter tracks total records processed by compaction jobs.
+	// Labels: job_type (wal, parquet_rewrite)
+	JobRecordsProcessedCounter *prometheus.CounterVec
+
+	// JobSourceBytesGauge tracks source bytes for the current active job (useful for OOM debugging).
+	// Labels: job_type, stream_id
+	JobSourceBytesGauge *prometheus.GaugeVec
 
 	// mu protects threshold configuration.
 	mu sync.RWMutex
@@ -83,6 +103,52 @@ func NewCompactionMetrics() *CompactionMetrics {
 				Help:      "WAL files pending compaction per stream.",
 			},
 			[]string{"stream_id"},
+		),
+		JobsActiveGauge: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "dray",
+				Subsystem: "compaction",
+				Name:      "jobs_active",
+				Help:      "Number of active compaction jobs.",
+			},
+			[]string{"job_type"},
+		),
+		JobDurationHistogram: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Namespace: "dray",
+				Subsystem: "compaction",
+				Name:      "job_duration_seconds",
+				Help:      "Duration of compaction jobs in seconds.",
+				Buckets:   []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600},
+			},
+			[]string{"job_type", "status"},
+		),
+		JobBytesProcessedCounter: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "dray",
+				Subsystem: "compaction",
+				Name:      "job_bytes_processed_total",
+				Help:      "Total bytes processed by compaction jobs.",
+			},
+			[]string{"job_type"},
+		),
+		JobRecordsProcessedCounter: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "dray",
+				Subsystem: "compaction",
+				Name:      "job_records_processed_total",
+				Help:      "Total records processed by compaction jobs.",
+			},
+			[]string{"job_type"},
+		),
+		JobSourceBytesGauge: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: "dray",
+				Subsystem: "compaction",
+				Name:      "job_source_bytes",
+				Help:      "Source bytes for current active compaction job (for OOM debugging).",
+			},
+			[]string{"job_type", "stream_id"},
 		),
 		bytesThreshold: 0, // 0 means alerting disabled
 		filesThreshold: 0, // 0 means alerting disabled
@@ -139,20 +205,81 @@ func NewCompactionMetricsWithRegistry(reg prometheus.Registerer) *CompactionMetr
 		[]string{"stream_id"},
 	)
 
+	jobsActive := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "dray",
+			Subsystem: "compaction",
+			Name:      "jobs_active",
+			Help:      "Number of active compaction jobs.",
+		},
+		[]string{"job_type"},
+	)
+
+	jobDuration := prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "dray",
+			Subsystem: "compaction",
+			Name:      "job_duration_seconds",
+			Help:      "Duration of compaction jobs in seconds.",
+			Buckets:   []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600},
+		},
+		[]string{"job_type", "status"},
+	)
+
+	jobBytesProcessed := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "dray",
+			Subsystem: "compaction",
+			Name:      "job_bytes_processed_total",
+			Help:      "Total bytes processed by compaction jobs.",
+		},
+		[]string{"job_type"},
+	)
+
+	jobRecordsProcessed := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "dray",
+			Subsystem: "compaction",
+			Name:      "job_records_processed_total",
+			Help:      "Total records processed by compaction jobs.",
+		},
+		[]string{"job_type"},
+	)
+
+	jobSourceBytes := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: "dray",
+			Subsystem: "compaction",
+			Name:      "job_source_bytes",
+			Help:      "Source bytes for current active compaction job (for OOM debugging).",
+		},
+		[]string{"job_type", "stream_id"},
+	)
+
 	reg.MustRegister(pendingBytes)
 	reg.MustRegister(pendingFiles)
 	reg.MustRegister(backlogExceeded)
 	reg.MustRegister(streamPendingBytes)
 	reg.MustRegister(streamPendingFiles)
+	reg.MustRegister(jobsActive)
+	reg.MustRegister(jobDuration)
+	reg.MustRegister(jobBytesProcessed)
+	reg.MustRegister(jobRecordsProcessed)
+	reg.MustRegister(jobSourceBytes)
 
 	return &CompactionMetrics{
-		PendingBytesGauge:       pendingBytes,
-		PendingFilesGauge:       pendingFiles,
-		BacklogExceededGauge:    backlogExceeded,
-		StreamPendingBytesGauge: streamPendingBytes,
-		StreamPendingFilesGauge: streamPendingFiles,
-		bytesThreshold:          0,
-		filesThreshold:          0,
+		PendingBytesGauge:          pendingBytes,
+		PendingFilesGauge:          pendingFiles,
+		BacklogExceededGauge:       backlogExceeded,
+		StreamPendingBytesGauge:    streamPendingBytes,
+		StreamPendingFilesGauge:    streamPendingFiles,
+		JobsActiveGauge:            jobsActive,
+		JobDurationHistogram:       jobDuration,
+		JobBytesProcessedCounter:   jobBytesProcessed,
+		JobRecordsProcessedCounter: jobRecordsProcessed,
+		JobSourceBytesGauge:        jobSourceBytes,
+		bytesThreshold:             0,
+		filesThreshold:             0,
 	}
 }
 
@@ -210,6 +337,81 @@ func (m *CompactionMetrics) RecordStreamBacklog(streamID string, bytes, files in
 func (m *CompactionMetrics) ClearStreamBacklog(streamID string) {
 	m.StreamPendingBytesGauge.DeleteLabelValues(streamID)
 	m.StreamPendingFilesGauge.DeleteLabelValues(streamID)
+}
+
+// JobType represents the type of compaction job.
+type JobType string
+
+const (
+	// JobTypeWAL is a WAL-to-Parquet compaction job.
+	JobTypeWAL JobType = "wal"
+	// JobTypeParquetRewrite is a Parquet rewrite/merge job.
+	JobTypeParquetRewrite JobType = "parquet_rewrite"
+)
+
+// JobTracker tracks metrics for a single compaction job.
+// Use StartJob to create one and call Complete or Failed when done.
+type JobTracker struct {
+	metrics    *CompactionMetrics
+	jobType    JobType
+	streamID   string
+	startTime  time.Time
+	sourceSize int64
+}
+
+// StartJob begins tracking a new compaction job.
+// Call Complete() or Failed() when the job finishes.
+func (m *CompactionMetrics) StartJob(jobType JobType, streamID string, sourceSizeBytes int64) *JobTracker {
+	if m.JobsActiveGauge != nil {
+		m.JobsActiveGauge.WithLabelValues(string(jobType)).Inc()
+	}
+	if m.JobSourceBytesGauge != nil {
+		m.JobSourceBytesGauge.WithLabelValues(string(jobType), streamID).Set(float64(sourceSizeBytes))
+	}
+
+	return &JobTracker{
+		metrics:    m,
+		jobType:    jobType,
+		streamID:   streamID,
+		startTime:  time.Now(),
+		sourceSize: sourceSizeBytes,
+	}
+}
+
+// Complete marks the job as successfully completed and records metrics.
+func (t *JobTracker) Complete(bytesWritten, recordsProcessed int64) {
+	duration := time.Since(t.startTime).Seconds()
+
+	if t.metrics.JobsActiveGauge != nil {
+		t.metrics.JobsActiveGauge.WithLabelValues(string(t.jobType)).Dec()
+	}
+	if t.metrics.JobSourceBytesGauge != nil {
+		t.metrics.JobSourceBytesGauge.DeleteLabelValues(string(t.jobType), t.streamID)
+	}
+	if t.metrics.JobDurationHistogram != nil {
+		t.metrics.JobDurationHistogram.WithLabelValues(string(t.jobType), "success").Observe(duration)
+	}
+	if t.metrics.JobBytesProcessedCounter != nil {
+		t.metrics.JobBytesProcessedCounter.WithLabelValues(string(t.jobType)).Add(float64(bytesWritten))
+	}
+	if t.metrics.JobRecordsProcessedCounter != nil {
+		t.metrics.JobRecordsProcessedCounter.WithLabelValues(string(t.jobType)).Add(float64(recordsProcessed))
+	}
+}
+
+// Failed marks the job as failed and records duration.
+func (t *JobTracker) Failed() {
+	duration := time.Since(t.startTime).Seconds()
+
+	if t.metrics.JobsActiveGauge != nil {
+		t.metrics.JobsActiveGauge.WithLabelValues(string(t.jobType)).Dec()
+	}
+	if t.metrics.JobSourceBytesGauge != nil {
+		t.metrics.JobSourceBytesGauge.DeleteLabelValues(string(t.jobType), t.streamID)
+	}
+	if t.metrics.JobDurationHistogram != nil {
+		t.metrics.JobDurationHistogram.WithLabelValues(string(t.jobType), "failed").Observe(duration)
+	}
 }
 
 // BacklogScanResult contains the results of scanning a stream for compaction backlog.

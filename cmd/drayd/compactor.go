@@ -24,6 +24,7 @@ import (
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
+	"github.com/dray-io/dray/internal/metrics"
 	"github.com/dray-io/dray/internal/metadata/keys"
 	metaoxia "github.com/dray-io/dray/internal/metadata/oxia"
 	"github.com/dray-io/dray/internal/objectstore"
@@ -31,6 +32,7 @@ import (
 	"github.com/dray-io/dray/internal/server"
 	"github.com/dray-io/dray/internal/topics"
 	"github.com/parquet-go/parquet-go"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // CompactorOptions contains the configuration for creating a compactor.
@@ -64,6 +66,8 @@ type Compactor struct {
 	walGCWorker         *gc.WALGCWorker
 	walOrphanGCWorker   *gc.WALOrphanGCWorker
 	parquetGCWorker     *gc.ParquetGCWorker
+	compactionMetrics   *metrics.CompactionMetrics
+	metricsServer       *metrics.Server
 	rewriteNext         bool
 
 	mu        sync.Mutex
@@ -387,8 +391,13 @@ func (c *Compactor) Start(ctx context.Context) error {
 		MaxFiles:                cfg.Compaction.ParquetMaxFiles,
 	}
 	c.parquetPlanner = planner.NewParquetRewritePlanner(rewriteCfg, c.streamManager)
-	// Start health server
+
+	// Initialize compaction metrics
+	c.compactionMetrics = metrics.NewCompactionMetrics()
+
+	// Start health server with metrics endpoint
 	healthServer := server.NewHealthServer(cfg.Observability.MetricsAddr, c.logger)
+	healthServer.RegisterHandler("/metrics", promhttp.Handler())
 	c.mu.Lock()
 	c.healthServer = healthServer
 	c.mu.Unlock()
@@ -652,7 +661,23 @@ func (c *Compactor) processStream(ctx context.Context, streamID, topicName strin
 }
 
 // executeCompaction runs the full compaction saga for a planned WAL job.
-func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result, topicName string, partition int32, icebergEnabled bool) error {
+func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result, topicName string, partition int32, icebergEnabled bool) (retErr error) {
+	// Start tracking compaction job metrics
+	var jobTracker *metrics.JobTracker
+	if c.compactionMetrics != nil {
+		jobTracker = c.compactionMetrics.StartJob(metrics.JobTypeWAL, plan.StreamID, plan.TotalSizeBytes)
+	}
+	var jobBytes, jobRecords int64
+	defer func() {
+		if jobTracker != nil {
+			if retErr != nil {
+				jobTracker.Failed()
+			} else {
+				jobTracker.Complete(jobBytes, jobRecords)
+			}
+		}
+	}()
+
 	// Create compaction job
 	job, err := c.sagaManager.CreateJob(ctx, plan.StreamID,
 		compaction.WithSourceRange(plan.StartOffset, plan.EndOffset),
@@ -866,17 +891,37 @@ func (c *Compactor) executeCompaction(ctx context.Context, plan *planner.Result,
 		"recordCount": totalRecords,
 	})
 
+	// Set metrics for successful completion
+	jobBytes = totalBytes
+	jobRecords = totalRecords
+
 	return nil
 }
 
 // executeParquetRewriteCompaction rewrites small Parquet files into a larger one.
-func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *planner.ParquetRewriteResult, topicName string, partition int32, icebergEnabled bool) error {
+func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *planner.ParquetRewriteResult, topicName string, partition int32, icebergEnabled bool) (retErr error) {
 	if plan == nil {
 		return nil
 	}
 	if c.objectStore == nil {
 		return fmt.Errorf("object store unavailable for parquet rewrite")
 	}
+
+	// Start tracking parquet rewrite job metrics
+	var jobTracker *metrics.JobTracker
+	if c.compactionMetrics != nil {
+		jobTracker = c.compactionMetrics.StartJob(metrics.JobTypeParquetRewrite, plan.StreamID, plan.TotalSizeBytes)
+	}
+	var jobBytes, jobRecords int64
+	defer func() {
+		if jobTracker != nil {
+			if retErr != nil {
+				jobTracker.Failed()
+			} else {
+				jobTracker.Complete(jobBytes, jobRecords)
+			}
+		}
+	}()
 
 	job, err := c.sagaManager.CreateJob(ctx, plan.StreamID,
 		compaction.WithSourceRange(plan.StartOffset, plan.EndOffset),
@@ -1122,6 +1167,10 @@ func (c *Compactor) executeParquetRewriteCompaction(ctx context.Context, plan *p
 		"minTimestamp": minTimestamp,
 		"maxTimestamp": maxTimestamp,
 	})
+
+	// Set metrics for successful completion
+	jobBytes = totalBytes
+	jobRecords = totalRecords
 
 	return nil
 }
