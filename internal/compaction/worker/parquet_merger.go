@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sort"
 
 	"github.com/parquet-go/parquet-go"
 
@@ -36,53 +35,21 @@ type MergeResult struct {
 // Merge reads records from multiple Parquet files and merges them into one.
 // All entries must be Parquet type and belong to the same stream.
 // Entries are expected to be in offset order.
+//
+// This implementation uses streaming k-way merge to keep memory usage bounded.
+// Instead of loading all records into memory, it uses iterators with buffering
+// and a min-heap to merge sorted streams efficiently.
 func (m *ParquetMerger) Merge(ctx context.Context, entries []*index.IndexEntry) (*MergeResult, error) {
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("merger: no entries to merge")
-	}
+	// Delegate to streaming merger for memory-efficient merging
+	streamingMerger := NewStreamingMerger(m.store)
+	return streamingMerger.Merge(ctx, entries, DefaultStreamingMergeConfig())
+}
 
-	// Validate all entries are Parquet type and belong to same stream
-	streamID := entries[0].StreamID
-	for _, e := range entries {
-		if e.FileType != index.FileTypeParquet {
-			return nil, fmt.Errorf("merger: expected Parquet entry, got %s", e.FileType)
-		}
-		if e.StreamID != streamID {
-			return nil, fmt.Errorf("merger: entries must belong to same stream")
-		}
-	}
-
-	// Collect all records from all Parquet files
-	var allRecords []Record
-
-	for _, entry := range entries {
-		records, err := m.readRecordsFromParquet(ctx, entry)
-		if err != nil {
-			return nil, fmt.Errorf("merger: reading parquet %s: %w", entry.ParquetPath, err)
-		}
-		allRecords = append(allRecords, records...)
-	}
-
-	if len(allRecords) == 0 {
-		return nil, fmt.Errorf("merger: no records extracted from Parquet files")
-	}
-
-	sort.Slice(allRecords, func(i, j int) bool {
-		return allRecords[i].Offset < allRecords[j].Offset
-	})
-
-	// Write merged records to new Parquet file
-	schema := BuildParquetSchema(nil)
-	parquetData, stats, err := WriteToBuffer(schema, allRecords)
-	if err != nil {
-		return nil, fmt.Errorf("merger: writing merged parquet: %w", err)
-	}
-
-	return &MergeResult{
-		ParquetData: parquetData,
-		Stats:       stats,
-		RecordCount: int64(len(allRecords)),
-	}, nil
+// MergeWithConfig reads records from multiple Parquet files and merges them into one
+// using the provided configuration.
+func (m *ParquetMerger) MergeWithConfig(ctx context.Context, entries []*index.IndexEntry, cfg StreamingMergeConfig) (*MergeResult, error) {
+	streamingMerger := NewStreamingMerger(m.store)
+	return streamingMerger.Merge(ctx, entries, cfg)
 }
 
 // readRecordsFromParquet reads all records from a single Parquet file.
