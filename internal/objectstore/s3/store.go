@@ -81,7 +81,14 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("s3: failed to load AWS config: %w", err)
 	}
 
-	s3Opts := []func(*s3.Options){}
+	s3Opts := []func(*s3.Options){
+		func(o *s3.Options) {
+			// Suppress "Response has no supported checksum" warnings.
+			// S3 doesn't always provide checksums for all response types,
+			// which is normal and doesn't indicate a problem.
+			o.DisableLogOutputChecksumValidationSkipped = true
+		},
+	}
 
 	if cfg.Endpoint != "" {
 		s3Opts = append(s3Opts, func(o *s3.Options) {
