@@ -6,6 +6,7 @@ import (
 
 	"github.com/dray-io/dray/internal/config"
 	"github.com/dray-io/dray/internal/metadata/oxia"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // testConfigWithOxia creates a test configuration with an embedded Oxia server.
@@ -24,6 +25,21 @@ func testConfigWithOxia(t *testing.T) *config.Config {
 	cfg.Iceberg.Enabled = false
 
 	return cfg
+}
+
+func resetPrometheusRegistry(t *testing.T) {
+	t.Helper()
+	prevRegisterer := prometheus.DefaultRegisterer
+	prevGatherer := prometheus.DefaultGatherer
+
+	reg := prometheus.NewRegistry()
+	prometheus.DefaultRegisterer = reg
+	prometheus.DefaultGatherer = reg
+
+	t.Cleanup(func() {
+		prometheus.DefaultRegisterer = prevRegisterer
+		prometheus.DefaultGatherer = prevGatherer
+	})
 }
 
 // waitForBrokerStart waits for the broker to start listening.

@@ -11,6 +11,8 @@ import (
 )
 
 func TestCompactorStartAndShutdown(t *testing.T) {
+	resetPrometheusRegistry(t)
+
 	cfg := testConfigWithOxia(t)
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 	cfg.Compaction.Enabled = true
@@ -51,6 +53,8 @@ func TestCompactorStartAndShutdown(t *testing.T) {
 }
 
 func TestCompactorHealthEndpoint(t *testing.T) {
+	resetPrometheusRegistry(t)
+
 	cfg := testConfigWithOxia(t)
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 	cfg.Compaction.Enabled = true
@@ -96,6 +100,8 @@ func TestCompactorHealthEndpoint(t *testing.T) {
 }
 
 func TestCompactorGracefulShutdown(t *testing.T) {
+	resetPrometheusRegistry(t)
+
 	cfg := testConfigWithOxia(t)
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 	cfg.Compaction.Enabled = true
@@ -141,6 +147,8 @@ func TestCompactorGracefulShutdown(t *testing.T) {
 }
 
 func TestCompactorLockManager(t *testing.T) {
+	resetPrometheusRegistry(t)
+
 	cfg := testConfigWithOxia(t)
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 	cfg.Compaction.Enabled = true
@@ -184,6 +192,8 @@ func TestCompactorLockManager(t *testing.T) {
 }
 
 func TestCompactorSagaManager(t *testing.T) {
+	resetPrometheusRegistry(t)
+
 	cfg := testConfigWithOxia(t)
 	cfg.Observability.MetricsAddr = "127.0.0.1:0"
 	cfg.Compaction.Enabled = true
