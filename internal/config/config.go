@@ -84,6 +84,7 @@ type WALConfig struct {
 
 type CompactionConfig struct {
 	Enabled                        bool                         `yaml:"enabled" env:"DRAY_COMPACTION_ENABLED"`
+	MaxConcurrentJobs              int                          `yaml:"maxConcurrentJobs" env:"DRAY_COMPACTION_MAX_CONCURRENT_JOBS"`
 	MaxFilesToMerge                int                          `yaml:"maxFilesToMerge" env:"DRAY_COMPACTION_MAX_FILES"`
 	MinAgeMs                       int64                        `yaml:"minAgeMs" env:"DRAY_COMPACTION_MIN_AGE_MS"`
 	ParquetSmallFileThresholdBytes int64                        `yaml:"parquetSmallFileThresholdBytes" env:"DRAY_COMPACTION_PARQUET_SMALL_FILE_THRESHOLD_BYTES"`
@@ -145,6 +146,7 @@ func Default() *Config {
 		},
 		Compaction: CompactionConfig{
 			Enabled:                        true,
+			MaxConcurrentJobs:              0,
 			MaxFilesToMerge:                10,
 			MinAgeMs:                       300000, // 5 minutes
 			ParquetSmallFileThresholdBytes: 64 * 1024 * 1024,
@@ -318,6 +320,9 @@ func (c *Config) Validate() error {
 
 	// Compaction validation
 	if c.Compaction.Enabled {
+		if c.Compaction.MaxConcurrentJobs < 0 {
+			errs = append(errs, errors.New("compaction.maxConcurrentJobs cannot be negative"))
+		}
 		if c.Compaction.MaxFilesToMerge <= 0 {
 			errs = append(errs, errors.New("compaction.maxFilesToMerge must be positive when compaction is enabled"))
 		}

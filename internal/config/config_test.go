@@ -473,6 +473,13 @@ func TestValidationErrors(t *testing.T) {
 			},
 			errCount: 6,
 		},
+		{
+			name: "negative max concurrent compaction jobs",
+			modifier: func(c *Config) {
+				c.Compaction.MaxConcurrentJobs = -1
+			},
+			errCount: 1,
+		},
 	}
 
 	for _, tt := range tests {

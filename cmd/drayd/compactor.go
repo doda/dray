@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -24,9 +25,9 @@ import (
 	"github.com/dray-io/dray/internal/index"
 	"github.com/dray-io/dray/internal/logging"
 	"github.com/dray-io/dray/internal/metadata"
-	"github.com/dray-io/dray/internal/metrics"
 	"github.com/dray-io/dray/internal/metadata/keys"
 	metaoxia "github.com/dray-io/dray/internal/metadata/oxia"
+	"github.com/dray-io/dray/internal/metrics"
 	"github.com/dray-io/dray/internal/objectstore"
 	"github.com/dray-io/dray/internal/objectstore/s3"
 	"github.com/dray-io/dray/internal/server"
@@ -92,6 +93,7 @@ const (
 )
 
 const parquetTimestampScale = int64(1000)
+const compactionScanInterval = 10 * time.Second
 
 func icebergS3Props(store config.ObjectStoreConfig) iceberg.Properties {
 	props := iceberg.Properties{}
@@ -334,7 +336,9 @@ func (c *Compactor) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to load Iceberg catalog: %w", err)
 		}
 		c.icebergCatalog = cat
-		c.icebergAppender = catalog.NewAppender(catalog.DefaultAppenderConfig(cat))
+		appenderCfg := catalog.DefaultAppenderConfig(cat)
+		appenderCfg.TableCacheTTL = compactionScanInterval
+		c.icebergAppender = catalog.NewAppender(appenderCfg)
 		c.icebergTableCreator = catalog.NewTableCreator(catalog.TableCreatorConfig{
 			Catalog:          cat,
 			ClusterID:        c.opts.Config.ClusterID,
@@ -523,10 +527,7 @@ func (c *Compactor) maintainTopicTable(ctx context.Context, topicName string) {
 func (c *Compactor) runWorkerLoop(ctx context.Context) {
 	cfg := c.opts.Config
 
-	// Default scan interval of 10 seconds
-	scanInterval := 10 * time.Second
-
-	ticker := time.NewTicker(scanInterval)
+	ticker := time.NewTicker(compactionScanInterval)
 	defer ticker.Stop()
 
 	c.logger.Info("compaction worker loop started")
@@ -558,25 +559,65 @@ func (c *Compactor) scanAndCompact(ctx context.Context) {
 		return
 	}
 
+	maxWorkers := c.opts.Config.Compaction.MaxConcurrentJobs
+	if maxWorkers <= 0 {
+		maxWorkers = runtime.GOMAXPROCS(0)
+		if maxWorkers < 1 {
+			maxWorkers = 1
+		}
+	}
+
+	sem := make(chan struct{}, maxWorkers)
+	var wg sync.WaitGroup
+	shouldStop := false
+
 	for _, topicMeta := range topicList {
 		select {
 		case <-ctx.Done():
-			return
+			shouldStop = true
 		case <-c.stopCh:
-			return
+			shouldStop = true
 		default:
+		}
+		if shouldStop {
+			break
 		}
 
 		// Check each partition
 		for p := int32(0); p < topicMeta.PartitionCount; p++ {
+			select {
+			case <-ctx.Done():
+				shouldStop = true
+			case <-c.stopCh:
+				shouldStop = true
+			default:
+			}
+			if shouldStop {
+				break
+			}
+
 			partMeta, err := c.topicStore.GetPartition(ctx, topicMeta.Name, p)
 			if err != nil {
 				continue
 			}
 
-			c.processStream(ctx, partMeta.StreamID, topicMeta.Name, p)
+			wg.Add(1)
+			go func(streamID, topicName string, partition int32) {
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+					defer func() { <-sem }()
+				case <-ctx.Done():
+					return
+				case <-c.stopCh:
+					return
+				}
+				c.processStream(ctx, streamID, topicName, partition)
+			}(partMeta.StreamID, topicMeta.Name, p)
 		}
 	}
+
+	wg.Wait()
 }
 
 // processStream attempts to compact a single stream.
@@ -606,23 +647,33 @@ func (c *Compactor) processStream(ctx context.Context, streamID, topicName strin
 	}()
 
 	// Check for incomplete jobs that need recovery
-	incompleteJobs, err := c.sagaManager.ListIncompleteJobs(ctx, streamID)
+	hasIncomplete, err := c.sagaManager.HasIncompleteJobs(ctx, streamID)
 	if err != nil {
-		c.logger.Warnf("failed to list incomplete jobs", map[string]any{
+		c.logger.Warnf("failed to check incomplete jobs", map[string]any{
 			"streamId": streamID,
 			"error":    err.Error(),
 		})
 		return
 	}
+	if hasIncomplete {
+		incompleteJobs, err := c.sagaManager.ListIncompleteJobs(ctx, streamID)
+		if err != nil {
+			c.logger.Warnf("failed to list incomplete jobs", map[string]any{
+				"streamId": streamID,
+				"error":    err.Error(),
+			})
+			return
+		}
 
-	// Recover incomplete jobs first
-	for _, job := range incompleteJobs {
-		c.logger.Infof("recovering incomplete compaction job", map[string]any{
-			"streamId": streamID,
-			"jobId":    job.JobID,
-			"state":    job.State,
-		})
-		c.recoverJob(ctx, job)
+		// Recover incomplete jobs first
+		for _, job := range incompleteJobs {
+			c.logger.Infof("recovering incomplete compaction job", map[string]any{
+				"streamId": streamID,
+				"jobId":    job.JobID,
+				"state":    job.State,
+			})
+			c.recoverJob(ctx, job)
+		}
 	}
 
 	icebergEnabled := c.opts.Config.Iceberg.Enabled && c.icebergAppender != nil
