@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"runtime"
 	"sync"
 
 	"github.com/golang/snappy"
@@ -111,17 +112,10 @@ func (c *Converter) Convert(ctx context.Context, entries []*index.IndexEntry, pa
 	projectionFields := c.ProjectionFields(topicName)
 	projector := newRecordProjector(projectionFields)
 
-	// Collect all records from all WAL entries
-	var allRecords []Record
-
-	for _, entry := range entries {
-		records, err := c.extractRecordsFromEntry(ctx, entry, partition, projector)
-		if err != nil {
-			return nil, fmt.Errorf("converter: processing entry at offset %d: %w", entry.StartOffset, err)
-		}
-		allRecords = append(allRecords, records...)
+	allRecords, err := c.collectRecords(ctx, entries, partition, projector)
+	if err != nil {
+		return nil, err
 	}
-
 	if len(allRecords) == 0 {
 		return nil, errors.New("converter: no records extracted from WAL entries")
 	}
@@ -166,17 +160,10 @@ func (c *Converter) ConvertPartitioned(ctx context.Context, entries []*index.Ind
 	projectionFields := c.ProjectionFields(topicName)
 	projector := newRecordProjector(projectionFields)
 
-	// Collect all records from all WAL entries
-	var allRecords []Record
-
-	for _, entry := range entries {
-		records, err := c.extractRecordsFromEntry(ctx, entry, partition, projector)
-		if err != nil {
-			return nil, fmt.Errorf("converter: processing entry at offset %d: %w", entry.StartOffset, err)
-		}
-		allRecords = append(allRecords, records...)
+	allRecords, err := c.collectRecords(ctx, entries, partition, projector)
+	if err != nil {
+		return nil, err
 	}
-
 	if len(allRecords) == 0 {
 		return nil, errors.New("converter: no records extracted from WAL entries")
 	}
@@ -230,6 +217,66 @@ func (c *Converter) ConvertPartitioned(ctx context.Context, entries []*index.Ind
 	}
 
 	return result, nil
+}
+
+// collectRecords fans out WAL chunk reads across entries using a bounded worker pool.
+func (c *Converter) collectRecords(ctx context.Context, entries []*index.IndexEntry, partition int32, projector *recordProjector) ([]Record, error) {
+	workerCount := runtime.GOMAXPROCS(0)
+	if workerCount < 1 {
+		workerCount = 1
+	}
+	if workerCount > len(entries) {
+		workerCount = len(entries)
+	}
+
+	sem := make(chan struct{}, workerCount)
+	results := make([][]Record, len(entries))
+	errCh := make(chan error, len(entries))
+	var wg sync.WaitGroup
+
+	for i, entry := range entries {
+		wg.Add(1)
+		go func(idx int, ent *index.IndexEntry) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return
+			}
+
+			recs, err := c.extractRecordsFromEntry(ctx, ent, partition, projector)
+			if err != nil {
+				errCh <- fmt.Errorf("converter: processing entry at offset %d: %w", ent.StartOffset, err)
+				return
+			}
+			results[idx] = recs
+		}(i, entry)
+	}
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			return nil, err
+		}
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	total := 0
+	for _, recs := range results {
+		total += len(recs)
+	}
+
+	allRecords := make([]Record, 0, total)
+	for _, recs := range results {
+		allRecords = append(allRecords, recs...)
+	}
+
+	return allRecords, nil
 }
 
 // extractRecordsFromEntry reads a single WAL entry and extracts all records.
