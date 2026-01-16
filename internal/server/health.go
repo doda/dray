@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -159,6 +160,12 @@ func (h *HealthServer) Start() error {
 	for pattern, handler := range extraHandlers {
 		mux.Handle(pattern, handler)
 	}
+	// Expose pprof endpoints for profiling.
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
 	h.server = &http.Server{
 		Addr:         h.addr,
