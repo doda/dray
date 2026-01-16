@@ -581,6 +581,33 @@ func TestSagaManager_ListJobs(t *testing.T) {
 			t.Errorf("expected 0 jobs, got %d", len(jobs))
 		}
 	})
+
+	t.Run("has incomplete short-circuit", func(t *testing.T) {
+		has, err := sm.HasIncompleteJobs(ctx, "stream-1")
+		if err != nil {
+			t.Fatalf("HasIncompleteJobs failed: %v", err)
+		}
+		if !has {
+			t.Fatal("expected incomplete jobs for stream-1")
+		}
+
+		// Mark remaining jobs through a valid path then done
+		for _, job := range []string{"job-1", "job-2"} {
+			_, _ = sm.MarkParquetWritten(ctx, "stream-1", job, []string{"/p"}, 1, 1, 0, 0)
+			_, _ = sm.MarkIcebergCommitted(ctx, "stream-1", job, 1)
+			_, _ = sm.MarkIndexSwapped(ctx, "stream-1", job, nil)
+			_, _ = sm.MarkWALGCReady(ctx, "stream-1", job)
+			_, _ = sm.MarkDone(ctx, "stream-1", job)
+		}
+
+		has, err = sm.HasIncompleteJobs(ctx, "stream-1")
+		if err != nil {
+			t.Fatalf("HasIncompleteJobs failed: %v", err)
+		}
+		if has {
+			t.Fatal("expected no incomplete jobs after marking done")
+		}
+	})
 }
 
 func TestSagaManager_DeleteJob(t *testing.T) {

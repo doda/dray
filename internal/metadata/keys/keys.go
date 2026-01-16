@@ -188,8 +188,8 @@ func OffsetIndexStartKey(streamID string, offsetEnd int64) (string, error) {
 func OffsetIndexEndKey(streamID string) string {
 	// Use maximum possible values for offsetEnd and cumulativeSize
 	// to capture all keys in the offset-index namespace.
-	maxOffset := EncodeUint64(^uint64(0), OffsetWidth)      // All 9s
-	maxSize := EncodeUint64(^uint64(0), SizeWidth)          // All 9s
+	maxOffset := EncodeUint64(^uint64(0), OffsetWidth) // All 9s
+	maxSize := EncodeUint64(^uint64(0), SizeWidth)     // All 9s
 	return fmt.Sprintf("%s/%s/offset-index/%s/%s", StreamsPrefix, streamID, maxOffset, maxSize)
 }
 
@@ -676,6 +676,15 @@ func CompactionJobKeyPath(streamID, jobID string) string {
 // CompactionJobsForStreamPrefix returns the prefix for listing all jobs for a stream.
 func CompactionJobsForStreamPrefix(streamID string) string {
 	return fmt.Sprintf("%s/%s/jobs/", CompactionJobsPrefix, streamID)
+}
+
+// CompactionJobsPrefixRange returns the start and end keys for listing jobs for a stream.
+// Useful for range scans without building an iterator over the entire keyspace.
+func CompactionJobsPrefixRange(streamID string) (start, end string) {
+	start = CompactionJobsForStreamPrefix(streamID)
+	// Increment last byte to form exclusive end key for the prefix.
+	end = start + "\uffff"
+	return start, end
 }
 
 // ParseCompactionJobKey parses a compaction job key.

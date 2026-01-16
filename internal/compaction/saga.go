@@ -22,7 +22,6 @@ package compaction
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -30,6 +29,7 @@ import (
 	"github.com/dray-io/dray/internal/gc"
 	"github.com/dray-io/dray/internal/metadata"
 	"github.com/dray-io/dray/internal/metadata/keys"
+	json "github.com/goccy/go-json"
 	"github.com/google/uuid"
 )
 
@@ -624,6 +624,31 @@ func (sm *SagaManager) ListIncompleteJobs(ctx context.Context, streamID string) 
 	}
 
 	return incomplete, nil
+}
+
+// HasIncompleteJobs returns true if any non-terminal job exists for the stream.
+// It short-circuits on first match to avoid decoding all jobs.
+func (sm *SagaManager) HasIncompleteJobs(ctx context.Context, streamID string) (bool, error) {
+	startKey, endKey := keys.CompactionJobsPrefixRange(streamID)
+
+	iter, err := sm.meta.List(ctx, startKey, endKey, 0)
+	if err != nil {
+		return false, err
+	}
+
+	for _, kv := range iter {
+		var jobState struct {
+			State JobState `json:"state"`
+		}
+		if err := json.Unmarshal(kv.Value, &jobState); err != nil {
+			return false, fmt.Errorf("compaction: unmarshal job at %s: %w", kv.Key, err)
+		}
+		if jobState.State != JobStateDone && jobState.State != JobStateFailed {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // DeleteJob removes a job from the metadata store.
